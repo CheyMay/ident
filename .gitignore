@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+data/
+backups/
+
+node_modules/
+npm-debug.log*
+
+*.sqlite
+*.sqlite-*
+*.db
+
+test/.tmp*/
+*.tmp
