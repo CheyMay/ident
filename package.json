@@ -1,0 +1,16 @@
+{
+  "name": "ident-amocrm-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "smoke": "node scripts/smoke-test.js",
+    "state:export": "node scripts/export-state.js",
+    "state:import": "node scripts/import-state.js",
+    "test": "node test/run-tests.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
