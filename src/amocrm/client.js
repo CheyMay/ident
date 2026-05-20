@@ -1,8 +1,13 @@
 export class AmoClient {
-  constructor(config, tokenStore, logger = console) {
+  constructor(config, tokenStore, logger = console, options = {}) {
     this.config = config;
     this.tokenStore = tokenStore;
     this.logger = logger;
+    this.rateLimiter = options.rateLimiter || new AmoRateLimiter();
+  }
+
+  withConfig(config) {
+    return new AmoClient(config, this.tokenStore, this.logger, { rateLimiter: this.rateLimiter });
   }
 
   async listLeads({ updatedFrom, updatedTo, limit = 250, offset = 0 } = {}) {
@@ -127,6 +132,24 @@ export class AmoClient {
     return this.listCollection(`/api/v4/catalogs/${catalogId}/custom_fields`, 'custom_fields');
   }
 
+  async createLeadCustomFields(fields) {
+    if (!fields.length) return [];
+    const response = await this.request('/api/v4/leads/custom_fields', {
+      method: 'POST',
+      body: JSON.stringify(fields)
+    });
+    return response?._embedded?.custom_fields || [];
+  }
+
+  async createPipelineStatuses(pipelineId, statuses) {
+    if (!statuses.length) return [];
+    const response = await this.request(`/api/v4/leads/pipelines/${pipelineId}/statuses`, {
+      method: 'POST',
+      body: JSON.stringify(statuses)
+    });
+    return response?._embedded?.statuses || [];
+  }
+
   async createCatalogElements(catalogId, elements) {
     if (!elements.length) return [];
     const response = await this.request(`/api/v4/catalogs/${catalogId}/elements`, {
@@ -178,15 +201,7 @@ export class AmoClient {
   async request(path, options = {}) {
     const token = await this.getValidToken();
     const baseUrl = this.resolveBaseUrl(token);
-    const response = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token.accessToken}`,
-        ...(options.headers || {})
-      }
-    });
+    const response = await this.fetchWithRetry(`${baseUrl}${path}`, token.accessToken, options);
 
     if (response.status === 401 && !this.config.amo.longLivedToken && token.refreshToken) {
       this.logger.warn('amoCRM access token rejected, trying refresh');
@@ -198,16 +213,39 @@ export class AmoClient {
   }
 
   async requestWithAccessToken(path, options, accessToken, baseUrl) {
-    const response = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-        ...(options.headers || {})
-      }
-    });
+    const response = await this.fetchWithRetry(`${baseUrl}${path}`, accessToken, options);
     return parseAmoResponse(response);
+  }
+
+  async fetchWithRetry(url, accessToken, options = {}) {
+    const rateLimit = this.config.amo.rateLimit || {};
+    const maxRetries = Number(rateLimit.maxRetries || 0);
+    let attempt = 0;
+
+    while (true) {
+      await this.rateLimiter.wait(Number(rateLimit.minDelayMs || 0));
+      let response;
+      try {
+        response = await fetch(url, {
+          ...options,
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+            ...(options.headers || {})
+          }
+        });
+      } catch (error) {
+        if (attempt >= maxRetries) throw error;
+        await delay(retryDelayMs(rateLimit, attempt));
+        attempt += 1;
+        continue;
+      }
+
+      if (!isRetryableResponse(response) || attempt >= maxRetries) return response;
+      await delay(retryAfterMs(response) ?? retryDelayMs(rateLimit, attempt));
+      attempt += 1;
+    }
   }
 
   async getValidToken() {
@@ -278,6 +316,24 @@ export class AmoClient {
   }
 }
 
+class AmoRateLimiter {
+  constructor() {
+    this.nextAt = 0;
+    this.chain = Promise.resolve();
+  }
+
+  async wait(minDelayMs) {
+    if (!minDelayMs) return;
+    this.chain = this.chain.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, this.nextAt - now);
+      if (waitMs) await delay(waitMs);
+      this.nextAt = Date.now() + minDelayMs;
+    });
+    return this.chain;
+  }
+}
+
 export class AmoError extends Error {
   constructor(message, status = 502, details = null) {
     super(message);
@@ -315,6 +371,27 @@ function buildStoredToken(data, baseUrl) {
     expiresAt: Date.now() + Number(data.expires_in || 0) * 1000,
     baseUrl
   };
+}
+
+function isRetryableResponse(response) {
+  return [429, 430, 502, 503, 504].includes(response.status);
+}
+
+function retryAfterMs(response) {
+  const retryAfter = response.headers.get('retry-after');
+  if (!retryAfter) return null;
+  const seconds = Number.parseInt(retryAfter, 10);
+  if (Number.isFinite(seconds)) return seconds * 1000;
+  const dateMs = new Date(retryAfter).getTime();
+  return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : null;
+}
+
+function retryDelayMs(rateLimit, attempt) {
+  return Number(rateLimit.retryBaseDelayMs || 1000) * 2 ** attempt;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeBaseUrl(value) {

@@ -8,5 +8,6 @@ export const STATE_KEYS = [
   'amocrm-webhooks.json',
   'amo-slots.json',
   'jobs.json',
+  'settings.json',
   'oauth-states.json'
 ];

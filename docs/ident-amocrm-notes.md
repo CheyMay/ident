@@ -64,7 +64,11 @@ Queue statuses:
 - `queued`: ready for IDENT.
 - `sent_to_ident`: already returned by `GetTickets`.
 - `failed`: data is incomplete or invalid.
-- `ignored`: reserved for explicit business rules.
+- `ignored`: duplicate or intentionally skipped record.
+
+Duplicate protection is enabled by default. The duplicate key uses normalized
+phone, appointment start time, and doctor identity/name. `IDENT_DEDUPE_WINDOW_MINUTES`
+sets the time window.
 
 Validation before export:
 
@@ -88,6 +92,10 @@ Leads:
 
 - `PlanStart`, `PlanEnd`, doctor fields, comment, form name, and UTM fields are read from configured lead custom field IDs.
 - `DateAndTime` uses `updated_at` by default so IDENT can pick up leads whose booking fields changed after creation.
+
+The standard appointment fields and feedback statuses can be created through
+`POST /api/amocrm/bootstrap`. Created/matched IDs are saved in runtime settings,
+which can be inspected and edited with `GET/POST /api/settings/amocrm`.
 
 ## Doctor and Branch Dictionaries
 
@@ -131,6 +139,10 @@ Default webhook events: `add_lead`, `update_lead`, `status_lead`.
 - `both`: use webhooks plus API backfill.
 
 After `GetTickets` returns an amoCRM ticket, the service can add a note to the lead and move it to `AMOCRM_SENT_STATUS_ID`. If a webhook lead cannot be converted because phone or full name is missing, the queue record becomes `failed`, and the service can add an error note plus move it to `AMOCRM_FAILED_STATUS_ID`.
+
+amoCRM API calls are paced through `AMOCRM_RATE_LIMIT_MIN_DELAY_MS` and retried
+on rate-limit/transient responses according to `AMOCRM_RATE_LIMIT_MAX_RETRIES`
+and `AMOCRM_RATE_LIMIT_RETRY_BASE_DELAY_MS`.
 
 ## Background Jobs
 
@@ -181,6 +193,7 @@ This key is stored in `data/amo-slots.json` so later schedule exports update the
 - Set `SERVICE_API_KEY` before exposing `/api/bookings`.
 - Prefer `STORAGE_DRIVER=sqlite` after the first smoke test; keep old JSON files as rollback backup.
 - Create amoCRM custom fields for appointment start/end, doctor ID/name, comment, and form name.
+- Or call `POST /api/amocrm/bootstrap` to create standard fields/statuses and save their IDs.
 - Check `/api/mappings` after the first schedule export and add doctor aliases/amoIds through `POST /api/mappings`.
 - Decide which amoCRM pipeline/status should be visible to IDENT and set `AMOCRM_PIPELINE_ID` / `AMOCRM_STATUS_ID`.
 - Back up `data/amocrm-token.json`; refresh tokens are single-use.

@@ -31,6 +31,10 @@ export function loadConfig(env = loadEnv()) {
       maxAttempts: intFromEnv(env.JOB_MAX_ATTEMPTS, 8),
       retryBaseDelayMs: intFromEnv(env.JOB_RETRY_BASE_DELAY_MS, 60_000)
     },
+    dedupe: {
+      enabled: parseBool(env.IDENT_DEDUPE_ENABLED, true),
+      windowMinutes: intFromEnv(env.IDENT_DEDUPE_WINDOW_MINUTES, 43_200)
+    },
     ident: {
       requireDoctorMapping: parseBool(env.IDENT_REQUIRE_DOCTOR_MAPPING, false)
     },
@@ -56,6 +60,11 @@ export function loadConfig(env = loadEnv()) {
       failedStatusId: optionalInt(env.AMOCRM_FAILED_STATUS_ID),
       createTag: env.AMOCRM_CREATE_TAG || 'IDENT',
       addNotes: parseBool(env.AMOCRM_ADD_NOTES, true),
+      rateLimit: {
+        minDelayMs: intFromEnv(env.AMOCRM_RATE_LIMIT_MIN_DELAY_MS, 250),
+        maxRetries: intFromEnv(env.AMOCRM_RATE_LIMIT_MAX_RETRIES, 3),
+        retryBaseDelayMs: intFromEnv(env.AMOCRM_RATE_LIMIT_RETRY_BASE_DELAY_MS, 1000)
+      },
       webhookEvents: listFromEnv(env.AMOCRM_WEBHOOK_EVENTS, ['add_lead', 'update_lead', 'status_lead']),
       syncTimetableToCatalog: parseBool(env.AMOCRM_SYNC_TIMETABLE_TO_CATALOG, false),
       timetableCatalogId: optionalInt(env.AMOCRM_TIMETABLE_CATALOG_ID),

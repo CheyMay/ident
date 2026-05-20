@@ -84,6 +84,8 @@ export async function buildDiagnostics({
       publicBaseUrlConfigured: Boolean(config.publicBaseUrl),
       serviceApiKeyConfigured: Boolean(config.serviceApiKey),
       corsAllowedOrigins: config.cors.allowedOrigins,
+      dedupeEnabled: config.dedupe.enabled,
+      dedupeWindowMinutes: config.dedupe.windowMinutes,
       storageDriver: config.storage.driver,
       jobWorkerEnabled: config.jobs.workerEnabled,
       jobWorkerIntervalMs: config.jobs.workerIntervalMs
@@ -115,6 +117,7 @@ export async function buildDiagnostics({
       tokenExpiresAt: token.expiresAt || null,
       baseUrl: token.baseUrl || config.amo.baseUrl || null,
       getTicketsSource: config.amo.getTicketsSource,
+      rateLimit: config.amo.rateLimit,
       webhookDestination: config.publicBaseUrl ? `${config.publicBaseUrl}/webhooks/amocrm` : null,
       webhookEvents: config.amo.webhookEvents,
       syncTimetableToCatalog: config.amo.syncTimetableToCatalog,

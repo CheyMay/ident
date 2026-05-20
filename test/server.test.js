@@ -459,6 +459,105 @@ test('previews and manually imports an amoCRM lead', async () => {
   });
 });
 
+test('stores runtime amoCRM settings and uses them for lead mapping', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const settingsResponse = await fetch(`${baseUrl}/api/settings/amocrm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amo: {
+              fields: { planStart: 1001 },
+              sentStatusId: 555,
+              rateLimit: { minDelayMs: 1, maxRetries: 1 }
+            },
+            dedupe: { enabled: true, windowMinutes: 60 }
+          })
+        });
+        assert.equal(settingsResponse.status, 200);
+        const settings = await settingsResponse.json();
+        assert.equal(settings.effective.amo.fields.planStart, 1001);
+        assert.equal(settings.effective.amo.sentStatusId, 555);
+        assert.equal(settings.effective.dedupe.enabled, true);
+
+        const previewResponse = await fetch(`${baseUrl}/api/amocrm/leads/preview?id=123`);
+        assert.equal(previewResponse.status, 200);
+        const preview = await previewResponse.json();
+        assert.equal(preview.validation.ticket.PlanStart, '2026-05-12T10:00:00+03:00');
+        assert.equal(preview.readyForIdent, true);
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_ACCESS_TOKEN: 'token-1',
+        AMOCRM_LONG_LIVED_TOKEN: 'true'
+      }
+    );
+  });
+});
+
+test('bootstraps amoCRM fields/statuses into runtime settings', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const bootstrapResponse = await fetch(`${baseUrl}/api/amocrm/bootstrap`, { method: 'POST' });
+        assert.equal(bootstrapResponse.status, 200);
+        const bootstrap = await bootstrapResponse.json();
+        assert.equal(bootstrap.settings.amo.pipelineId, 111);
+        assert.ok(bootstrap.settings.amo.fields.planStart);
+        assert.ok(bootstrap.settings.amo.fields.doctorName);
+        assert.equal(bootstrap.settings.amo.sentStatusId, 555);
+        assert.ok(bootstrap.settings.amo.failedStatusId);
+        assert.equal(bootstrap.fields.created.some((field) => field.key === 'doctorName'), true);
+        assert.equal(bootstrap.statuses.created.some((status) => status.key === 'failedStatusId'), true);
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_ACCESS_TOKEN: 'token-1',
+        AMOCRM_LONG_LIVED_TOKEN: 'true'
+      }
+    );
+  });
+});
+
+test('ignores duplicate amoCRM tickets by phone time and doctor', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const first = await fetch(`${baseUrl}/api/amocrm/leads/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leadId: 123 })
+        });
+        assert.equal(first.status, 200);
+        assert.equal((await first.json()).queued, true);
+
+        const second = await fetch(`${baseUrl}/api/amocrm/leads/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leadId: 124 })
+        });
+        assert.equal(second.status, 200);
+        const duplicate = await second.json();
+        assert.equal(duplicate.queued, false);
+        assert.equal(duplicate.record.status, 'ignored');
+        assert.match(duplicate.record.lastError, /Duplicate of amo:123/);
+
+        const queuedResponse = await fetch(`${baseUrl}/api/tickets?status=queued`);
+        assert.equal(queuedResponse.status, 200);
+        assert.equal((await queuedResponse.json()).records.length, 1);
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_ACCESS_TOKEN: 'token-1',
+        AMOCRM_LONG_LIVED_TOKEN: 'true',
+        AMOCRM_FIELD_PLAN_START_ID: '1001',
+        JOB_WORKER_ENABLED: 'false'
+      }
+    );
+  });
+});
+
 test('reports amoCRM schema and configured bindings', async () => {
   await withMockAmoServer(async ({ baseUrl: amoBaseUrl }) => {
     await withTestServer(
@@ -573,7 +672,7 @@ async function withMockAmoServer(callback) {
               _embedded: {
                 statuses: [
                   { id: 222, name: 'New appointment', sort: 10, pipeline_id: 111, type: 0 },
-                  { id: 555, name: 'Sent to IDENT', sort: 20, pipeline_id: 111, type: 0 }
+                  { id: 555, name: 'Передано в IDENT', sort: 20, pipeline_id: 111, type: 0 }
                 ]
               }
             }
@@ -601,10 +700,40 @@ async function withMockAmoServer(callback) {
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/v4/leads/123') {
+    if (req.method === 'POST' && url.pathname === '/api/v4/leads/custom_fields') {
+      const fields = JSON.parse(body || '[]');
       return sendMockJson(res, 200, {
-        id: 123,
-        name: 'Lead 123',
+        _embedded: {
+          custom_fields: fields.map((field, index) => ({
+            id: 2000 + index,
+            name: field.name,
+            type: field.type,
+            request_id: field.request_id
+          }))
+        }
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v4/leads/pipelines/111/statuses') {
+      const statuses = JSON.parse(body || '[]');
+      return sendMockJson(res, 200, {
+        _embedded: {
+          statuses: statuses.map((status, index) => ({
+            id: 7000 + index,
+            name: status.name,
+            pipeline_id: 111,
+            request_id: status.request_id
+          }))
+        }
+      });
+    }
+
+    const leadMatch = url.pathname.match(/^\/api\/v4\/leads\/(\d+)$/);
+    if (req.method === 'GET' && leadMatch) {
+      const leadId = Number(leadMatch[1]);
+      return sendMockJson(res, 200, {
+        id: leadId,
+        name: `Lead ${leadId}`,
         created_at: leadUpdatedAt,
         updated_at: leadUpdatedAt,
         custom_fields_values: [

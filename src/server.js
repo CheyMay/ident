@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { URL } from 'node:url';
+import { bootstrapAmoDefaults } from './amocrm/bootstrap.js';
 import { AmoClient } from './amocrm/client.js';
 import { buildAmoAuthorizeUrl, OAuthStateStore, verifyDisconnectSignature } from './amocrm/oauth.js';
 import { buildAmoSchemaReport } from './amocrm/schema.js';
@@ -22,15 +23,18 @@ import {
   validateIdentKey
 } from './ident/contracts.js';
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
+import { buildEffectiveConfig, SettingsStore } from './settings.js';
 import { AmoSlotStore, createStorage, IntegrationJobQueue, TicketQueue, WebhookLog } from './storage.js';
 
 export function buildApp(config, logger) {
+  const baseConfig = structuredClone(config);
   const storage = createStorage(config, logger);
   const ticketQueue = new TicketQueue(storage);
   const jobQueue = new IntegrationJobQueue(storage);
   const mappingStore = new MappingStore(storage);
   const slotStore = new AmoSlotStore(storage);
   const webhookLog = new WebhookLog(storage);
+  const settingsStore = new SettingsStore(storage);
   const oauthStateStore = new OAuthStateStore(storage);
   const tokenStore = new AmoTokenStore(
     config.amo.tokenFile,
@@ -64,6 +68,7 @@ export function buildApp(config, logger) {
     if (applyCors(req, res, config)) return;
 
     try {
+      await applyRuntimeSettings();
       if (req.method === 'GET' && url.pathname === '/health') {
         const token = await tokenStore.get();
         return sendJson(res, 200, {
@@ -159,7 +164,12 @@ export function buildApp(config, logger) {
           if (amoLead?.id) validation.ticket.Id = `amo:${amoLead.id}`;
         }
 
-        await ticketQueue.add(validation.ticket, { source: amoLead?.id ? 'api-booking-amo' : 'api-booking', amoLeadId: amoLead?.id || null });
+        await queueTicketWithDedupe({
+          ticketQueue,
+          ticket: validation.ticket,
+          meta: { source: amoLead?.id ? 'api-booking-amo' : 'api-booking', amoLeadId: amoLead?.id || null },
+          config
+        });
         logger.info('Booking queued for IDENT', { id: validation.ticket.Id, amoLeadId: amoLead?.id || null });
         return sendJson(res, 201, { ticket: validation.ticket, amoLeadId: amoLead?.id || null });
       }
@@ -216,6 +226,25 @@ export function buildApp(config, logger) {
         requireServiceApiKey(req, config);
         const body = await readJson(req);
         return sendJson(res, 200, await mappingStore.merge(body));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/settings/amocrm') {
+        requireServiceApiKey(req, config);
+        const settings = await settingsStore.get();
+        return sendJson(res, 200, {
+          settings,
+          effective: summarizeEffectiveSettings(config)
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/settings/amocrm') {
+        requireServiceApiKey(req, config);
+        const settings = await settingsStore.merge(await readJson(req));
+        await applyRuntimeSettings(settings);
+        return sendJson(res, 200, {
+          settings,
+          effective: summarizeEffectiveSettings(config)
+        });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/tickets/requeue') {
@@ -321,6 +350,14 @@ export function buildApp(config, logger) {
         return sendJson(res, 200, await buildAmoSchemaReport({ config, amoClient }));
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/amocrm/bootstrap') {
+        requireServiceApiKey(req, config);
+        if (!amoClient) return sendJson(res, 500, { error: 'amoCRM is not configured' });
+        const result = await bootstrapAmoDefaults({ config, amoClient, settingsStore });
+        await applyRuntimeSettings(result.settings);
+        return sendJson(res, 200, result);
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/amocrm/leads/preview') {
         requireServiceApiKey(req, config);
         if (!amoClient) return sendJson(res, 500, { error: 'amoCRM is not configured' });
@@ -389,6 +426,14 @@ export function buildApp(config, logger) {
   };
 
   return handle;
+
+  async function applyRuntimeSettings(settings = null) {
+    const currentSettings = settings || await settingsStore.get();
+    const effective = buildEffectiveConfig(baseConfig, currentSettings);
+    for (const key of Object.keys(effective)) config[key] = effective[key];
+    if (amoClient) amoClient.config = config;
+    return currentSettings;
+  }
 }
 
 export function startServer(config, logger) {
@@ -424,11 +469,16 @@ async function loadTicketsForIdent({ ticketQueue, mappingStore, jobQueue, amoCli
         config
       });
 
-      const record = await ticketQueue.upsert(preview.validation.ticket, {
-        source: 'amo-api',
-        externalId: String(lead.id),
-        amoLeadId: lead.id,
-        lastSourceEventAt: lead.updated_at ? new Date(lead.updated_at * 1000).toISOString() : null
+      const record = await queueTicketWithDedupe({
+        ticketQueue,
+        ticket: preview.validation.ticket,
+        meta: {
+          source: 'amo-api',
+          externalId: String(lead.id),
+          amoLeadId: lead.id,
+          lastSourceEventAt: lead.updated_at ? new Date(lead.updated_at * 1000).toISOString() : null
+        },
+        config
       });
 
       const validationError = ticketValidationError(preview.mapping, preview.validation);
@@ -455,11 +505,16 @@ async function hasAmoAccessToken(tokenStore) {
 
 async function syncAmoLeadIntoTicketQueue({ leadId, amoClient, ticketQueue, mappingStore, jobQueue, config, logger, source = 'amo-webhook' }) {
   const preview = await buildAmoLeadPreview({ leadId, amoClient, mappingStore, config });
-  const record = await ticketQueue.upsert(preview.validation.ticket, {
-    source,
-    externalId: String(leadId),
-    amoLeadId: leadId,
-    lastSourceEventAt: preview.lead.updatedAt || null
+  const record = await queueTicketWithDedupe({
+    ticketQueue,
+    ticket: preview.validation.ticket,
+    meta: {
+      source,
+      externalId: String(leadId),
+      amoLeadId: leadId,
+      lastSourceEventAt: preview.lead.updatedAt || null
+    },
+    config
   });
 
   const validationError = ticketValidationError(preview.mapping, preview.validation);
@@ -467,13 +522,51 @@ async function syncAmoLeadIntoTicketQueue({ leadId, amoClient, ticketQueue, mapp
     await ticketQueue.markFailed(record.id, validationError);
     logger.warn('amoCRM webhook lead skipped', { leadId, reason: validationError });
     if (record.changed || record.status !== 'failed') {
-        await enqueueAmoTicketFailed({ record, jobQueue, config, reason: validationError });
+      await enqueueAmoTicketFailed({ record, jobQueue, config, reason: validationError });
     }
     return { ticket: null, record: { ...record, status: 'failed', lastError: validationError }, preview };
   }
 
+  if (record.status === 'ignored') {
+    logger.info('amoCRM lead ignored as duplicate for IDENT', { leadId, ticketId: preview.validation.ticket.Id, reason: record.lastError });
+    return { ticket: null, record, preview };
+  }
+
   logger.info('amoCRM webhook lead queued for IDENT', { leadId, ticketId: preview.validation.ticket.Id });
   return { ticket: preview.validation.ticket, record, preview };
+}
+
+async function queueTicketWithDedupe({ ticketQueue, ticket, meta = {}, config }) {
+  if (!config.dedupe?.enabled) return ticketQueue.upsert(ticket, meta);
+  const duplicate = await ticketQueue.findDuplicate(ticket, {
+    excludeId: ticket.Id,
+    windowMinutes: config.dedupe.windowMinutes
+  });
+  if (!duplicate) return ticketQueue.upsert(ticket, meta);
+
+  return ticketQueue.upsert(ticket, {
+    ...meta,
+    status: 'ignored',
+    lastError: `Duplicate of ${duplicate.id}`
+  });
+}
+
+function summarizeEffectiveSettings(config) {
+  return {
+    amo: {
+      pipelineId: config.amo.pipelineId,
+      statusId: config.amo.statusId,
+      createPipelineId: config.amo.createPipelineId,
+      createStatusId: config.amo.createStatusId,
+      sentStatusId: config.amo.sentStatusId,
+      failedStatusId: config.amo.failedStatusId,
+      timetableCatalogId: config.amo.timetableCatalogId,
+      fields: config.amo.fields,
+      timetableFields: config.amo.timetableFields,
+      rateLimit: config.amo.rateLimit
+    },
+    dedupe: config.dedupe
+  };
 }
 
 async function buildAmoLeadPreview({ leadId, amoClient, mappingStore, config }) {

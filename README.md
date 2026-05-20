@@ -73,6 +73,15 @@ To pass appointment details from amoCRM leads to IDENT, create lead custom field
 
 `AMOCRM_FIELD_PLAN_START_ID` is the main field for appointment time. If `AMOCRM_FIELD_PLAN_END_ID` is empty, `AMOCRM_DEFAULT_APPOINTMENT_MINUTES` is used.
 
+After OAuth is completed, the service can create the standard IDENT fields and feedback statuses in amoCRM automatically:
+
+```bash
+curl -X POST "https://integration.example.ru/api/amocrm/bootstrap" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
+```
+
+The endpoint writes resulting IDs into runtime settings (`settings.json` or the SQLite `settings.json` key), so changing env variables is not required for the generated field/status IDs.
+
 Doctor mapping:
 
 - `PostTimeTable` automatically fills `data/mappings.json` with IDENT doctors and branches.
@@ -93,6 +102,13 @@ AMOCRM_GETTICKETS_SOURCE=both
 AMOCRM_SENT_STATUS_ID=
 AMOCRM_FAILED_STATUS_ID=
 AMOCRM_ADD_NOTES=true
+
+# Duplicate protection and amoCRM API pacing.
+IDENT_DEDUPE_ENABLED=true
+IDENT_DEDUPE_WINDOW_MINUTES=43200
+AMOCRM_RATE_LIMIT_MIN_DELAY_MS=250
+AMOCRM_RATE_LIMIT_MAX_RETRIES=3
+AMOCRM_RATE_LIMIT_RETRY_BASE_DELAY_MS=1000
 ```
 
 ## Run
@@ -196,7 +212,14 @@ curl -X POST "https://integration.example.ru/api/amocrm/webhooks/setup" \
   -H "X-API-Key: <SERVICE_API_KEY>"
 ```
 
-7. Inspect amoCRM schema and verify configured field/status IDs:
+7. Create default IDENT fields/statuses in amoCRM, then inspect the schema:
+
+```bash
+curl -X POST "https://integration.example.ru/api/amocrm/bootstrap" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
+```
+
+Then verify configured field/status IDs:
 
 ```bash
 curl "https://integration.example.ru/api/amocrm/schema" \
@@ -246,6 +269,7 @@ When `SQLITE_MIGRATE_JSON=true`, existing files from `DATA_DIR` are imported on 
 - `tickets.json`
 - `timetable.json`
 - `mappings.json`
+- `settings.json`
 - `amocrm-token.json`
 - `amocrm-webhooks.json`
 - `amo-slots.json`
@@ -386,7 +410,7 @@ Statuses:
 - `queued`: ready to be returned by `GetTickets`.
 - `sent_to_ident`: already returned by `GetTickets`.
 - `failed`: not enough data or processing error.
-- `ignored`: reserved for future business rules.
+- `ignored`: duplicate or intentionally skipped record; duplicate reason is stored in `lastError`.
 
 ### `GET /api/tickets/summary`
 
@@ -424,6 +448,25 @@ curl -X POST "https://integration.example.ru/api/mappings" \
 ```
 
 When a ticket is queued, the service resolves `DoctorId`/`DoctorName` against this dictionary and sends the official IDENT doctor data in `GetTickets`.
+
+### `GET /api/settings/amocrm`
+
+Returns runtime amoCRM/dedupe settings and the effective values after env defaults are applied.
+
+### `POST /api/settings/amocrm`
+
+Merges runtime settings without restarting the service:
+
+```bash
+curl -X POST "https://integration.example.ru/api/settings/amocrm" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <SERVICE_API_KEY>" \
+  -d "{\"amo\":{\"fields\":{\"planStart\":12345},\"sentStatusId\":555},\"dedupe\":{\"enabled\":true,\"windowMinutes\":43200}}"
+```
+
+### `POST /api/amocrm/bootstrap`
+
+Creates missing standard lead custom fields and feedback statuses in amoCRM, stores their IDs in runtime settings, and returns created/matched objects.
 
 ## Ticket Validation
 
@@ -527,6 +570,7 @@ In `json` mode, runtime state is stored under `./data`:
 - `timetable.json` latest IDENT schedule export.
 - `tickets.json` local ticket queue with status, fingerprint, sent time, attempt count, and last error.
 - `mappings.json` IDENT doctor/branch dictionaries plus amoCRM aliases and IDs.
+- `settings.json` runtime amoCRM field/status IDs, rate limit settings, and duplicate controls.
 - `amocrm-token.json` refreshed OAuth token pair.
 - `amocrm-webhooks.json` recent amoCRM webhook payloads.
 - `amo-slots.json` mapping between IDENT schedule slots and amoCRM catalog element IDs.

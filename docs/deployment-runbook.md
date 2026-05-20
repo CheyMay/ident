@@ -44,6 +44,9 @@ AMOCRM_REDIRECT_URI=https://integration.example.ru/oauth/amocrm/callback
 
 Use `IDENT_REQUIRE_DOCTOR_MAPPING=true` after doctors are mapped. For the first
 schedule import it can stay `false` until `mappings.json` is populated.
+Keep `IDENT_DEDUPE_ENABLED=true` for production so the same phone, appointment
+time, and doctor are exported to IDENT only once inside the configured
+`IDENT_DEDUPE_WINDOW_MINUTES` window.
 
 `CORS_ALLOWED_ORIGINS` is needed only for browser requests from the amoCRM
 widget. For a narrower production policy, replace the wildcard with the exact
@@ -162,7 +165,16 @@ The target state before enabling live data is:
 
 ## amoCRM Schema Check
 
-After OAuth is completed, use the schema endpoint to collect real field,
+After OAuth is completed, create the standard IDENT lead fields and feedback
+statuses:
+
+```bash
+curl -X POST "https://integration.example.ru/api/amocrm/bootstrap" \
+  -H "X-API-Key: <service-key>"
+```
+
+The bootstrap endpoint stores created/matched field and status IDs in runtime
+settings. Then use the schema endpoint to collect or verify real field,
 pipeline, status, and catalog IDs:
 
 ```bash
@@ -232,8 +244,9 @@ npm run state:export
 ```
 
 By default the export includes the amoCRM OAuth token, ticket queue, mappings,
-latest timetable, job queue, webhook log, and slot mappings. Treat backup files
-as secrets and personal data. To make a sanitized export without the OAuth token:
+runtime settings, latest timetable, job queue, webhook log, and slot mappings.
+Treat backup files as secrets and personal data. To make a sanitized export
+without the OAuth token:
 
 ```bash
 STATE_INCLUDE_SECRETS=false npm run state:export
@@ -273,9 +286,10 @@ JSON because it stores logical state keys, not raw database files.
 3. Restart service.
 4. Run `/health`.
 5. Run `/api/diagnostics`.
-6. Run `/api/amocrm/schema` after OAuth or field changes.
-7. Run `/api/amocrm/leads/preview?id=<lead-id>` on a real test lead.
-8. Run safe `npm run smoke`.
-9. Check failed jobs and tickets.
-10. Register or verify amoCRM webhooks after OAuth changes.
-11. Confirm IDENT receives `GetTickets` and sends `PostTimeTable`.
+6. Run `/api/amocrm/bootstrap` after OAuth on a new account.
+7. Run `/api/amocrm/schema` after OAuth or field changes.
+8. Run `/api/amocrm/leads/preview?id=<lead-id>` on a real test lead.
+9. Run safe `npm run smoke`.
+10. Check failed jobs and tickets.
+11. Register or verify amoCRM webhooks after OAuth changes.
+12. Confirm IDENT receives `GetTickets` and sends `PostTimeTable`.

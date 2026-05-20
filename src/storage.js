@@ -173,10 +173,11 @@ export class TicketQueue {
     const records = await this.records();
     const now = new Date().toISOString();
     const fingerprint = ticketFingerprint(ticket);
+    const duplicateKey = ticketDuplicateKey(ticket);
     const index = records.findIndex((record) => record.id === ticket.Id);
     const existing = index === -1 ? null : records[index];
     const changed = !existing || existing.fingerprint !== fingerprint;
-    const status = changed ? 'queued' : existing.status;
+    const status = meta.status || (changed ? 'queued' : existing.status);
 
     const record = {
       id: ticket.Id,
@@ -186,12 +187,13 @@ export class TicketQueue {
       status,
       ticket,
       fingerprint,
+      duplicateKey,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       queuedAt: changed ? now : existing?.queuedAt || now,
       sentAt: changed ? null : existing?.sentAt || null,
       sentCount: existing?.sentCount || 0,
-      lastError: changed ? null : existing?.lastError || null,
+      lastError: meta.lastError || (changed ? null : existing?.lastError || null),
       lastSourceEventAt: meta.lastSourceEventAt || existing?.lastSourceEventAt || null
     };
 
@@ -200,6 +202,23 @@ export class TicketQueue {
 
     await this.writeRecords(records);
     return { ...record, changed };
+  }
+
+  async findDuplicate(ticket, options = {}) {
+    const duplicateKey = ticketDuplicateKey(ticket);
+    if (!duplicateKey) return null;
+    const excludeId = options.excludeId ? String(options.excludeId) : '';
+    const windowMs = Number(options.windowMinutes || 0) * 60 * 1000;
+    const threshold = windowMs ? Date.now() - windowMs : 0;
+
+    return (await this.records()).find((record) => {
+      if (excludeId && record.id === excludeId) return false;
+      if (!['queued', 'sent_to_ident'].includes(record.status)) return false;
+      if (record.duplicateKey !== duplicateKey) return false;
+      if (!threshold) return true;
+      const updatedAt = new Date(record.updatedAt || record.createdAt || 0).getTime();
+      return Number.isFinite(updatedAt) && updatedAt >= threshold;
+    }) || null;
   }
 
   async markSent(ids) {
@@ -440,6 +459,7 @@ function normalizeRecord(record) {
     status: normalizeStatus(record.status),
     ticket,
     fingerprint,
+    duplicateKey: record.duplicateKey || ticketDuplicateKey(ticket),
     createdAt: record.createdAt || now,
     updatedAt: record.updatedAt || now,
     queuedAt: record.queuedAt || record.createdAt || now,
@@ -457,6 +477,21 @@ function normalizeStatus(status) {
 function ticketFingerprint(ticket) {
   const { DateAndTime, ...meaningfulTicket } = ticket;
   return crypto.createHash('sha256').update(stableStringify(meaningfulTicket)).digest('hex');
+}
+
+function ticketDuplicateKey(ticket) {
+  const phone = normalizeDuplicateText(ticket.ClientPhone);
+  const planStart = normalizeDuplicateText(ticket.PlanStart || ticket.DateAndTime);
+  const doctor = normalizeDuplicateText(ticket.DoctorId || ticket.DoctorName);
+  if (!phone || !planStart) return '';
+  return crypto
+    .createHash('sha256')
+    .update(stableStringify({ phone, planStart, doctor }))
+    .digest('hex');
+}
+
+function normalizeDuplicateText(value) {
+  return String(value || '').toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
 function stableStringify(value) {
