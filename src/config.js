@@ -13,6 +13,11 @@ export function loadConfig(env = loadEnv()) {
     rootDir,
     port: intFromEnv(env.PORT, 8080),
     publicBaseUrl: trimSlash(env.PUBLIC_BASE_URL || ''),
+    cors: {
+      allowedOrigins: listFromEnv(env.CORS_ALLOWED_ORIGINS, ['https://*.amocrm.ru']),
+      allowedMethods: listFromEnv(env.CORS_ALLOWED_METHODS, ['GET', 'POST', 'OPTIONS']),
+      allowedHeaders: listFromEnv(env.CORS_ALLOWED_HEADERS, ['Content-Type', 'X-API-Key', 'IDENT-Integration-Key'])
+    },
     dataDir,
     storage: {
       driver: pickOne(env.STORAGE_DRIVER, ['json', 'sqlite'], 'json'),

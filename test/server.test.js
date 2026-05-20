@@ -80,6 +80,47 @@ test('accepts IDENT timetable and exposes free slots', async () => {
   });
 });
 
+test('allows amoCRM widget CORS preflight and API requests', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const preflight = await fetch(`${baseUrl}/api/diagnostics`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://code9.amocrm.ru',
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'X-API-Key'
+        }
+      });
+
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://code9.amocrm.ru');
+      assert.match(preflight.headers.get('access-control-allow-headers'), /X-API-Key/);
+
+      const diagnostics = await fetch(`${baseUrl}/api/diagnostics`, {
+        headers: {
+          Origin: 'https://code9.amocrm.ru',
+          'X-API-Key': 'service-key'
+        }
+      });
+
+      assert.equal(diagnostics.status, 200);
+      assert.equal(diagnostics.headers.get('access-control-allow-origin'), 'https://code9.amocrm.ru');
+
+      const rejected = await fetch(`${baseUrl}/api/diagnostics`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://evil.example',
+          'Access-Control-Request-Method': 'GET'
+        }
+      });
+
+      assert.equal(rejected.status, 403);
+      assert.equal(rejected.headers.get('access-control-allow-origin'), null);
+    },
+    { SERVICE_API_KEY: 'service-key' }
+  );
+});
+
 test('syncs doctor mappings from timetable and resolves booking aliases', async () => {
   await withTestServer(async ({ baseUrl }) => {
     const timetableResponse = await fetch(`${baseUrl}/PostTimeTable`, {

@@ -83,6 +83,7 @@ export async function buildDiagnostics({
     config: {
       publicBaseUrlConfigured: Boolean(config.publicBaseUrl),
       serviceApiKeyConfigured: Boolean(config.serviceApiKey),
+      corsAllowedOrigins: config.cors.allowedOrigins,
       storageDriver: config.storage.driver,
       jobWorkerEnabled: config.jobs.workerEnabled,
       jobWorkerIntervalMs: config.jobs.workerIntervalMs

@@ -31,6 +31,7 @@ PORT=8080
 IDENT_INTEGRATION_KEY=replace-with-random-secret
 IDENT_REQUIRE_DOCTOR_MAPPING=false
 STORAGE_DRIVER=json
+CORS_ALLOWED_ORIGINS=https://*.amocrm.ru
 ```
 
 Minimal amoCRM setup with a long-lived token:
@@ -122,6 +123,15 @@ The response includes:
 - amoCRM token/webhook/field status.
 - ticket and job summaries.
 - latest stored amoCRM webhook metadata.
+
+For the optional amoCRM browser widget, keep CORS enabled for amoCRM account
+domains:
+
+```bash
+CORS_ALLOWED_ORIGINS=https://*.amocrm.ru
+CORS_ALLOWED_METHODS=GET,POST,OPTIONS
+CORS_ALLOWED_HEADERS=Content-Type,X-API-Key,IDENT-Integration-Key
+```
 
 ## First Deployment
 

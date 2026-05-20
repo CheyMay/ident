@@ -33,6 +33,7 @@ PUBLIC_BASE_URL=https://integration.example.ru
 DATA_DIR=/opt/ident-amocrm/data
 STORAGE_DRIVER=sqlite
 SQLITE_FILE=/opt/ident-amocrm/data/integration.sqlite
+CORS_ALLOWED_ORIGINS=https://*.amocrm.ru
 IDENT_INTEGRATION_KEY=<strong-random-secret>
 SERVICE_API_KEY=<strong-random-secret>
 AMOCRM_BASE_URL=https://example.amocrm.ru
@@ -43,6 +44,10 @@ AMOCRM_REDIRECT_URI=https://integration.example.ru/oauth/amocrm/callback
 
 Use `IDENT_REQUIRE_DOCTOR_MAPPING=true` after doctors are mapped. For the first
 schedule import it can stay `false` until `mappings.json` is populated.
+
+`CORS_ALLOWED_ORIGINS` is needed only for browser requests from the amoCRM
+widget. For a narrower production policy, replace the wildcard with the exact
+account origin, for example `https://code9.amocrm.ru`.
 
 ## systemd
 

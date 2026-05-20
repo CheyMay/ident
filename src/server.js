@@ -61,6 +61,7 @@ export function buildApp(config, logger) {
 
   async function handle(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (applyCors(req, res, config)) return;
 
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
@@ -713,6 +714,49 @@ function sendJson(res, status, body) {
     'Content-Length': Buffer.byteLength(payload)
   });
   res.end(payload);
+}
+
+function applyCors(req, res, config) {
+  const origin = req.headers.origin;
+  const allowedOrigin = resolveAllowedCorsOrigin(origin, config);
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Methods', config.cors.allowedMethods.join(', '));
+    res.setHeader('Access-Control-Allow-Headers', config.cors.allowedHeaders.join(', '));
+    res.setHeader('Access-Control-Max-Age', '600');
+    res.setHeader('Vary', 'Origin');
+  }
+
+  if (req.method !== 'OPTIONS') return false;
+  if (!origin) {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+  if (!allowedOrigin) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('CORS origin is not allowed');
+    return true;
+  }
+  res.writeHead(204);
+  res.end();
+  return true;
+}
+
+function resolveAllowedCorsOrigin(origin, config) {
+  if (!origin) return '';
+  return config.cors.allowedOrigins.some((pattern) => originMatchesPattern(origin, pattern)) ? origin : '';
+}
+
+function originMatchesPattern(origin, pattern) {
+  const normalizedPattern = String(pattern || '').trim();
+  if (!normalizedPattern) return false;
+  if (normalizedPattern === '*') return true;
+  if (normalizedPattern === origin) return true;
+  const escaped = normalizedPattern
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '[^.:/]+');
+  return new RegExp(`^${escaped}$`, 'i').test(origin);
 }
 
 function sendText(res, status, body) {
