@@ -595,6 +595,69 @@ test('reports amoCRM schema and configured bindings', async () => {
   });
 });
 
+test('syncs IDENT timetable slots to amoCRM catalog', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl, requests }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const timetableResponse = await fetch(`${baseUrl}/PostTimeTable`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'IDENT-Integration-Key': 'test-ident-key'
+          },
+          body: JSON.stringify({
+            Doctors: [{ Id: 2129, Name: 'Doctor Official' }],
+            Branches: [{ Id: 1, Name: 'Main Branch' }],
+            Intervals: [
+              {
+                DoctorId: 2129,
+                BranchId: 1,
+                StartDateTime: '2026-05-12T10:00:00+03:00',
+                LengthInMinutes: 60,
+                IsBusy: false
+              },
+              {
+                DoctorId: 2129,
+                BranchId: 1,
+                StartDateTime: '2026-05-12T11:00:00+03:00',
+                LengthInMinutes: 60,
+                IsBusy: true
+              }
+            ]
+          })
+        });
+        assert.equal(timetableResponse.status, 200);
+
+        const syncResponse = await fetch(`${baseUrl}/api/amocrm/timetable/sync`, { method: 'POST' });
+        assert.equal(syncResponse.status, 200);
+        const sync = await syncResponse.json();
+        assert.equal(sync.enabled, true);
+        assert.equal(sync.created, 1);
+        assert.equal(sync.updated, 0);
+        assert.equal(sync.skipped, 1);
+
+        const createRequest = requests.find((request) => request.method === 'POST' && request.url === '/api/v4/catalogs/999/elements');
+        assert.ok(createRequest);
+        const elements = JSON.parse(createRequest.body);
+        assert.equal(elements.length, 1);
+        assert.equal(elements[0].request_id, '1:2129:2026-05-12T10:00:00+03:00');
+        assert.match(elements[0].name, /Doctor Official/);
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_ACCESS_TOKEN: 'token-1',
+        AMOCRM_LONG_LIVED_TOKEN: 'true',
+        AMOCRM_SYNC_TIMETABLE_TO_CATALOG: 'true',
+        AMOCRM_TIMETABLE_CATALOG_ID: '999',
+        AMOCRM_SLOT_FIELD_START_ID: '2001',
+        AMOCRM_SLOT_FIELD_DOCTOR_NAME_ID: '2004',
+        AMOCRM_SLOT_FIELD_BRANCH_NAME_ID: '2006',
+        AMOCRM_SLOT_FIELD_IDENT_KEY_ID: '2008'
+      }
+    );
+  });
+});
+
 async function withTestServer(callback, env = {}) {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });
@@ -696,6 +759,19 @@ async function withMockAmoServer(callback) {
             { id: 2001, name: 'Slot start', type: 'date_time', sort: 10 },
             { id: 2008, name: 'IDENT slot key', type: 'text', sort: 80 }
           ]
+        }
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v4/catalogs/999/elements') {
+      const elements = JSON.parse(body || '[]');
+      return sendMockJson(res, 200, {
+        _embedded: {
+          elements: elements.map((element, index) => ({
+            id: 8000 + index,
+            name: element.name,
+            request_id: element.request_id
+          }))
         }
       });
     }
