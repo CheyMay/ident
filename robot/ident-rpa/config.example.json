@@ -1,0 +1,119 @@
+{
+  "backend": {
+    "baseUrl": "https://ident.code9dev.ru",
+    "serviceApiKey": "PASTE_SERVICE_API_KEY_HERE",
+    "ticketStatus": "queued"
+  },
+  "ident": {
+    "processName": "",
+    "windowTitleRegex": "IDENT"
+  },
+  "inspect": {
+    "maxDepth": 7,
+    "outputPath": "C:\\ident-rpa\\ui-tree.json"
+  },
+  "logDir": "C:\\ident-rpa\\logs",
+  "pollIntervalSeconds": 30,
+  "selectors": {
+    "requestsSection": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "newAppointmentButton": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "patientPhoneInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "patientNameInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "doctorInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "startTimeInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "commentInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "saveButton": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    }
+  },
+  "workflow": {
+    "allowUnsafeExecution": false,
+    "confirmBeforeEachStep": true,
+    "stepDelayMs": 600,
+    "steps": [
+      {
+        "name": "open_requests_or_calendar",
+        "action": "click",
+        "selector": "requestsSection"
+      },
+      {
+        "name": "new_appointment",
+        "action": "click",
+        "selector": "newAppointmentButton"
+      },
+      {
+        "name": "set_patient_phone",
+        "action": "setText",
+        "selector": "patientPhoneInput",
+        "valueFrom": "ticket.ClientPhone"
+      },
+      {
+        "name": "set_patient_name",
+        "action": "setText",
+        "selector": "patientNameInput",
+        "valueFrom": "ticket.ClientFullName"
+      },
+      {
+        "name": "set_doctor",
+        "action": "setText",
+        "selector": "doctorInput",
+        "valueFrom": "ticket.DoctorName"
+      },
+      {
+        "name": "set_start_time",
+        "action": "setText",
+        "selector": "startTimeInput",
+        "valueFrom": "ticket.PlanStart"
+      },
+      {
+        "name": "set_comment",
+        "action": "setText",
+        "selector": "commentInput",
+        "valueFrom": "ticket.Comment"
+      },
+      {
+        "name": "save",
+        "action": "click",
+        "selector": "saveButton"
+      }
+    ]
+  }
+}

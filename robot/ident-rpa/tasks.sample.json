@@ -1,0 +1,22 @@
+{
+  "records": [
+    {
+      "id": "amo:123456",
+      "status": "queued",
+      "source": "api-booking-amo",
+      "amoLeadId": 123456,
+      "ticket": {
+        "Id": "amo:123456",
+        "DateAndTime": "2026-07-17T09:00:00+03:00",
+        "ClientPhone": "79790453227",
+        "ClientFullName": "Тестовый Пациент",
+        "FormName": "amoCRM",
+        "PlanStart": "2026-07-17T15:00:00+03:00",
+        "PlanEnd": "2026-07-17T16:00:00+03:00",
+        "DoctorId": 1,
+        "DoctorName": "Тестовый врач",
+        "Comment": "Тестовая заявка для dry-run RPA"
+      }
+    }
+  ]
+}

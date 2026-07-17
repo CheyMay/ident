@@ -3,6 +3,9 @@
 !.env.example
 
 data/
+robot/ident-rpa/config.local.json
+robot/ident-rpa/logs/
+robot/ident-rpa/ui-tree.json
 backups/
 
 node_modules/
