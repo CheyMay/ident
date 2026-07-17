@@ -22,11 +22,16 @@ import {
   normalizeTimeTablePayload,
   validateIdentKey
 } from './ident/contracts.js';
+import {
+  createIdentDbClient,
+  defaultIdentDbMapping,
+  normalizeIdentDbMapping
+} from './ident/db-client.js';
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
 import { buildEffectiveConfig, SettingsStore } from './settings.js';
 import { AmoSlotStore, createStorage, IntegrationJobQueue, TicketQueue, WebhookLog } from './storage.js';
 
-export function buildApp(config, logger) {
+export function buildApp(config, logger, options = {}) {
   const baseConfig = structuredClone(config);
   const storage = createStorage(config, logger);
   const ticketQueue = new TicketQueue(storage);
@@ -36,6 +41,7 @@ export function buildApp(config, logger) {
   const webhookLog = new WebhookLog(storage);
   const settingsStore = new SettingsStore(storage);
   const oauthStateStore = new OAuthStateStore(storage);
+  const identDbClient = options.identDbClient || createIdentDbClient(config, logger);
   const tokenStore = new AmoTokenStore(
     config.amo.tokenFile,
     {
@@ -141,8 +147,69 @@ export function buildApp(config, logger) {
           ticketQueue,
           jobQueue,
           mappingStore,
+          identDbClient,
           amoClient
         }));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ident-db/status') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, await getIdentDbStatus({ identDbClient }));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ident-db/schema') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, await identDbClient.getSchema());
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ident-db/table') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, await identDbClient.getTableRows({
+          schema: url.searchParams.get('schema') || 'dbo',
+          table: url.searchParams.get('table') || '',
+          limit: url.searchParams.get('limit') || undefined
+        }));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ident-db/mapping') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, await getIdentDbMapping(storage));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/ident-db/mapping') {
+        requireServiceApiKey(req, config);
+        const mapping = normalizeIdentDbMapping(await readJson(req));
+        await storage.writeJson('ident-db-mapping.json', mapping);
+        return sendJson(res, 200, mapping);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/ident-db/preview') {
+        requireServiceApiKey(req, config);
+        const mapping = await getIdentDbMapping(storage);
+        return sendJson(res, 200, await identDbClient.previewTimetable(mapping));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/ident-db/sync') {
+        requireServiceApiKey(req, config);
+        const mapping = await getIdentDbMapping(storage);
+        const preview = await identDbClient.previewTimetable(mapping);
+        await storage.writeJson('timetable.json', {
+          ...preview.timetable,
+          source: 'ident-db',
+          syncedAt: new Date().toISOString()
+        });
+        await mappingStore.syncFromTimetable(preview.timetable);
+        if (config.amo.syncTimetableToCatalog) {
+          await jobQueue.enqueue('amocrm.timetable_sync', {}, {
+            dedupeKey: 'amocrm.timetable_sync',
+            maxAttempts: config.jobs.maxAttempts
+          });
+        }
+        return sendJson(res, 200, {
+          source: 'ident-db',
+          syncedAt: new Date().toISOString(),
+          timetable: preview.timetable
+        });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/bookings') {
@@ -549,6 +616,45 @@ async function queueTicketWithDedupe({ ticketQueue, ticket, meta = {}, config })
     status: 'ignored',
     lastError: `Duplicate of ${duplicate.id}`
   });
+}
+
+async function getIdentDbStatus({ identDbClient }) {
+  const summary = identDbClient.summary();
+  if (!summary.enabled || !summary.configured) {
+    return {
+      ok: false,
+      ready: false,
+      status: summary.enabled ? 'not_configured' : 'disabled',
+      connection: summary,
+      checkedAt: new Date().toISOString()
+    };
+  }
+
+  try {
+    const connection = await identDbClient.testConnection();
+    return {
+      ok: Boolean(connection.ok),
+      ready: Boolean(connection.ok),
+      status: connection.ok ? 'ok' : 'error',
+      connection: {
+        ...summary,
+        ...connection
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      ready: false,
+      status: 'error',
+      connection: summary,
+      error: error.message,
+      checkedAt: new Date().toISOString()
+    };
+  }
+}
+
+async function getIdentDbMapping(storage) {
+  return normalizeIdentDbMapping(await storage.readJson('ident-db-mapping.json', defaultIdentDbMapping()));
 }
 
 function summarizeEffectiveSettings(config) {

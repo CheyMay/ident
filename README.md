@@ -9,9 +9,10 @@ Current scope:
 - `POST /api/bookings` creates a booking through this service, optionally creates an amoCRM lead, and queues the same booking for IDENT.
 - `GET /oauth/amocrm/callback` completes amoCRM OAuth installation and stores tokens.
 - `POST /webhooks/amocrm` receives amoCRM lead webhooks and queues changed leads for IDENT.
+- Optional read-only SQL Server access to IDENT DB for pilot schedule/data discovery.
 - Optional schedule sync from IDENT to an amoCRM catalog.
 
-The service has no external npm dependencies.
+The service uses `mssql` only for the optional read-only IDENT DB connector.
 
 ## Requirements
 
@@ -109,6 +110,48 @@ IDENT_DEDUPE_WINDOW_MINUTES=43200
 AMOCRM_RATE_LIMIT_MIN_DELAY_MS=250
 AMOCRM_RATE_LIMIT_MAX_RETRIES=3
 AMOCRM_RATE_LIMIT_RETRY_BASE_DELAY_MS=1000
+```
+
+Optional read-only IDENT DB pilot setup:
+
+```bash
+IDENT_DB_ENABLED=true
+IDENT_DB_DRIVER=sqlserver
+IDENT_DB_SERVER=192.168.100.7
+IDENT_DB_PORT=1433
+# IDENT_DB_INSTANCE_NAME=SQLEXPRESS
+IDENT_DB_DATABASE=IDENT
+IDENT_DB_USER=readonly_user
+IDENT_DB_PASSWORD=...
+IDENT_DB_ENCRYPT=false
+IDENT_DB_TRUST_SERVER_CERTIFICATE=true
+```
+
+This connector never writes to IDENT DB. It is used to inspect tables, store a
+read-only SQL mapping, and build the same timetable contract that `PostTimeTable`
+uses:
+
+```bash
+curl "https://integration.example.ru/api/ident-db/status" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
+
+curl "https://integration.example.ru/api/ident-db/schema" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
+
+curl -X POST "https://integration.example.ru/api/ident-db/mapping" \
+  -H "X-API-Key: <SERVICE_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "doctorsSql": "SELECT Id, Name FROM dbo.Doctors",
+    "branchesSql": "SELECT Id, Name FROM dbo.Branches",
+    "intervalsSql": "SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule"
+  }'
+
+curl "https://integration.example.ru/api/ident-db/preview" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
+
+curl -X POST "https://integration.example.ru/api/ident-db/sync" \
+  -H "X-API-Key: <SERVICE_API_KEY>"
 ```
 
 ## Run

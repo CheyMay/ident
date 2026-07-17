@@ -5,6 +5,7 @@ export async function buildDiagnostics({
   ticketQueue,
   jobQueue,
   mappingStore,
+  identDbClient,
   amoClient
 }) {
   const [token, timetable, tickets, jobs, mappings, webhooks] = await Promise.all([
@@ -68,6 +69,27 @@ export async function buildDiagnostics({
     'amocrm_plan_start_field_missing',
     'AMOCRM_FIELD_PLAN_START_ID is not configured; imported leads will not carry planned appointment time'
   );
+  addIssue(
+    issues,
+    config.identDb.enabled && !config.identDb.server,
+    'error',
+    'ident_db_server_missing',
+    'IDENT_DB_ENABLED is true, but IDENT_DB_SERVER is empty'
+  );
+  addIssue(
+    issues,
+    config.identDb.enabled && !config.identDb.database,
+    'error',
+    'ident_db_database_missing',
+    'IDENT_DB_ENABLED is true, but IDENT_DB_DATABASE is empty'
+  );
+  addIssue(
+    issues,
+    config.identDb.enabled && !config.identDb.user,
+    'error',
+    'ident_db_user_missing',
+    'IDENT_DB_ENABLED is true, but IDENT_DB_USER is empty'
+  );
 
   const status = issues.some((issue) => issue.severity === 'error')
     ? 'error'
@@ -109,6 +131,11 @@ export async function buildDiagnostics({
         doctors: mappings.doctors.length,
         branches: mappings.branches.length
       }
+    },
+    identDb: {
+      enabled: config.identDb.enabled,
+      configured: Boolean(identDbClient?.configured?.()),
+      connection: identDbClient?.summary?.() || null
     },
     amoCRM: {
       clientConfigured: Boolean(amoClient),

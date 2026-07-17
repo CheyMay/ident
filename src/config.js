@@ -38,6 +38,21 @@ export function loadConfig(env = loadEnv()) {
     ident: {
       requireDoctorMapping: parseBool(env.IDENT_REQUIRE_DOCTOR_MAPPING, false)
     },
+    identDb: {
+      enabled: parseBool(env.IDENT_DB_ENABLED, false),
+      driver: pickOne(env.IDENT_DB_DRIVER, ['sqlserver'], 'sqlserver'),
+      server: env.IDENT_DB_SERVER || '',
+      port: intFromEnv(env.IDENT_DB_PORT, 1433),
+      instanceName: env.IDENT_DB_INSTANCE_NAME || '',
+      database: env.IDENT_DB_DATABASE || '',
+      user: env.IDENT_DB_USER || '',
+      password: env.IDENT_DB_PASSWORD || '',
+      encrypt: parseBool(env.IDENT_DB_ENCRYPT, false),
+      trustServerCertificate: parseBool(env.IDENT_DB_TRUST_SERVER_CERTIFICATE, true),
+      requestTimeoutMs: intFromEnv(env.IDENT_DB_REQUEST_TIMEOUT_MS, 30_000),
+      connectTimeoutMs: intFromEnv(env.IDENT_DB_CONNECT_TIMEOUT_MS, 15_000),
+      maxRows: intFromEnv(env.IDENT_DB_MAX_ROWS, 100)
+    },
     identIntegrationKey: env.IDENT_INTEGRATION_KEY || '',
     serviceApiKey: env.SERVICE_API_KEY || '',
     amo: {

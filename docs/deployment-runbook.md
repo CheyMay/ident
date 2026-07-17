@@ -42,6 +42,20 @@ AMOCRM_CLIENT_SECRET=<client-secret>
 AMOCRM_REDIRECT_URI=https://integration.example.ru/oauth/amocrm/callback
 ```
 
+For the read-only IDENT DB pilot, also set:
+
+```bash
+IDENT_DB_ENABLED=true
+IDENT_DB_SERVER=<sql-server-ip-or-host>
+IDENT_DB_PORT=1433
+# IDENT_DB_INSTANCE_NAME=SQLEXPRESS
+IDENT_DB_DATABASE=<ident-database-name>
+IDENT_DB_USER=readonly_user
+IDENT_DB_PASSWORD=<readonly-password>
+IDENT_DB_ENCRYPT=false
+IDENT_DB_TRUST_SERVER_CERTIFICATE=true
+```
+
 Use `IDENT_REQUIRE_DOCTOR_MAPPING=true` after doctors are mapped. For the first
 schedule import it can stay `false` until `mappings.json` is populated.
 Keep `IDENT_DEDUPE_ENABLED=true` for production so the same phone, appointment
