@@ -17,6 +17,9 @@ param(
     [Parameter(ParameterSetName = 'Push')]
     [switch]$Push,
 
+    [Parameter(ParameterSetName = 'AutoConfigureSql')]
+    [switch]$AutoConfigureSql,
+
     [Parameter(ParameterSetName = 'SelfTest')]
     [switch]$SelfTest
 )
@@ -239,6 +242,386 @@ function Find-SqlBrowserInstances {
     }
     finally {
         $client.Close()
+    }
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [object]$Object,
+        [string[]]$Names
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    foreach ($name in $Names) {
+        $property = $Object.PSObject.Properties | Where-Object { $_.Name -ieq $name } | Select-Object -First 1
+        if ($null -ne $property -and $null -ne $property.Value) {
+            return $property.Value
+        }
+    }
+    return $null
+}
+
+function Find-IdentSqlConnections {
+    $connections = @()
+    try {
+        $identProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProcessName -match '(?i)ident' -or $_.MainWindowTitle -match '(?i)ident'
+        })
+        foreach ($process in $identProcesses) {
+            $processConnections = @(Get-NetTCPConnection -OwningProcess $process.Id -State Established -ErrorAction SilentlyContinue)
+            foreach ($connection in $processConnections) {
+                if (
+                    [string]::IsNullOrWhiteSpace([string]$connection.RemoteAddress) -or
+                    [int]$connection.RemotePort -le 0 -or
+                    [int]$connection.RemotePort -in @(53, 80, 443)
+                ) {
+                    continue
+                }
+                $connections += [pscustomobject]@{
+                    Server = [string]$connection.RemoteAddress
+                    Port = [int]$connection.RemotePort
+                    ProcessName = [string]$process.ProcessName
+                }
+            }
+        }
+    }
+    catch {
+        return @()
+    }
+    return @($connections | Sort-Object Server, Port -Unique)
+}
+
+function Get-SqlEndpointCandidates {
+    param([pscustomobject]$Context)
+
+    $server = [string]$Context.Config.sql.server
+    $configuredPort = [int]$Context.Config.sql.port
+    $configuredInstance = [string]$Context.Config.sql.instanceName
+    $candidates = @()
+
+    foreach ($connection in @(Find-IdentSqlConnections)) {
+        $candidates += [pscustomobject]@{
+            Server = [string]$connection.Server
+            InstanceName = ''
+            Port = [int]$connection.Port
+            DataSource = "tcp:$($connection.Server),$($connection.Port)"
+            Source = "IDENT process $($connection.ProcessName)"
+        }
+    }
+
+    if ($configuredPort -gt 0) {
+        $candidates += [pscustomobject]@{
+            Server = $server
+            InstanceName = ''
+            Port = $configuredPort
+            DataSource = "tcp:$server,$configuredPort"
+            Source = 'saved configuration'
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($configuredInstance)) {
+        $candidates += [pscustomobject]@{
+            Server = $server
+            InstanceName = $configuredInstance
+            Port = 0
+            DataSource = "$server\$configuredInstance"
+            Source = 'saved configuration'
+        }
+    }
+
+    foreach ($instance in @(Find-SqlBrowserInstances -Server $server)) {
+        $instanceName = [string](Get-ObjectPropertyValue -Object $instance -Names @('InstanceName'))
+        $tcpText = [string](Get-ObjectPropertyValue -Object $instance -Names @('tcp'))
+        $tcpPort = 0
+        [void][int]::TryParse($tcpText, [ref]$tcpPort)
+        if ($tcpPort -gt 0) {
+            $candidates += [pscustomobject]@{
+                Server = $server
+                InstanceName = $instanceName
+                Port = $tcpPort
+                DataSource = "tcp:$server,$tcpPort"
+                Source = 'SQL Browser'
+            }
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($instanceName)) {
+            $candidates += [pscustomobject]@{
+                Server = $server
+                InstanceName = $instanceName
+                Port = 0
+                DataSource = "$server\$instanceName"
+                Source = 'SQL Browser'
+            }
+        }
+    }
+
+    $candidates += [pscustomobject]@{
+        Server = $server
+        InstanceName = ''
+        Port = 1433
+        DataSource = "tcp:$server,1433"
+        Source = 'standard SQL port'
+    }
+
+    $unique = @{}
+    $result = @()
+    foreach ($candidate in $candidates) {
+        $key = ([string]$candidate.DataSource).ToLowerInvariant()
+        if ($unique.ContainsKey($key)) {
+            continue
+        }
+        $unique[$key] = $true
+        $result += $candidate
+    }
+    return $result
+}
+
+function Test-SqlEndpoint {
+    param(
+        [pscustomobject]$Context,
+        [pscustomobject]$Endpoint
+    )
+
+    $password = Get-PlainTextSecret -EncryptedValue ([string]$Context.Secrets.sqlPasswordDpapi)
+    $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+    $builder['Data Source'] = [string]$Endpoint.DataSource
+    $builder['Initial Catalog'] = 'master'
+    $builder['User ID'] = [string]$Context.Config.sql.user
+    $builder['Password'] = $password
+    $builder['Integrated Security'] = $false
+    $builder['Application Name'] = 'Code9 IDENT SQL Discovery'
+    $builder['Connect Timeout'] = [Math]::Min(6, [int]$Context.Config.sql.connectTimeoutSeconds)
+    $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
+    $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
+    $builder['Pooling'] = $false
+
+    $connection = New-Object System.Data.SqlClient.SqlConnection $builder.ConnectionString
+    $command = $connection.CreateCommand()
+    $command.CommandText = @'
+SELECT
+    @@SERVERNAME AS ServerName,
+    CAST(SERVERPROPERTY('InstanceName') AS nvarchar(128)) AS InstanceName,
+    CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS ProductVersion;
+
+SELECT name AS DatabaseName
+FROM sys.databases
+WHERE HAS_DBACCESS(name) = 1
+ORDER BY name;
+'@
+    $command.CommandTimeout = 10
+    try {
+        $connection.Open()
+        $reader = $command.ExecuteReader()
+        $serverInfo = $null
+        if ($reader.Read()) {
+            $serverInfo = [pscustomobject]@{
+                ServerName = [string]$reader['ServerName']
+                InstanceName = if ($reader['InstanceName'] -is [DBNull]) { '' } else { [string]$reader['InstanceName'] }
+                ProductVersion = [string]$reader['ProductVersion']
+            }
+        }
+        $databases = @()
+        if ($reader.NextResult()) {
+            while ($reader.Read()) {
+                $databases += [string]$reader['DatabaseName']
+            }
+        }
+        $reader.Close()
+        return [pscustomobject]@{
+            Endpoint = $Endpoint
+            Server = $serverInfo
+            Databases = $databases
+        }
+    }
+    finally {
+        $command.Dispose()
+        $connection.Dispose()
+    }
+}
+
+function Get-DatabaseFingerprint {
+    param(
+        [pscustomobject]$Context,
+        [pscustomobject]$Endpoint,
+        [string]$Database
+    )
+
+    $password = Get-PlainTextSecret -EncryptedValue ([string]$Context.Secrets.sqlPasswordDpapi)
+    $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+    $builder['Data Source'] = [string]$Endpoint.DataSource
+    $builder['Initial Catalog'] = $Database
+    $builder['User ID'] = [string]$Context.Config.sql.user
+    $builder['Password'] = $password
+    $builder['Integrated Security'] = $false
+    $builder['Application Name'] = 'Code9 IDENT Database Discovery'
+    $builder['Connect Timeout'] = [Math]::Min(6, [int]$Context.Config.sql.connectTimeoutSeconds)
+    $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
+    $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
+    $builder['Pooling'] = $false
+
+    $connection = New-Object System.Data.SqlClient.SqlConnection $builder.ConnectionString
+    $command = $connection.CreateCommand()
+    $command.CommandText = @'
+SELECT
+    COUNT(*) AS TableCount,
+    COALESCE(SUM(CASE
+        WHEN LOWER(TABLE_NAME) LIKE '%doctor%'
+          OR LOWER(TABLE_NAME) LIKE '%patient%'
+          OR LOWER(TABLE_NAME) LIKE '%schedule%'
+          OR LOWER(TABLE_NAME) LIKE '%appointment%'
+          OR LOWER(TABLE_NAME) LIKE '%reception%'
+          OR LOWER(TABLE_NAME) LIKE '%employee%'
+          OR LOWER(TABLE_NAME) LIKE '%clinic%'
+          OR LOWER(TABLE_NAME) LIKE '%branch%'
+          OR LOWER(TABLE_NAME) LIKE '%timetable%'
+          OR LOWER(TABLE_NAME) LIKE '%visit%'
+        THEN 1 ELSE 0 END), 0) AS DomainMatches
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW');
+'@
+    $command.CommandTimeout = 15
+    try {
+        $connection.Open()
+        $reader = $command.ExecuteReader()
+        if (-not $reader.Read()) {
+            return [pscustomobject]@{ Name = $Database; TableCount = 0; DomainMatches = 0; Score = 0 }
+        }
+        $tableCount = [int]$reader['TableCount']
+        $domainMatches = [int]$reader['DomainMatches']
+        $nameScore = if ($Database -match '(?i)(ident|dent|stoma|clinic)') { 100 } else { 0 }
+        return [pscustomobject]@{
+            Name = $Database
+            TableCount = $tableCount
+            DomainMatches = $domainMatches
+            Score = $nameScore + ($domainMatches * 5) + [Math]::Min(20, [Math]::Floor($tableCount / 25))
+        }
+    }
+    finally {
+        $command.Dispose()
+        $connection.Dispose()
+    }
+}
+
+function Select-IdentDatabase {
+    param(
+        [object[]]$Fingerprints,
+        [string]$ConfiguredDatabase
+    )
+
+    $items = @($Fingerprints)
+    if ($items.Count -eq 0) {
+        return $null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredDatabase)) {
+        $saved = $items | Where-Object { $_.Name -ieq $ConfiguredDatabase } | Select-Object -First 1
+        if ($null -ne $saved) {
+            return $saved
+        }
+    }
+    if ($items.Count -eq 1) {
+        return $items[0]
+    }
+    $sorted = @($items | Sort-Object Score, TableCount -Descending)
+    if ([int]$sorted[0].Score -ge 100 -and [int]$sorted[0].Score -gt [int]$sorted[1].Score) {
+        return $sorted[0]
+    }
+    if (
+        [int]$sorted[0].DomainMatches -ge 2 -and
+        [int]$sorted[0].Score -ge ([int]$sorted[1].Score + 10)
+    ) {
+        return $sorted[0]
+    }
+    return $null
+}
+
+function Save-SqlDiscovery {
+    param(
+        [pscustomobject]$Context,
+        [pscustomobject]$ConnectionResult,
+        [pscustomobject]$Database
+    )
+
+    $config = $Context.Config
+    $config.sql.server = [string]$ConnectionResult.Endpoint.Server
+    $config.sql.instanceName = [string]$ConnectionResult.Endpoint.InstanceName
+    $config.sql.port = [int]$ConnectionResult.Endpoint.Port
+    $config.sql.database = [string]$Database.Name
+    $temporaryPath = "$($Context.ConfigPath).tmp-$PID"
+    $config | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $Context.ConfigPath -Force
+}
+
+function Invoke-AutoConfigureSql {
+    param([pscustomobject]$Context)
+
+    Write-Step 'Searching for the SQL Server used by IDENT'
+    $candidates = @(Get-SqlEndpointCandidates -Context $Context)
+    Write-Host "Candidates: $($candidates.Count)"
+    $connections = @()
+    foreach ($candidate in $candidates) {
+        Write-Host "  Trying $($candidate.DataSource) [$($candidate.Source)]..."
+        try {
+            $connections += Test-SqlEndpoint -Context $Context -Endpoint $candidate
+            Write-Host '  Connected.' -ForegroundColor Green
+        }
+        catch {
+            Write-Host "  Not available: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+    if ($connections.Count -eq 0) {
+        throw 'SQL Server was not found. Keep IDENT open and verify that readonly_user can connect from this computer.'
+    }
+
+    $connectionResult = $connections | Sort-Object { @($_.Databases | Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') }).Count } -Descending | Select-Object -First 1
+    $databaseNames = @($connectionResult.Databases | Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') })
+    if ($databaseNames.Count -eq 0) {
+        throw 'The SQL login connected, but it cannot access any non-system databases.'
+    }
+
+    Write-Step 'Identifying the IDENT database from schema metadata'
+    $fingerprints = @()
+    foreach ($databaseName in $databaseNames) {
+        try {
+            $fingerprints += Get-DatabaseFingerprint -Context $Context -Endpoint $connectionResult.Endpoint -Database $databaseName
+        }
+        catch {
+            Write-Host "  Skipped ${databaseName}: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+    if ($fingerprints.Count -eq 0) {
+        throw 'No accessible database schema could be inspected.'
+    }
+
+    $fingerprints | Sort-Object Score -Descending | Format-Table Name, TableCount, DomainMatches, Score -AutoSize
+    $selected = Select-IdentDatabase -Fingerprints $fingerprints -ConfiguredDatabase ([string]$Context.Config.sql.database)
+    if ($null -eq $selected) {
+        $ordered = @($fingerprints | Sort-Object Score, TableCount -Descending)
+        Write-Host 'Several databases are possible. Choose one number:' -ForegroundColor Yellow
+        for ($index = 0; $index -lt $ordered.Count; $index++) {
+            Write-Host "  $($index + 1). $($ordered[$index].Name)"
+        }
+        $choiceText = Read-Host 'Database number'
+        $choice = 0
+        if (-not [int]::TryParse($choiceText, [ref]$choice) -or $choice -lt 1 -or $choice -gt $ordered.Count) {
+            throw 'A valid database number was not selected.'
+        }
+        $selected = $ordered[$choice - 1]
+    }
+
+    Save-SqlDiscovery -Context $Context -ConnectionResult $connectionResult -Database $selected
+    Write-Host ''
+    Write-Host "SQL Server: $($connectionResult.Endpoint.DataSource)" -ForegroundColor Green
+    Write-Host "Database:   $($selected.Name)" -ForegroundColor Green
+    Write-Host 'Configuration saved.' -ForegroundColor Green
+
+    $schema = Export-SqlSchema -Context $Context
+    Write-Host "Schema exported: $($schema.summary.tables) tables/views, $($schema.summary.columns) columns." -ForegroundColor Green
+    Write-Host "File: $($Context.SchemaPath)" -ForegroundColor Green
+    Write-AgentLog -Context $Context -Level 'info' -Event 'sql_auto_configured' -Data @{
+        dataSource = [string]$connectionResult.Endpoint.DataSource
+        database = [string]$selected.Name
+        tables = [int]$schema.summary.tables
+        columns = [int]$schema.summary.columns
     }
 }
 
@@ -633,6 +1016,26 @@ function Invoke-AgentSelfTest {
             throw
         }
     }
+    $singleDatabase = Select-IdentDatabase -Fingerprints @(
+        [pscustomobject]@{ Name = 'ClinicDb'; TableCount = 100; DomainMatches = 0; Score = 4 }
+    ) -ConfiguredDatabase ''
+    if ($singleDatabase.Name -ne 'ClinicDb') {
+        throw 'Self-test failed to select the only accessible database.'
+    }
+    $namedDatabase = Select-IdentDatabase -Fingerprints @(
+        [pscustomobject]@{ Name = 'Archive'; TableCount = 500; DomainMatches = 0; Score = 20 },
+        [pscustomobject]@{ Name = 'IDENT_Main'; TableCount = 100; DomainMatches = 3; Score = 119 }
+    ) -ConfiguredDatabase ''
+    if ($namedDatabase.Name -ne 'IDENT_Main') {
+        throw 'Self-test failed to prefer an IDENT-named database.'
+    }
+    $ambiguousDatabase = Select-IdentDatabase -Fingerprints @(
+        [pscustomobject]@{ Name = 'Database1'; TableCount = 100; DomainMatches = 1; Score = 9 },
+        [pscustomobject]@{ Name = 'Database2'; TableCount = 95; DomainMatches = 1; Score = 8 }
+    ) -ConfiguredDatabase ''
+    if ($null -ne $ambiguousDatabase) {
+        throw 'Self-test selected an ambiguous database.'
+    }
     Write-Host 'SELF-TEST OK' -ForegroundColor Green
 }
 
@@ -648,6 +1051,11 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 $context = Get-AgentContext -Path $ConfigPath
 
 try {
+    if ($AutoConfigureSql) {
+        Invoke-AutoConfigureSql -Context $context
+        exit 0
+    }
+
     if ($DiscoverInstances) {
         Write-Step "Discovering SQL Server instances on $($context.Config.sql.server)"
         $instances = @(Find-SqlBrowserInstances -Server ([string]$context.Config.sql.server))

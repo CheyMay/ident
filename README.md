@@ -455,7 +455,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\agent\ident-db-agent\Build-IdentDesktopPackage.ps1
 ```
 
-It creates `agent/ident-db-agent/dist/ident-desktop-2.0.0.zip`. The installer
+It creates `agent/ident-db-agent/dist/ident-desktop-2.1.0.zip`. The installer
 registers the background worker and status panel at Windows logon. Schedule
 export is enabled by default; the UI booking robot is disabled and cannot
 claim tasks until its local IDENT selectors are configured.

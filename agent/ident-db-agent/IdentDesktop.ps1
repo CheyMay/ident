@@ -153,7 +153,7 @@ $script:AllowClose = $false
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Code9 IDENT'
-$form.ClientSize = New-Object Drawing.Size(540, 555)
+$form.ClientSize = New-Object Drawing.Size(540, 575)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
@@ -187,54 +187,61 @@ $form.Controls.Add($scheduleCheck)
 $scheduleStateLabel = New-StatusLabel -Parent $form -Text 'Состояние: ожидание запуска' -Top 218
 $scheduleTimeLabel = New-StatusLabel -Parent $form -Text 'Последняя отправка: нет' -Top 244
 $scheduleCountLabel = New-StatusLabel -Parent $form -Text 'Врачи: 0  |  филиалы: 0  |  окна: 0' -Top 270
+$sqlConnectionLabel = New-StatusLabel -Parent $form -Text 'SQL: поиск еще не выполнялся' -Top 294
 
 $sendButton = New-Object System.Windows.Forms.Button
-$sendButton.Location = New-Object Drawing.Point(20, 302)
-$sendButton.Size = New-Object Drawing.Size(154, 34)
+$sendButton.Location = New-Object Drawing.Point(20, 322)
+$sendButton.Size = New-Object Drawing.Size(118, 34)
 $sendButton.Text = 'Отправить сейчас'
 $form.Controls.Add($sendButton)
 
+$autoSqlButton = New-Object System.Windows.Forms.Button
+$autoSqlButton.Location = New-Object Drawing.Point(148, 322)
+$autoSqlButton.Size = New-Object Drawing.Size(118, 34)
+$autoSqlButton.Text = 'Найти SQL'
+$form.Controls.Add($autoSqlButton)
+
 $sqlButton = New-Object System.Windows.Forms.Button
-$sqlButton.Location = New-Object Drawing.Point(184, 302)
-$sqlButton.Size = New-Object Drawing.Size(154, 34)
+$sqlButton.Location = New-Object Drawing.Point(276, 322)
+$sqlButton.Size = New-Object Drawing.Size(118, 34)
 $sqlButton.Text = 'Проверить базу'
 $form.Controls.Add($sqlButton)
 
 $restartButton = New-Object System.Windows.Forms.Button
-$restartButton.Location = New-Object Drawing.Point(348, 302)
-$restartButton.Size = New-Object Drawing.Size(166, 34)
-$restartButton.Text = 'Перезапустить агент'
+$restartButton.Location = New-Object Drawing.Point(404, 322)
+$restartButton.Size = New-Object Drawing.Size(110, 34)
+$restartButton.Text = 'Перезапуск'
 $form.Controls.Add($restartButton)
 
 $separator2 = New-Object System.Windows.Forms.Label
 $separator2.BorderStyle = [Windows.Forms.BorderStyle]::Fixed3D
-$separator2.Location = New-Object Drawing.Point(20, 354)
+$separator2.Location = New-Object Drawing.Point(20, 374)
 $separator2.Size = New-Object Drawing.Size(494, 2)
 $form.Controls.Add($separator2)
 
 $robotCheck = New-Object System.Windows.Forms.CheckBox
-$robotCheck.Location = New-Object Drawing.Point(20, 372)
+$robotCheck.Location = New-Object Drawing.Point(20, 392)
 $robotCheck.Size = New-Object Drawing.Size(280, 26)
 $robotCheck.Text = 'Робот подтверждения заявок включен'
 $robotCheck.Checked = [bool]$script:Config.features.robotEnabled
 $form.Controls.Add($robotCheck)
 
-$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 402
-$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 428
+$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 422
+$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 448
 
 $inspectButton = New-Object System.Windows.Forms.Button
-$inspectButton.Location = New-Object Drawing.Point(20, 462)
+$inspectButton.Location = New-Object Drawing.Point(20, 482)
 $inspectButton.Size = New-Object Drawing.Size(154, 34)
 $inspectButton.Text = 'Сканировать IDENT'
 $form.Controls.Add($inspectButton)
 
 $folderButton = New-Object System.Windows.Forms.Button
-$folderButton.Location = New-Object Drawing.Point(184, 462)
+$folderButton.Location = New-Object Drawing.Point(184, 482)
 $folderButton.Size = New-Object Drawing.Size(154, 34)
 $folderButton.Text = 'Открыть папку'
 $form.Controls.Add($folderButton)
 
-$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 512
+$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 532
 $errorLabel.ForeColor = [Drawing.Color]::FromArgb(157, 35, 32)
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
@@ -276,6 +283,7 @@ function Request-SchedulePush {
 
 function Refresh-Status {
     $state = Read-JsonFile -Path $script:StatePath
+    $currentConfig = Read-JsonFile -Path $ConfigPath
     $workerOnline = $false
     if ($null -ne $state) {
         $updated = [DateTimeOffset]::MinValue
@@ -291,6 +299,21 @@ function Refresh-Status {
     $desktopTask = Get-ScheduledTask -TaskName 'Code9 IDENT Agent Status' -ErrorAction SilentlyContinue
     $autostartOk = ($null -ne $workerTask -and $null -ne $desktopTask)
     $autostartLabel.Text = 'Автозапуск при входе в Windows: ' + $(if ($autostartOk) { 'включен' } else { 'не установлен' })
+    if ($null -ne $currentConfig) {
+        $sqlAddress = [string]$currentConfig.sql.server
+        if ([int]$currentConfig.sql.port -gt 0) {
+            $sqlAddress += ':' + [string]$currentConfig.sql.port
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace([string]$currentConfig.sql.instanceName)) {
+            $sqlAddress += '\' + [string]$currentConfig.sql.instanceName
+        }
+        $sqlDatabase = if ([string]::IsNullOrWhiteSpace([string]$currentConfig.sql.database)) {
+            'база не найдена'
+        } else {
+            [string]$currentConfig.sql.database
+        }
+        $sqlConnectionLabel.Text = "SQL: $sqlAddress  |  база: $sqlDatabase"
+    }
 
     if ($null -eq $state) {
         $backendLabel.Text = 'Сервер Code9: нет данных'
@@ -358,6 +381,11 @@ $robotCheck.Add_CheckedChanged({
 })
 $sendButton.Add_Click({ Request-SchedulePush })
 $sendMenuItem.Add_Click({ Request-SchedulePush })
+$autoSqlButton.Add_Click({
+    $agentScript = Join-Path $script:BaseDirectory 'IdentAgent.ps1'
+    $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$agentScript`" -ConfigPath `"$ConfigPath`" -AutoConfigureSql"
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments
+})
 $sqlButton.Add_Click({
     $agentScript = Join-Path $script:BaseDirectory 'IdentAgent.ps1'
     $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$agentScript`" -ConfigPath `"$ConfigPath`" -TestConnection"

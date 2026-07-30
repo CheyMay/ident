@@ -9,7 +9,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $stagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop'))
-$archivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop-2.0.0.zip'))
+$archivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop-2.1.0.zip'))
 $outputPrefix = $OutputDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $stagingDirectory.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Staging directory must stay inside the output directory.'

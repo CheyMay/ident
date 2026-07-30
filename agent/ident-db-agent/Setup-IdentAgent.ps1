@@ -82,25 +82,11 @@ if (-not (Test-Path -LiteralPath $robotConfigTarget)) {
 $defaultAgentId = ('stomazub-' + $env:COMPUTERNAME).ToLowerInvariant() -replace '[^a-z0-9_-]', '-'
 $agentId = Read-WithDefault -Prompt 'Agent ID' -Default $defaultAgentId
 $sqlServer = Read-WithDefault -Prompt 'IDENT SQL server IP or name' -Default '192.168.0.3'
-$instanceName = Read-WithDefault -Prompt 'SQL instance name; leave dash when unknown' -Default '-'
-$portText = Read-WithDefault -Prompt 'SQL TCP port; use 0 when unknown' -Default '0'
-$database = Read-WithDefault -Prompt 'Database name; leave dash when unknown' -Default '-'
 $sqlUser = Read-WithDefault -Prompt 'SQL login' -Default 'readonly_user'
 $sqlPassword = Read-Host 'SQL password' -AsSecureString
 $backendUrl = Read-WithDefault -Prompt 'Code9 backend URL' -Default 'https://ident.code9dev.ru'
 $agentKey = Read-Host 'Code9 agent key' -AsSecureString
 
-if ($instanceName -eq '-') {
-    $instanceName = ''
-}
-if ($database -eq '-') {
-    $database = ''
-}
-
-$port = 0
-if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 0 -or $port -gt 65535) {
-    throw 'SQL port must be 0 or a number from 1 to 65535.'
-}
 if ($sqlPassword.Length -eq 0) {
     throw 'SQL password cannot be empty.'
 }
@@ -112,7 +98,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.0.0'
+        version = '2.1.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -125,9 +111,9 @@ $config = [ordered]@{
     }
     sql = [ordered]@{
         server = $sqlServer
-        instanceName = $instanceName
-        port = $port
-        database = $database
+        instanceName = ''
+        port = 0
+        database = ''
         user = $sqlUser
         encrypt = $false
         trustServerCertificate = $true
@@ -163,6 +149,15 @@ $secrets | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $secretsPath -Enco
 
 Write-Host ''
 Write-Host "Agent installed to: $InstallDirectory" -ForegroundColor Green
+Write-Host 'Searching for SQL Server and the IDENT database...'
+& (Join-Path $InstallDirectory 'IdentAgent.ps1') -ConfigPath $configPath -AutoConfigureSql
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ''
+    Write-Host 'Automatic SQL discovery did not finish. The agent will still be installed.' -ForegroundColor Yellow
+    Write-Host 'Keep IDENT open and use "Find SQL automatically" in the status panel.' -ForegroundColor Yellow
+}
+
+Write-Host ''
 Write-Host 'Installing startup tasks...'
 & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') -InstallDirectory $InstallDirectory
 
