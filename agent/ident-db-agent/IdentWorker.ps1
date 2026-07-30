@@ -74,6 +74,7 @@ function Get-ConfigContext {
         } else {
             Join-Path $baseDirectory 'robot-receipts.json'
         }
+        MappingPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.mapping)
         SchemaPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.schemaOutput)
         LogPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.log)
     }
@@ -152,15 +153,71 @@ function Save-FeatureState {
     $script:Context.Config = $config
 }
 
+function Assert-ReadOnlyMappingSql {
+    param(
+        [string]$Sql,
+        [string]$Label
+    )
+
+    $raw = [string]$Sql
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "$Label is empty."
+    }
+    if ($raw.Length -gt 20000) {
+        throw "$Label is too long."
+    }
+    $normalized = [regex]::Replace($raw, '(?s)/\*.*?\*/', ' ')
+    $normalized = [regex]::Replace($normalized, '(?m)--.*$', ' ').Trim()
+    if ($normalized -notmatch '(?i)^(select|with)\b') {
+        throw "$Label must start with SELECT or WITH."
+    }
+    if ($normalized.Contains(';')) {
+        throw "$Label must contain one statement without semicolons."
+    }
+    if ($normalized -match '(?i)\b(insert|update|delete|merge|drop|alter|truncate|create|exec|execute|grant|revoke|backup|restore)\b') {
+        throw "$Label contains a forbidden SQL keyword."
+    }
+    return $raw.Trim()
+}
+
+function Save-ScheduleMapping {
+    param(
+        [object]$Mapping,
+        [string]$Revision
+    )
+
+    if ($null -eq $Mapping) {
+        throw 'Remote schedule mapping is empty.'
+    }
+    $normalized = [ordered]@{
+        doctorsSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.doctorsSql) -Label 'doctorsSql'
+        branchesSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.branchesSql) -Label 'branchesSql'
+        intervalsSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.intervalsSql) -Label 'intervalsSql'
+        notes = @(
+            if ($Mapping.PSObject.Properties.Name -contains 'notes') {
+                @($Mapping.notes | Select-Object -First 20 | ForEach-Object { ([string]$_).Substring(0, [Math]::Min(([string]$_).Length, 500)) })
+            }
+        )
+    }
+    $directory = Split-Path -Parent $script:Context.MappingPath
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    $temporaryPath = "$($script:Context.MappingPath).tmp-$PID"
+    $normalized | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.MappingPath -Force
+    $script:State.schedule.mappingRevision = $Revision
+    $script:State.schedule.mappingConfigured = $true
+    $script:State.schedule.state = 'starting'
+    $script:State.schedule.lastError = ''
+    New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
+    Write-WorkerLog -Level 'info' -EventName 'schedule_mapping_applied' -Data @{ revision = $Revision }
+}
+
 function Test-ScheduleMappingConfigured {
-    $mappingPath = Resolve-LocalPath `
-        -BaseDirectory $script:Context.BaseDirectory `
-        -Value ([string]$script:Context.Config.paths.mapping)
-    if (-not (Test-Path -LiteralPath $mappingPath)) {
+    if (-not (Test-Path -LiteralPath $script:Context.MappingPath)) {
         return $false
     }
     try {
-        $mapping = Read-JsonFile -Path $mappingPath
+        $mapping = Read-JsonFile -Path $script:Context.MappingPath
         foreach ($property in @('doctorsSql', 'branchesSql', 'intervalsSql')) {
             if (
                 $mapping.PSObject.Properties.Name -notcontains $property -or
@@ -254,6 +311,23 @@ function Apply-DesiredState {
     }
     $script:State.schedule.enabled = $scheduleEnabled
     $script:State.robot.enabled = $robotEnabled
+
+    if (
+        $Desired.PSObject.Properties.Name -contains 'scheduleMapping' -and
+        $Desired.PSObject.Properties.Name -contains 'mappingRevision' -and
+        $null -ne $Desired.scheduleMapping -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.mappingRevision) -and
+        [string]$Desired.mappingRevision -ne [string]$script:State.schedule.mappingRevision
+    ) {
+        try {
+            Save-ScheduleMapping -Mapping $Desired.scheduleMapping -Revision ([string]$Desired.mappingRevision)
+        }
+        catch {
+            $script:State.schedule.state = 'mapping_error'
+            $script:State.schedule.lastError = $_.Exception.Message
+            Write-WorkerLog -Level 'error' -EventName 'schedule_mapping_rejected' -Data @{ message = $_.Exception.Message }
+        }
+    }
 }
 
 function Send-Heartbeat {
@@ -582,6 +656,7 @@ try {
             enabled = [bool]$script:Context.Config.features.scheduleEnabled
             state = 'starting'
             mappingConfigured = Test-ScheduleMappingConfigured
+            mappingRevision = ''
             lastAttemptAt = $null
             lastSuccessAt = $null
             lastError = ''

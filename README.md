@@ -459,7 +459,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\agent\ident-db-agent\Build-IdentDesktopPackage.ps1
 ```
 
-It creates `agent/ident-db-agent/dist/ident-desktop-2.2.0.zip`. The installer
+It creates `agent/ident-db-agent/dist/ident-desktop-2.3.0.zip`. The installer
 registers the background worker and status panel at Windows logon. Schedule
 export is enabled by default; the UI booking robot is disabled and cannot
 claim tasks until its local IDENT selectors are configured.
@@ -479,6 +479,13 @@ Widget/admin endpoints use `X-API-Key: <SERVICE_API_KEY>`:
 - `GET /api/agent/status`
 - `GET /api/agent/schema?agentId=<agent-id>`
 - `POST /api/agent/settings`
+
+`POST /api/agent/settings` can include `scheduleMapping` with `doctorsSql`,
+`branchesSql`, and `intervalsSql`. The backend rejects anything except a single
+read-only `SELECT`/`WITH` statement for each query. It stores a mapping revision
+in the desired agent state. On the next heartbeat, the Windows worker validates
+the SQL again, atomically replaces `mapping.local.json`, and requests an
+immediate schedule push.
 
 ### `GET /api/tickets`
 

@@ -832,6 +832,45 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       assert.equal(schema.database, 'IDENT');
       assert.equal(schema.tables[0].columns[0].name, 'Id');
 
+      const invalidMappingResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          scheduleMapping: {
+            doctorsSql: 'DELETE FROM dbo.Doctors',
+            branchesSql: 'SELECT Id, Name FROM dbo.Branches',
+            intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule'
+          }
+        })
+      });
+      assert.equal(invalidMappingResponse.status, 400);
+
+      const scheduleMapping = {
+        doctorsSql: 'SELECT Id, Name FROM dbo.Doctors',
+        branchesSql: 'SELECT Id, Name FROM dbo.Branches',
+        intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule'
+      };
+      const mappingSettingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          scheduleEnabled: true,
+          scheduleMapping
+        })
+      });
+      assert.equal(mappingSettingsResponse.status, 200);
+      const mappingSettings = await mappingSettingsResponse.json();
+      assert.deepEqual(mappingSettings.desired.scheduleMapping.doctorsSql, scheduleMapping.doctorsSql);
+      assert.equal(Number.isNaN(new Date(mappingSettings.desired.mappingRevision).getTime()), false);
+
       const prematureRobotSettingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',
         headers: {
@@ -851,7 +890,7 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         body: JSON.stringify({
           agentId: 'clinic-1',
           deviceName: 'IDENT-PC',
-          version: '2.2.0',
+          version: '2.3.0',
           status: 'online',
           schedule: { enabled: true },
           schema: { state: 'ok', tables: 1, columns: 1 },
@@ -859,6 +898,8 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         })
       });
       assert.equal(readyHeartbeatResponse.status, 200);
+      const readyHeartbeat = await readyHeartbeatResponse.json();
+      assert.deepEqual(readyHeartbeat.desired.scheduleMapping.intervalsSql, scheduleMapping.intervalsSql);
 
       const settingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',
@@ -874,7 +915,9 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         headers: { 'X-Agent-Key': 'test-agent-key' }
       });
       assert.equal(configResponse.status, 200);
-      assert.equal((await configResponse.json()).desired.robotEnabled, true);
+      const desiredConfig = (await configResponse.json()).desired;
+      assert.equal(desiredConfig.robotEnabled, true);
+      assert.deepEqual(desiredConfig.scheduleMapping.branchesSql, scheduleMapping.branchesSql);
 
       const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
         method: 'POST',

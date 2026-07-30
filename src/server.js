@@ -25,7 +25,8 @@ import {
 import {
   createIdentDbClient,
   defaultIdentDbMapping,
-  normalizeIdentDbMapping
+  normalizeIdentDbMapping,
+  validateReadOnlySql
 } from './ident/db-client.js';
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
 import { buildEffectiveConfig, SettingsStore } from './settings.js';
@@ -219,7 +220,7 @@ export function buildApp(config, logger, options = {}) {
 
       if (req.method === 'POST' && url.pathname === '/api/agent/config') {
         requireAgentApiKey(req, config);
-        const body = await readJson(req);
+        const body = normalizeAgentDesiredInput(await readJson(req));
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
         if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
           return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
@@ -237,7 +238,7 @@ export function buildApp(config, logger, options = {}) {
 
       if (req.method === 'POST' && url.pathname === '/api/agent/settings') {
         requireServiceApiKey(req, config);
-        const body = await readJson(req);
+        const body = normalizeAgentDesiredInput(await readJson(req));
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
         if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
           return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
@@ -1076,6 +1077,23 @@ function normalizeHost(value) {
   } catch {
     return '';
   }
+}
+
+function normalizeAgentDesiredInput(input = {}) {
+  const result = { ...input };
+  if (!Object.prototype.hasOwnProperty.call(input, 'scheduleMapping')) return result;
+  if (input.scheduleMapping === null) {
+    throw new BadRequestError('scheduleMapping cannot be null; disable scheduleEnabled instead');
+  }
+
+  const mapping = normalizeIdentDbMapping(input.scheduleMapping);
+  result.scheduleMapping = {
+    doctorsSql: validateReadOnlySql(mapping.doctorsSql, 'doctorsSql'),
+    branchesSql: validateReadOnlySql(mapping.branchesSql, 'branchesSql'),
+    intervalsSql: validateReadOnlySql(mapping.intervalsSql, 'intervalsSql'),
+    notes: mapping.notes
+  };
+  return result;
 }
 
 function sendJson(res, status, body) {

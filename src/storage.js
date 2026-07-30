@@ -411,7 +411,9 @@ export class AgentStatusStore {
       agents: Object.values(data.agents)
         .map((agent) => this.withOnlineState(agent))
         .sort((left, right) => String(right.lastSeenAt).localeCompare(String(left.lastSeenAt))),
-      desired: data.desired
+      desired: Object.fromEntries(
+        Object.keys(data.desired).map((agentId) => [agentId, this.desiredForData(data, agentId)])
+      )
     };
   }
 
@@ -424,10 +426,16 @@ export class AgentStatusStore {
     const normalized = normalizeAgentId(agentId);
     const data = await this.read();
     const existing = this.desiredForData(data, normalized);
+    const now = new Date().toISOString();
+    const mappingProvided = Object.prototype.hasOwnProperty.call(input, 'scheduleMapping');
     data.desired[normalized] = {
       scheduleEnabled: typeof input.scheduleEnabled === 'boolean' ? input.scheduleEnabled : existing.scheduleEnabled,
       robotEnabled: typeof input.robotEnabled === 'boolean' ? input.robotEnabled : existing.robotEnabled,
-      updatedAt: new Date().toISOString()
+      scheduleMapping: mappingProvided
+        ? normalizeDesiredScheduleMapping(input.scheduleMapping)
+        : existing.scheduleMapping,
+      mappingRevision: mappingProvided ? now : existing.mappingRevision,
+      updatedAt: now
     };
     data.updatedAt = data.desired[normalized].updatedAt;
     await this.write(data);
@@ -480,10 +488,13 @@ export class AgentStatusStore {
   }
 
   desiredForData(data, agentId) {
-    return data.desired[agentId] || {
-      scheduleEnabled: true,
-      robotEnabled: false,
-      updatedAt: null
+    const stored = data.desired[agentId] || {};
+    return {
+      scheduleEnabled: typeof stored.scheduleEnabled === 'boolean' ? stored.scheduleEnabled : true,
+      robotEnabled: typeof stored.robotEnabled === 'boolean' ? stored.robotEnabled : false,
+      scheduleMapping: normalizeDesiredScheduleMapping(stored.scheduleMapping),
+      mappingRevision: cleanAgentDate(stored.mappingRevision),
+      updatedAt: cleanAgentDate(stored.updatedAt)
     };
   }
 
@@ -780,6 +791,22 @@ function normalizeAgentSection(value) {
       .filter(([key, item]) => /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) && ['string', 'number', 'boolean'].includes(typeof item))
       .map(([key, item]) => [key, typeof item === 'string' ? item.slice(0, 500) : item])
   );
+}
+
+function normalizeDesiredScheduleMapping(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const doctorsSql = cleanAgentText(value.doctorsSql, 20000);
+  const branchesSql = cleanAgentText(value.branchesSql, 20000);
+  const intervalsSql = cleanAgentText(value.intervalsSql, 20000);
+  if (!doctorsSql || !branchesSql || !intervalsSql) return null;
+  return {
+    doctorsSql,
+    branchesSql,
+    intervalsSql,
+    notes: Array.isArray(value.notes)
+      ? value.notes.slice(0, 20).map((item) => cleanAgentText(item, 500)).filter(Boolean)
+      : []
+  };
 }
 
 function normalizeAgentSchema(value) {

@@ -120,7 +120,7 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.2.0' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.3.0' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }
         sql = @{
@@ -182,7 +182,19 @@ const server = http.createServer((req, res) => {
   req.resume();
   req.on("end", () => {
     if (req.url === "/api/agent/heartbeat") {
-      return send(res, 200, { desired: { scheduleEnabled: false, robotEnabled: true } });
+      return send(res, 200, {
+        desired: {
+          scheduleEnabled: false,
+          robotEnabled: true,
+          mappingRevision: "2026-07-30T15:30:00.000Z",
+          scheduleMapping: {
+            doctorsSql: "SELECT Id, Name FROM dbo.Doctors",
+            branchesSql: "SELECT Id, Name FROM dbo.Branches",
+            intervalsSql: "SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule",
+            notes: ["remote test mapping"]
+          }
+        }
+      });
     }
     if (req.url === "/api/agent/schema") {
       return send(res, 200, { summary: { tables: 1, columns: 1 } });
@@ -265,6 +277,7 @@ server.listen(port, "127.0.0.1");
         0
     }
     $state = Get-Content -LiteralPath (Join-Path $tempRoot 'state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $appliedMapping = Get-Content -LiteralPath (Join-Path $tempRoot 'mapping.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
     Write-Host "Robot executions: $executionCount"
     Write-Host "Claims/completes/fails: $($status.claims)/$($status.completes)/$($status.fails)"
@@ -279,6 +292,9 @@ server.listen(port, "127.0.0.1");
     Assert-Equal -Actual ([string]$state.robot.state) -Expected 'idle' -Label 'Final robot state'
     Assert-Equal -Actual ([string]$state.schema.state) -Expected 'ok' -Label 'Schema upload state'
     Assert-Equal -Actual ([int]$state.schema.tables) -Expected 1 -Label 'Uploaded schema table count'
+    Assert-Equal -Actual ([string]$state.schedule.mappingRevision) -Expected '2026-07-30T15:30:00.000Z' -Label 'Remote mapping revision'
+    Assert-Equal -Actual ([string]$appliedMapping.doctorsSql) -Expected 'SELECT Id, Name FROM dbo.Doctors' -Label 'Remote doctors SQL'
+    Assert-Equal -Actual ([string]$appliedMapping.intervalsSql) -Expected 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule' -Label 'Remote intervals SQL'
     Assert-Equal -Actual (Test-Path -LiteralPath (Join-Path $tempRoot 'receipts.json')) -Expected $true -Label 'Receipt file'
 
     Write-Host 'IDENT WORKER LIFECYCLE TEST OK' -ForegroundColor Green
