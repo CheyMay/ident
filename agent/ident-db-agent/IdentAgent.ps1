@@ -484,15 +484,30 @@ WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW');
         $connection.Open()
         $reader = $command.ExecuteReader()
         if (-not $reader.Read()) {
-            return [pscustomobject]@{ Name = $Database; TableCount = 0; DomainMatches = 0; Score = 0 }
+            return [pscustomobject]@{
+                Name = $Database
+                TableCount = 0
+                DomainMatches = 0
+                StrongNameMatch = ($Database -match '(?i)ident')
+                Score = 0
+            }
         }
         $tableCount = [int]$reader['TableCount']
         $domainMatches = [int]$reader['DomainMatches']
-        $nameScore = if ($Database -match '(?i)(ident|dent|stoma|clinic)') { 100 } else { 0 }
+        $nameScore = if ($Database -match '(?i)ident') {
+            100
+        }
+        elseif ($Database -match '(?i)(dent|stoma|clinic)') {
+            20
+        }
+        else {
+            0
+        }
         return [pscustomobject]@{
             Name = $Database
             TableCount = $tableCount
             DomainMatches = $domainMatches
+            StrongNameMatch = ($Database -match '(?i)ident')
             Score = $nameScore + ($domainMatches * 5) + [Math]::Min(20, [Math]::Floor($tableCount / 25))
         }
     }
@@ -505,7 +520,8 @@ WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW');
 function Select-IdentDatabase {
     param(
         [object[]]$Fingerprints,
-        [string]$ConfiguredDatabase
+        [string]$ConfiguredDatabase,
+        [string]$ConfiguredDataSource = ''
     )
 
     $items = @($Fingerprints)
@@ -513,16 +529,28 @@ function Select-IdentDatabase {
         return $null
     }
     if (-not [string]::IsNullOrWhiteSpace($ConfiguredDatabase)) {
-        $saved = $items | Where-Object { $_.Name -ieq $ConfiguredDatabase } | Select-Object -First 1
-        if ($null -ne $saved) {
-            return $saved
+        $saved = @($items | Where-Object { $_.Name -ieq $ConfiguredDatabase })
+        if ($saved.Count -eq 1) {
+            return $saved[0]
+        }
+        if ($saved.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($ConfiguredDataSource)) {
+            $savedEndpoint = $saved |
+                Where-Object { [string]$_.DataSource -ieq $ConfiguredDataSource } |
+                Select-Object -First 1
+            if ($null -ne $savedEndpoint) {
+                return $savedEndpoint
+            }
         }
     }
     if ($items.Count -eq 1) {
         return $items[0]
     }
     $sorted = @($items | Sort-Object Score, TableCount -Descending)
-    if ([int]$sorted[0].Score -ge 100 -and [int]$sorted[0].Score -gt [int]$sorted[1].Score) {
+    $strongNameMatch = (
+        $sorted[0].PSObject.Properties.Name -contains 'StrongNameMatch' -and
+        [bool]$sorted[0].StrongNameMatch
+    )
+    if ($strongNameMatch -and [int]$sorted[0].Score -ge 100 -and [int]$sorted[0].Score -gt [int]$sorted[1].Score) {
         return $sorted[0]
     }
     if (
@@ -572,33 +600,50 @@ function Invoke-AutoConfigureSql {
         throw 'SQL Server was not found. Keep IDENT open and verify that readonly_user can connect from this computer.'
     }
 
-    $connectionResult = $connections | Sort-Object { @($_.Databases | Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') }).Count } -Descending | Select-Object -First 1
-    $databaseNames = @($connectionResult.Databases | Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') })
-    if ($databaseNames.Count -eq 0) {
+    $accessibleDatabaseCount = @(
+        $connections |
+            ForEach-Object { $_.Databases } |
+            Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') }
+    ).Count
+    if ($accessibleDatabaseCount -eq 0) {
         throw 'The SQL login connected, but it cannot access any non-system databases.'
     }
 
     Write-Step 'Identifying the IDENT database from schema metadata'
     $fingerprints = @()
-    foreach ($databaseName in $databaseNames) {
-        try {
-            $fingerprints += Get-DatabaseFingerprint -Context $Context -Endpoint $connectionResult.Endpoint -Database $databaseName
-        }
-        catch {
-            Write-Host "  Skipped ${databaseName}: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    foreach ($connectionResult in $connections) {
+        $databaseNames = @($connectionResult.Databases | Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') })
+        foreach ($databaseName in $databaseNames) {
+            try {
+                $fingerprint = Get-DatabaseFingerprint `
+                    -Context $Context `
+                    -Endpoint $connectionResult.Endpoint `
+                    -Database $databaseName
+                $fingerprint | Add-Member -NotePropertyName DataSource -NotePropertyValue ([string]$connectionResult.Endpoint.DataSource)
+                $fingerprint | Add-Member -NotePropertyName ConnectionResult -NotePropertyValue $connectionResult
+                $fingerprints += $fingerprint
+            }
+            catch {
+                Write-Host "  Skipped $($connectionResult.Endpoint.DataSource) / ${databaseName}: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
         }
     }
     if ($fingerprints.Count -eq 0) {
         throw 'No accessible database schema could be inspected.'
     }
 
-    $fingerprints | Sort-Object Score -Descending | Format-Table Name, TableCount, DomainMatches, Score -AutoSize
-    $selected = Select-IdentDatabase -Fingerprints $fingerprints -ConfiguredDatabase ([string]$Context.Config.sql.database)
+    $fingerprints |
+        Sort-Object Score -Descending |
+        Format-Table DataSource, Name, TableCount, DomainMatches, Score -AutoSize
+    $selected = Select-IdentDatabase `
+        -Fingerprints $fingerprints `
+        -ConfiguredDatabase ([string]$Context.Config.sql.database) `
+        -ConfiguredDataSource (Get-SqlDataSource -SqlConfig $Context.Config.sql)
     if ($null -eq $selected) {
         $ordered = @($fingerprints | Sort-Object Score, TableCount -Descending)
         Write-Host 'Several databases are possible. Choose one number:' -ForegroundColor Yellow
         for ($index = 0; $index -lt $ordered.Count; $index++) {
-            Write-Host "  $($index + 1). $($ordered[$index].Name)"
+            Write-Host "  $($index + 1). $($ordered[$index].DataSource) / $($ordered[$index].Name)"
         }
         $choiceText = Read-Host 'Database number'
         $choice = 0
@@ -608,6 +653,7 @@ function Invoke-AutoConfigureSql {
         $selected = $ordered[$choice - 1]
     }
 
+    $connectionResult = $selected.ConnectionResult
     Save-SqlDiscovery -Context $Context -ConnectionResult $connectionResult -Database $selected
     Write-Host ''
     Write-Host "SQL Server: $($connectionResult.Endpoint.DataSource)" -ForegroundColor Green
@@ -1017,24 +1063,31 @@ function Invoke-AgentSelfTest {
         }
     }
     $singleDatabase = Select-IdentDatabase -Fingerprints @(
-        [pscustomobject]@{ Name = 'ClinicDb'; TableCount = 100; DomainMatches = 0; Score = 4 }
+        [pscustomobject]@{ Name = 'ClinicDb'; TableCount = 100; DomainMatches = 0; StrongNameMatch = $false; Score = 4 }
     ) -ConfiguredDatabase ''
     if ($singleDatabase.Name -ne 'ClinicDb') {
         throw 'Self-test failed to select the only accessible database.'
     }
     $namedDatabase = Select-IdentDatabase -Fingerprints @(
-        [pscustomobject]@{ Name = 'Archive'; TableCount = 500; DomainMatches = 0; Score = 20 },
-        [pscustomobject]@{ Name = 'IDENT_Main'; TableCount = 100; DomainMatches = 3; Score = 119 }
+        [pscustomobject]@{ Name = 'Archive'; TableCount = 500; DomainMatches = 0; StrongNameMatch = $false; Score = 20 },
+        [pscustomobject]@{ Name = 'IDENT_Main'; TableCount = 100; DomainMatches = 3; StrongNameMatch = $true; Score = 119 }
     ) -ConfiguredDatabase ''
     if ($namedDatabase.Name -ne 'IDENT_Main') {
         throw 'Self-test failed to prefer an IDENT-named database.'
     }
     $ambiguousDatabase = Select-IdentDatabase -Fingerprints @(
-        [pscustomobject]@{ Name = 'Database1'; TableCount = 100; DomainMatches = 1; Score = 9 },
-        [pscustomobject]@{ Name = 'Database2'; TableCount = 95; DomainMatches = 1; Score = 8 }
+        [pscustomobject]@{ Name = 'Database1'; TableCount = 100; DomainMatches = 1; StrongNameMatch = $false; Score = 9 },
+        [pscustomobject]@{ Name = 'Database2'; TableCount = 95; DomainMatches = 1; StrongNameMatch = $false; Score = 8 }
     ) -ConfiguredDatabase ''
     if ($null -ne $ambiguousDatabase) {
         throw 'Self-test selected an ambiguous database.'
+    }
+    $genericNamedDatabase = Select-IdentDatabase -Fingerprints @(
+        [pscustomobject]@{ Name = 'ClinicDb'; TableCount = 200; DomainMatches = 0; StrongNameMatch = $false; Score = 120 },
+        [pscustomobject]@{ Name = 'Archive'; TableCount = 100; DomainMatches = 0; StrongNameMatch = $false; Score = 20 }
+    ) -ConfiguredDatabase ''
+    if ($null -ne $genericNamedDatabase) {
+        throw 'Self-test trusted a generic clinic database name without schema evidence.'
     }
     Write-Host 'SELF-TEST OK' -ForegroundColor Green
 }

@@ -185,7 +185,7 @@ function Format-Bounds {
 
 function Export-UiTree {
   param(
-    [System.Windows.Automation.AutomationElement]$Root,
+    [object[]]$Roots,
     [int]$MaxDepth,
     [string]$OutputPath
   )
@@ -225,7 +225,9 @@ function Export-UiTree {
     }
   }
 
-  Walk $Root 0 '0'
+  for ($rootIndex = 0; $rootIndex -lt $Roots.Count; $rootIndex++) {
+    Walk $Roots[$rootIndex] 0 ([string]$rootIndex)
+  }
   New-Item -ItemType Directory -Path (Split-Path -Parent $OutputPath) -Force | Out-Null
   $rows | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
   return $rows.Count
@@ -301,6 +303,54 @@ function Find-RobotElement {
   return $Root.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $condition)
 }
 
+function Get-IdentAutomationRoots {
+  param([object]$WindowInfo)
+
+  $roots = New-Object System.Collections.Generic.List[System.Windows.Automation.AutomationElement]
+  $handles = @{}
+  if ($WindowInfo.element) {
+    $roots.Add($WindowInfo.element)
+    $handles[[int]$WindowInfo.element.Current.NativeWindowHandle] = $true
+  }
+
+  $processCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+    [int]$WindowInfo.process.Id
+  )
+  $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+    [System.Windows.Automation.TreeScope]::Children,
+    $processCondition
+  )
+  for ($index = 0; $index -lt $windows.Count; $index++) {
+    $window = $windows.Item($index)
+    $handle = [int]$window.Current.NativeWindowHandle
+    if (-not $handles.ContainsKey($handle)) {
+      $roots.Add($window)
+      $handles[$handle] = $true
+    }
+  }
+  return @($roots)
+}
+
+function Find-RobotElementInIdent {
+  param(
+    [object]$WindowInfo,
+    [object]$Selector
+  )
+
+  foreach ($root in @(Get-IdentAutomationRoots $WindowInfo)) {
+    try {
+      $element = Find-RobotElement $root $Selector
+      if ($element) {
+        return $element
+      }
+    }
+    catch [System.Windows.Automation.ElementNotAvailableException] {
+    }
+  }
+  return $null
+}
+
 function Invoke-Click {
   param([System.Windows.Automation.AutomationElement]$Element)
 
@@ -346,7 +396,7 @@ function Resolve-TaskValue {
 
 function Test-WorkflowSelectors {
   param(
-    [System.Windows.Automation.AutomationElement]$Window,
+    [object]$WindowInfo,
     [object]$Config
   )
 
@@ -356,15 +406,53 @@ function Test-WorkflowSelectors {
       continue
     }
     $selector = $Config.selectors.($step.selector)
-    $element = Find-RobotElement $Window $selector
+    $element = Find-RobotElementInIdent $WindowInfo $selector
     $result[$step.selector] = [bool]$element
   }
   return $result
 }
 
+function Wait-WorkflowSuccess {
+  param(
+    [object]$WindowInfo,
+    [object]$Config
+  )
+
+  $condition = Get-ObjectProperty $Config.workflow 'successCondition' $null
+  if (-not $condition) {
+    throw 'workflow.successCondition is required for real execution'
+  }
+
+  $conditionType = [string](Get-ObjectProperty $condition 'type' '')
+  if ($conditionType -notin @('elementPresent', 'elementMissing')) {
+    throw "Unsupported workflow success condition: $conditionType"
+  }
+
+  $selectorName = [string](Get-ObjectProperty $condition 'selector' '')
+  $selector = Get-ObjectProperty $Config.selectors $selectorName $null
+  if (-not $selector) {
+    throw "Success selector '$selectorName' is not configured"
+  }
+
+  $timeoutSeconds = [Math]::Max(1, [Math]::Min(120, [int](Get-ObjectProperty $condition 'timeoutSeconds' 15)))
+  $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+  do {
+    $present = [bool](Find-RobotElementInIdent $WindowInfo $selector)
+    if (
+      ($conditionType -eq 'elementPresent' -and $present) -or
+      ($conditionType -eq 'elementMissing' -and -not $present)
+    ) {
+      return
+    }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+
+  throw "IDENT did not confirm the save operation within $timeoutSeconds seconds"
+}
+
 function Invoke-Workflow {
   param(
-    [System.Windows.Automation.AutomationElement]$Window,
+    [object]$WindowInfo,
     [object]$Task,
     [object]$Config,
     [bool]$Execute
@@ -373,14 +461,12 @@ function Invoke-Workflow {
   $ticket = $Task.ticket
   Write-RobotLog $Config 'info' 'Prepared IDENT task' @{
     id = $Task.id
-    client = $ticket.ClientFullName
-    phone = $ticket.ClientPhone
     planStart = $ticket.PlanStart
     doctor = $ticket.DoctorName
   }
 
   if (-not $Execute) {
-    $selectors = Test-WorkflowSelectors $Window $Config
+    $selectors = Test-WorkflowSelectors $WindowInfo $Config
     Write-RobotLog $Config 'info' 'Dry-run only; no UI actions executed' @{ selectors = $selectors }
     return
   }
@@ -391,7 +477,7 @@ function Invoke-Workflow {
 
   foreach ($step in @($Config.workflow.steps)) {
     $selector = $Config.selectors.($step.selector)
-    $element = Find-RobotElement $Window $selector
+    $element = Find-RobotElementInIdent $WindowInfo $selector
     if (-not $element) {
       throw "Selector '$($step.selector)' was not found for step '$($step.name)'"
     }
@@ -420,6 +506,9 @@ function Invoke-Workflow {
     Start-Sleep -Milliseconds $delayMs
     Write-RobotLog $Config 'info' "Executed step '$($step.name)'" @{ action = $step.action; selector = $step.selector }
   }
+
+  Wait-WorkflowSuccess $WindowInfo $Config
+  Write-RobotLog $Config 'info' 'IDENT save operation verified' @{ id = $Task.id }
 }
 
 $config = Read-JsonFile $ConfigPath
@@ -431,7 +520,7 @@ if ($Mode -eq 'Inspect') {
   }
   $outputPath = if ($config.inspect.outputPath) { $config.inspect.outputPath } else { Join-Path $PSScriptRoot 'ui-tree.json' }
   $maxDepth = if ($config.inspect.maxDepth) { [int]$config.inspect.maxDepth } else { 6 }
-  $count = Export-UiTree $windowInfo.element $maxDepth $outputPath
+  $count = Export-UiTree (Get-IdentAutomationRoots $windowInfo) $maxDepth $outputPath
   Write-RobotLog $config 'info' 'UI tree exported' @{
     outputPath = $outputPath
     controls = $count
@@ -452,8 +541,6 @@ if (-not $windowInfo) {
     foreach ($task in $tasks) {
       Write-RobotLog $config 'warn' 'IDENT window was not found; task parsed but selectors were not checked' @{
         id = $task.id
-        client = $task.ticket.ClientFullName
-        phone = $task.ticket.ClientPhone
         planStart = $task.ticket.PlanStart
         doctor = $task.ticket.DoctorName
       }
@@ -465,7 +552,7 @@ if (-not $windowInfo) {
 
 do {
   foreach ($task in $tasks) {
-    Invoke-Workflow $windowInfo.element $task $config ([bool]($Execute -and ($Mode -in @('RunOnce', 'Loop'))))
+    Invoke-Workflow $windowInfo $task $config ([bool]($Execute -and ($Mode -in @('RunOnce', 'Loop'))))
   }
 
   if ($Mode -ne 'Loop') {

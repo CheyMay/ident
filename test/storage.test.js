@@ -4,7 +4,13 @@ import path from 'node:path';
 import test, { after, before } from 'node:test';
 import { AmoTokenStore } from '../src/amocrm/token-store.js';
 import { loadConfig } from '../src/config.js';
-import { createStorage, IntegrationJobQueue, TicketQueue } from '../src/storage.js';
+import {
+  AgentSchemaStore,
+  AgentStatusStore,
+  createStorage,
+  IntegrationJobQueue,
+  TicketQueue
+} from '../src/storage.js';
 
 const tempRoot = path.resolve('test/.tmp-storage');
 
@@ -131,6 +137,61 @@ test('job queue retries failed jobs with backoff and manual retry', async () => 
     const manual = await jobs.retry(job.id);
     assert.equal(manual.status, 'queued');
     assert.equal(manual.lastError, null);
+  } finally {
+    storage.close?.();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('robot delivery mode requires an online calibrated agent', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const agents = new AgentStatusStore(storage, 30);
+
+  try {
+    await agents.heartbeat({
+      agentId: 'clinic-1',
+      robot: { enabled: false, configured: true, state: 'idle' }
+    });
+    await agents.setDesired('clinic-1', { robotEnabled: true });
+    assert.equal(await agents.hasRobotModeEnabled(), true);
+    assert.equal(await agents.isRobotModeEnabled('clinic-1'), true);
+
+    const data = await storage.readJson('agents.json', null);
+    data.agents['clinic-1'].lastSeenAt = '2020-01-01T00:00:00.000Z';
+    await storage.writeJson('agents.json', data);
+    assert.equal(await agents.hasRobotModeEnabled(), false);
+  } finally {
+    storage.close?.();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('stores clinic agent schema metadata without row data', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir, STORAGE_DRIVER: 'sqlite', SQLITE_FILE: path.join(dataDir, 'state.sqlite') });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const schemas = new AgentSchemaStore(storage);
+
+  try {
+    const stored = await schemas.put('clinic-1', {
+      generatedAt: '2026-07-30T10:00:00Z',
+      server: '192.168.0.3',
+      database: 'IDENT',
+      tables: [{
+        schema: 'dbo',
+        name: 'Doctors',
+        type: 'BASE TABLE',
+        columns: [{ position: 1, name: 'Id', type: 'int', nullable: false }]
+      }]
+    });
+    assert.deepEqual(stored.summary, { tables: 1, columns: 1 });
+    const loaded = await schemas.get('clinic-1');
+    assert.equal(loaded.tables[0].name, 'Doctors');
+    assert.equal(Object.hasOwn(loaded.tables[0], 'rows'), false);
   } finally {
     storage.close?.();
     await rm(dataDir, { recursive: true, force: true });

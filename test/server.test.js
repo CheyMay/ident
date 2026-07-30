@@ -237,7 +237,9 @@ test('queues booking and returns it through IDENT GetTickets', async () => {
       }
     );
     assert.equal(secondTicketsResponse.status, 200);
-    assert.deepEqual(await secondTicketsResponse.json(), []);
+    const repeatedTickets = await secondTicketsResponse.json();
+    assert.equal(repeatedTickets.length, 1);
+    assert.equal(repeatedTickets[0].Id, 'booking-1');
 
     const sentRecordsResponse = await fetch(`${baseUrl}/api/tickets?status=sent_to_ident`);
     assert.equal(sentRecordsResponse.status, 200);
@@ -358,7 +360,9 @@ test('imports amoCRM leads into queue and sends feedback after GetTickets', asyn
           }
         );
         assert.equal(secondTicketsResponse.status, 200);
-        assert.deepEqual(await secondTicketsResponse.json(), []);
+        const repeatedTickets = await secondTicketsResponse.json();
+        assert.equal(repeatedTickets.length, 1);
+        assert.equal(repeatedTickets[0].Id, 'amo:123');
       },
       {
         AMOCRM_BASE_URL: amoBaseUrl,
@@ -726,6 +730,66 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         busyIntervals: 0
       });
 
+      const schemaUploadResponse = await fetch(`${baseUrl}/api/agent/schema`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          schema: {
+            generatedAt: '2026-07-30T10:00:00Z',
+            server: '192.168.0.3',
+            database: 'IDENT',
+            tables: [{
+              schema: 'dbo',
+              name: 'Doctors',
+              type: 'BASE TABLE',
+              columns: [{ position: 1, name: 'Id', type: 'int', nullable: false }]
+            }]
+          }
+        })
+      });
+      assert.equal(schemaUploadResponse.status, 200);
+      assert.deepEqual((await schemaUploadResponse.json()).summary, { tables: 1, columns: 1 });
+
+      const schemaResponse = await fetch(`${baseUrl}/api/agent/schema?agentId=clinic-1`, {
+        headers: { 'X-API-Key': 'test-service-key' }
+      });
+      assert.equal(schemaResponse.status, 200);
+      const schema = await schemaResponse.json();
+      assert.equal(schema.database, 'IDENT');
+      assert.equal(schema.tables[0].columns[0].name, 'Id');
+
+      const prematureRobotSettingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({ agentId: 'clinic-1', robotEnabled: true })
+      });
+      assert.equal(prematureRobotSettingsResponse.status, 409);
+
+      const readyHeartbeatResponse = await fetch(`${baseUrl}/api/agent/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          deviceName: 'IDENT-PC',
+          version: '2.2.0',
+          status: 'online',
+          schedule: { enabled: true },
+          schema: { state: 'ok', tables: 1, columns: 1 },
+          robot: { enabled: false, configured: true, state: 'idle' }
+        })
+      });
+      assert.equal(readyHeartbeatResponse.status, 200);
+
       const settingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',
         headers: {
@@ -757,6 +821,12 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         })
       });
       assert.equal(bookingResponse.status, 201);
+
+      const identTicketsWhileRobotEnabled = await fetch(`${baseUrl}/GetTickets`, {
+        headers: { 'IDENT-Integration-Key': 'test-ident-key' }
+      });
+      assert.equal(identTicketsWhileRobotEnabled.status, 200);
+      assert.deepEqual(await identTicketsWhileRobotEnabled.json(), []);
 
       const claimResponse = await fetch(`${baseUrl}/api/robot/tasks/claim`, {
         method: 'POST',

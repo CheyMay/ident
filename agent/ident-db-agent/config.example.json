@@ -2,7 +2,7 @@
   "version": 2,
   "agent": {
     "id": "stomazub-COMPUTERNAME",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "features": {
     "scheduleEnabled": true,
@@ -11,6 +11,7 @@
   "intervals": {
     "heartbeatSeconds": 60,
     "scheduleSeconds": 600,
+    "schemaSeconds": 600,
     "robotSeconds": 30
   },
   "sql": {
@@ -36,6 +37,7 @@
     "pushResult": "last-push-result.json",
     "runtimeState": "runtime-state.json",
     "commandDirectory": "commands",
-    "robotConfig": "robot\\config.local.json"
+    "robotConfig": "robot\\config.local.json",
+    "robotReceipts": "robot-receipts.json"
   }
 }

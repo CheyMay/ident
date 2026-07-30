@@ -30,6 +30,7 @@ import {
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
 import { buildEffectiveConfig, SettingsStore } from './settings.js';
 import {
+  AgentSchemaStore,
   AgentStatusStore,
   AmoSlotStore,
   createStorage,
@@ -47,6 +48,7 @@ export function buildApp(config, logger, options = {}) {
   const slotStore = new AmoSlotStore(storage);
   const webhookLog = new WebhookLog(storage);
   const agentStore = new AgentStatusStore(storage, config.agent.offlineAfterSeconds);
+  const agentSchemaStore = new AgentSchemaStore(storage);
   const settingsStore = new SettingsStore(storage);
   const oauthStateStore = new OAuthStateStore(storage);
   const identDbClient = options.identDbClient || createIdentDbClient(config, logger);
@@ -122,6 +124,10 @@ export function buildApp(config, logger, options = {}) {
         const auth = validateIdentKey(req, config);
         if (!auth.ok) return sendText(res, auth.status, auth.message);
 
+        await ticketQueue.releaseExpiredRobotClaims();
+        if (await agentStore.hasRobotModeEnabled()) {
+          return sendJson(res, 200, []);
+        }
         const range = parseIdentRange(url);
         const tickets = await loadTicketsForIdent({ ticketQueue, mappingStore, jobQueue, amoClient, tokenStore, config, range, logger });
         const sentRecords = await ticketQueue.markSent(tickets.map((ticket) => ticket.Id));
@@ -180,6 +186,30 @@ export function buildApp(config, logger, options = {}) {
         });
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/agent/schema') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.agentId || !body.schema) {
+          return sendJson(res, 400, { error: 'agentId and schema are required' });
+        }
+        const record = await agentSchemaStore.put(body.agentId, body.schema);
+        return sendJson(res, 200, {
+          ok: true,
+          agentId: record.agentId,
+          receivedAt: record.receivedAt,
+          summary: record.summary
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/agent/schema') {
+        requireServiceApiKey(req, config);
+        const agentId = url.searchParams.get('agentId');
+        if (!agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        const record = await agentSchemaStore.get(agentId);
+        if (!record) return sendJson(res, 404, { error: 'Agent schema has not been received yet' });
+        return sendJson(res, 200, record);
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/agent/config') {
         requireAgentApiKey(req, config);
         const agentId = url.searchParams.get('agentId');
@@ -191,6 +221,9 @@ export function buildApp(config, logger, options = {}) {
         requireAgentApiKey(req, config);
         const body = await readJson(req);
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
+          return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
+        }
         return sendJson(res, 200, {
           agentId: String(body.agentId),
           desired: await agentStore.setDesired(body.agentId, body)
@@ -206,6 +239,9 @@ export function buildApp(config, logger, options = {}) {
         requireServiceApiKey(req, config);
         const body = await readJson(req);
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
+          return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
+        }
         return sendJson(res, 200, {
           agentId: String(body.agentId),
           desired: await agentStore.setDesired(body.agentId, body)
@@ -216,6 +252,9 @@ export function buildApp(config, logger, options = {}) {
         requireAgentApiKey(req, config);
         const body = await readJson(req);
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        if (!(await agentStore.isRobotModeEnabled(body.agentId))) {
+          return sendJson(res, 409, { error: 'Robot mode is not enabled for this agent' });
+        }
         const record = await ticketQueue.claimForRobot(body.agentId, config.agent.robotLeaseSeconds);
         return sendJson(res, 200, { record });
       }
@@ -644,7 +683,7 @@ async function loadTicketsForIdent({ ticketQueue, mappingStore, jobQueue, amoCli
     }
   }
 
-  return filterTickets(await prepareQueuedTicketsForIdent({ ticketQueue, logger }), range);
+  return filterTickets(await prepareTicketsForIdent({ ticketQueue, logger }), range);
 }
 
 async function hasAmoAccessToken(tokenStore) {
@@ -835,8 +874,8 @@ function ticketValidationError(mappingResult, validation) {
   return null;
 }
 
-async function prepareQueuedTicketsForIdent({ ticketQueue, logger }) {
-  const records = await ticketQueue.listRecords({ status: 'queued' });
+async function prepareTicketsForIdent({ ticketQueue, logger }) {
+  const records = await ticketQueue.listRecords({ status: ['queued', 'sent_to_ident'] });
   const tickets = [];
   for (const record of records) {
     const validation = normalizeAndValidateTicket(record.ticket);

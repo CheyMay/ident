@@ -69,6 +69,12 @@ function Get-ConfigContext {
         CommandDirectory = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.commandDirectory)
         PushResultPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.pushResult)
         RobotConfigPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.robotConfig)
+        RobotReceiptsPath = if ($config.paths.PSObject.Properties.Name -contains 'robotReceipts') {
+            Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.robotReceipts)
+        } else {
+            Join-Path $baseDirectory 'robot-receipts.json'
+        }
+        SchemaPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.schemaOutput)
         LogPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.log)
     }
 }
@@ -146,6 +152,86 @@ function Save-FeatureState {
     $script:Context.Config = $config
 }
 
+function Test-ScheduleMappingConfigured {
+    $mappingPath = Resolve-LocalPath `
+        -BaseDirectory $script:Context.BaseDirectory `
+        -Value ([string]$script:Context.Config.paths.mapping)
+    if (-not (Test-Path -LiteralPath $mappingPath)) {
+        return $false
+    }
+    try {
+        $mapping = Read-JsonFile -Path $mappingPath
+        foreach ($property in @('doctorsSql', 'branchesSql', 'intervalsSql')) {
+            if (
+                $mapping.PSObject.Properties.Name -notcontains $property -or
+                [string]::IsNullOrWhiteSpace([string]$mapping.$property)
+            ) {
+                return $false
+            }
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Read-RobotReceipts {
+    if (-not (Test-Path -LiteralPath $script:Context.RobotReceiptsPath)) {
+        return [pscustomobject]@{ version = 1; receipts = @() }
+    }
+    try {
+        $data = Read-JsonFile -Path $script:Context.RobotReceiptsPath
+        if ($data.PSObject.Properties.Name -notcontains 'receipts') {
+            return [pscustomobject]@{ version = 1; receipts = @() }
+        }
+        return $data
+    }
+    catch {
+        Write-WorkerLog -Level 'error' -EventName 'robot_receipts_read_failed' -Data @{ message = $_.Exception.Message }
+        return [pscustomobject]@{ version = 1; receipts = @() }
+    }
+}
+
+function Get-RobotReceipt {
+    param(
+        [string]$Id,
+        [string]$Fingerprint
+    )
+
+    $data = Read-RobotReceipts
+    return @($data.receipts | Where-Object {
+        [string]$_.id -eq $Id -and [string]$_.fingerprint -eq $Fingerprint
+    } | Select-Object -First 1)
+}
+
+function Save-RobotReceipt {
+    param(
+        [string]$Id,
+        [string]$Fingerprint,
+        [string]$CompletedAt
+    )
+
+    $data = Read-RobotReceipts
+    $receipts = @($data.receipts | Where-Object {
+        -not ([string]$_.id -eq $Id -and [string]$_.fingerprint -eq $Fingerprint)
+    })
+    $receipts += [pscustomobject]@{
+        id = $Id
+        fingerprint = $Fingerprint
+        completedAt = $CompletedAt
+    }
+    $receipts = @($receipts | Sort-Object completedAt -Descending | Select-Object -First 500)
+    $payload = [ordered]@{
+        version = 1
+        updatedAt = (Get-Date).ToString('o')
+        receipts = $receipts
+    }
+    $temporaryPath = "$($script:Context.RobotReceiptsPath).tmp-$PID"
+    $payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.RobotReceiptsPath -Force
+}
+
 function Apply-DesiredState {
     param([object]$Desired)
 
@@ -178,9 +264,9 @@ function Send-Heartbeat {
         startedAt = $script:State.worker.startedAt
         status = 'online'
         schedule = $script:State.schedule
+        schema = $script:State.schema
         robot = $script:State.robot
         system = [ordered]@{
-            user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
             processId = $PID
             windowsVersion = [Environment]::OSVersion.VersionString
         }
@@ -201,7 +287,49 @@ function Send-Heartbeat {
     Write-RuntimeState
 }
 
+function Invoke-SchemaUpload {
+    if (-not (Test-Path -LiteralPath $script:Context.SchemaPath)) {
+        $script:State.schema.state = 'not_available'
+        $script:State.schema.lastError = ''
+        Write-RuntimeState
+        return
+    }
+
+    $script:State.schema.state = 'sending'
+    $script:State.schema.lastAttemptAt = (Get-Date).ToString('o')
+    $script:State.schema.lastError = ''
+    Write-RuntimeState
+
+    try {
+        $schema = Read-JsonFile -Path $script:Context.SchemaPath
+        $response = Invoke-AgentRequest -Method POST -Path '/api/agent/schema' -Body @{
+            agentId = [string]$script:Context.Config.agent.id
+            schema = $schema
+        }
+        $script:State.schema.state = 'ok'
+        $script:State.schema.lastSuccessAt = (Get-Date).ToString('o')
+        $script:State.schema.lastError = ''
+        $script:State.schema.tables = [int]$response.summary.tables
+        $script:State.schema.columns = [int]$response.summary.columns
+    }
+    catch {
+        $script:State.schema.state = 'error'
+        $script:State.schema.lastError = $_.Exception.Message
+        Write-WorkerLog -Level 'error' -EventName 'schema_upload_failed' -Data @{ message = $_.Exception.Message }
+    }
+    Write-RuntimeState
+}
+
 function Invoke-SchedulePush {
+    $mappingConfigured = Test-ScheduleMappingConfigured
+    $script:State.schedule.mappingConfigured = $mappingConfigured
+    if (-not $mappingConfigured) {
+        $script:State.schedule.state = 'needs_mapping'
+        $script:State.schedule.lastError = ''
+        Write-RuntimeState
+        return
+    }
+
     $script:State.schedule.state = 'sending'
     $script:State.schedule.lastAttemptAt = (Get-Date).ToString('o')
     $script:State.schedule.lastError = ''
@@ -247,47 +375,72 @@ function Invoke-SchedulePush {
     Write-RuntimeState
 }
 
-function Test-RobotConfigured {
+function Get-RobotConfigurationProblem {
     if (-not (Test-Path -LiteralPath $script:Context.RobotConfigPath)) {
-        return $false
+        return 'Robot configuration file was not found.'
     }
     try {
         $config = Read-JsonFile -Path $script:Context.RobotConfigPath
         if (-not [bool]$config.workflow.allowUnsafeExecution) {
-            return $false
+            return 'Real robot execution is not allowed in robot configuration.'
         }
         if ([bool]$config.workflow.confirmBeforeEachStep) {
-            return $false
+            return 'Interactive confirmation must be disabled for background execution.'
         }
         foreach ($step in @($config.workflow.steps)) {
             $selector = $config.selectors.([string]$step.selector)
             if ($null -eq $selector) {
-                return $false
+                return "Selector '$($step.selector)' is missing."
             }
-            $values = @(
-                [string]$selector.name,
-                [string]$selector.automationId,
-                [string]$selector.className,
-                [string]$selector.controlType
-            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            $values = @(@(
+                    [string]$selector.name,
+                    [string]$selector.automationId,
+                    [string]$selector.className,
+                    [string]$selector.controlType
+                ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($values.Count -eq 0) {
-                return $false
+                return "Selector '$($step.selector)' is empty."
             }
         }
-        return $true
+        if ($config.workflow.PSObject.Properties.Name -notcontains 'successCondition') {
+            return 'Robot success condition is missing.'
+        }
+        $successCondition = $config.workflow.successCondition
+        if ([string]$successCondition.type -notin @('elementPresent', 'elementMissing')) {
+            return 'Robot success condition type is invalid.'
+        }
+        $successSelector = $config.selectors.([string]$successCondition.selector)
+        if ($null -eq $successSelector) {
+            return "Success selector '$($successCondition.selector)' is missing."
+        }
+        $successValues = @(@(
+                [string]$successSelector.name,
+                [string]$successSelector.automationId,
+                [string]$successSelector.className,
+                [string]$successSelector.controlType
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($successValues.Count -eq 0) {
+            return "Success selector '$($successCondition.selector)' is empty."
+        }
+        return ''
     }
     catch {
-        return $false
+        return $_.Exception.Message
     }
 }
 
+function Test-RobotConfigured {
+    return [string]::IsNullOrWhiteSpace((Get-RobotConfigurationProblem))
+}
+
 function Invoke-RobotPoll {
-    $configured = Test-RobotConfigured
+    $configurationProblem = Get-RobotConfigurationProblem
+    $configured = [string]::IsNullOrWhiteSpace($configurationProblem)
     $script:State.robot.configured = $configured
     $script:State.robot.lastAttemptAt = (Get-Date).ToString('o')
     if (-not $configured) {
         $script:State.robot.state = 'needs_configuration'
-        $script:State.robot.lastError = 'Robot UI selectors are not configured.'
+        $script:State.robot.lastError = $configurationProblem
         Write-RuntimeState
         return
     }
@@ -297,6 +450,7 @@ function Invoke-RobotPoll {
     Write-RuntimeState
 
     $record = $null
+    $localExecutionSucceeded = $false
     try {
         $claim = Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/claim' -Body @{
             agentId = [string]$script:Context.Config.agent.id
@@ -311,6 +465,26 @@ function Invoke-RobotPoll {
         $script:State.robot.state = 'processing'
         $script:State.robot.lastTaskId = [string]$record.id
         Write-RuntimeState
+
+        $fingerprint = [string]$record.fingerprint
+        $receipt = Get-RobotReceipt -Id ([string]$record.id) -Fingerprint $fingerprint
+        if ($null -ne $receipt) {
+            [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
+                id = [string]$record.id
+                agentId = [string]$script:Context.Config.agent.id
+                result = @{
+                    appointmentCreated = $true
+                    recoveredFromLocalReceipt = $true
+                    completedAt = [string]$receipt.completedAt
+                }
+            })
+            $script:State.robot.state = 'idle'
+            $script:State.robot.lastSuccessAt = [string]$receipt.completedAt
+            $script:State.robot.lastError = ''
+            Write-WorkerLog -Level 'info' -EventName 'robot_task_recovered' -Data @{ id = [string]$record.id }
+            Write-RuntimeState
+            return
+        }
 
         New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
         $taskPath = Join-Path $script:Context.CommandDirectory 'robot-task.json'
@@ -342,24 +516,30 @@ function Invoke-RobotPoll {
             throw $message
         }
 
+        $completedAt = (Get-Date).ToString('o')
+        Save-RobotReceipt `
+            -Id ([string]$record.id) `
+            -Fingerprint $fingerprint `
+            -CompletedAt $completedAt
+        $localExecutionSucceeded = $true
         [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
             id = [string]$record.id
             agentId = [string]$script:Context.Config.agent.id
             result = @{
                 appointmentCreated = $true
-                completedAt = (Get-Date).ToString('o')
+                completedAt = $completedAt
             }
         })
         $script:State.robot.state = 'idle'
-        $script:State.robot.lastSuccessAt = (Get-Date).ToString('o')
+        $script:State.robot.lastSuccessAt = $completedAt
         $script:State.robot.lastError = ''
         Write-WorkerLog -Level 'info' -EventName 'robot_task_completed' -Data @{ id = [string]$record.id }
     }
     catch {
         $message = $_.Exception.Message
-        $script:State.robot.state = 'error'
+        $script:State.robot.state = if ($localExecutionSucceeded) { 'awaiting_confirmation' } else { 'error' }
         $script:State.robot.lastError = $message
-        if ($null -ne $record) {
+        if ($null -ne $record -and -not $localExecutionSucceeded) {
             try {
                 [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/fail' -Body @{
                     id = [string]$record.id
@@ -401,6 +581,7 @@ try {
         schedule = [ordered]@{
             enabled = [bool]$script:Context.Config.features.scheduleEnabled
             state = 'starting'
+            mappingConfigured = Test-ScheduleMappingConfigured
             lastAttemptAt = $null
             lastSuccessAt = $null
             lastError = ''
@@ -409,6 +590,14 @@ try {
             intervals = 0
             freeIntervals = 0
             busyIntervals = 0
+        }
+        schema = [ordered]@{
+            state = 'starting'
+            lastAttemptAt = $null
+            lastSuccessAt = $null
+            lastError = ''
+            tables = 0
+            columns = 0
         }
         robot = [ordered]@{
             enabled = [bool]$script:Context.Config.features.robotEnabled
@@ -430,6 +619,7 @@ try {
 
     $nextHeartbeat = [DateTime]::MinValue
     $nextSchedule = [DateTime]::MinValue
+    $nextSchema = [DateTime]::MinValue
     $nextRobot = [DateTime]::MinValue
 
     while ($true) {
@@ -443,6 +633,17 @@ try {
         if ($now -ge $nextHeartbeat) {
             Send-Heartbeat
             $nextHeartbeat = $now.AddSeconds([Math]::Max(30, [int]$script:Context.Config.intervals.heartbeatSeconds))
+        }
+
+        if ($now -ge $nextSchema) {
+            Invoke-SchemaUpload
+            $schemaSeconds = if ($script:Context.Config.intervals.PSObject.Properties.Name -contains 'schemaSeconds') {
+                [int]$script:Context.Config.intervals.schemaSeconds
+            } else {
+                600
+            }
+            $nextSchema = $now.AddSeconds([Math]::Max(300, $schemaSeconds))
+            $nextHeartbeat = [DateTime]::MinValue
         }
 
         if ([bool]$script:State.schedule.enabled -and $now -ge $nextSchedule) {

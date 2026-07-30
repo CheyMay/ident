@@ -323,6 +323,10 @@ When `SQLITE_MIGRATE_JSON=true`, existing files from `DATA_DIR` are imported on 
 - `amocrm-token.json`
 - `amocrm-webhooks.json`
 - `amo-slots.json`
+- `jobs.json`
+- `oauth-states.json`
+- `agents.json`
+- `agent-schemas.json`
 
 The migration does not delete old JSON files. Keep them as backup until SQLite mode is verified. `node:sqlite` is available in the bundled Node.js 24 runtime here, but Node currently marks it as experimental, so keep `json` mode available as a rollback path.
 
@@ -455,7 +459,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\agent\ident-db-agent\Build-IdentDesktopPackage.ps1
 ```
 
-It creates `agent/ident-db-agent/dist/ident-desktop-2.1.0.zip`. The installer
+It creates `agent/ident-db-agent/dist/ident-desktop-2.2.0.zip`. The installer
 registers the background worker and status panel at Windows logon. Schedule
 export is enabled by default; the UI booking robot is disabled and cannot
 claim tasks until its local IDENT selectors are configured.
@@ -464,6 +468,7 @@ Agent-only endpoints require `X-Agent-Key: <AGENT_API_KEY>`:
 
 - `POST /api/agent/heartbeat`
 - `POST /api/agent/timetable`
+- `POST /api/agent/schema`
 - `GET|POST /api/agent/config`
 - `POST /api/robot/tasks/claim`
 - `POST /api/robot/tasks/complete`
@@ -472,6 +477,7 @@ Agent-only endpoints require `X-Agent-Key: <AGENT_API_KEY>`:
 Widget/admin endpoints use `X-API-Key: <SERVICE_API_KEY>`:
 
 - `GET /api/agent/status`
+- `GET /api/agent/schema?agentId=<agent-id>`
 - `POST /api/agent/settings`
 
 ### `GET /api/tickets`
@@ -486,7 +492,8 @@ curl "https://integration.example.ru/api/tickets?status=failed" \
 Statuses:
 
 - `queued`: ready to be returned by `GetTickets`.
-- `sent_to_ident`: already returned by `GetTickets`.
+- `sent_to_ident`: returned by `GetTickets` at least once; it remains available
+  for later IDENT date-range requests under the same stable ticket ID.
 - `failed`: not enough data or processing error.
 - `ignored`: duplicate or intentionally skipped record; duplicate reason is stored in `lastError`.
 
@@ -653,6 +660,8 @@ In `json` mode, runtime state is stored under `./data`:
 - `amocrm-webhooks.json` recent amoCRM webhook payloads.
 - `amo-slots.json` mapping between IDENT schedule slots and amoCRM catalog element IDs.
 - `jobs.json` persistent retry queue for amoCRM imports, feedback, and timetable sync.
+- `agents.json` clinic desktop heartbeat and desired switch state.
+- `agent-schemas.json` read-only SQL table/column inventory uploaded by clinic agents.
 
 In `sqlite` mode, the same logical keys are stored in the `kv_store` table of `SQLITE_FILE`.
 

@@ -10,6 +10,7 @@ The robot is intentionally conservative:
 - UI clicks require both `-Execute` and `workflow.allowUnsafeExecution=true`;
 - every real step can require manual `YES` confirmation;
 - selectors are empty until we inspect the real IDENT window;
+- real execution must finish with a configured UI success condition;
 - logs are JSON lines for later audit.
 
 ## What this can and cannot solve
@@ -100,8 +101,9 @@ Real clicking is blocked until all of these are true:
 
 1. `config.local.json` contains real selectors from `ui-tree.json`.
 2. `workflow.allowUnsafeExecution` is set to `true`.
-3. The command is run with `-Mode RunOnce -Execute`.
-4. If `confirmBeforeEachStep=true`, the operator types `YES` before each step.
+3. `workflow.successCondition` points to a selector that confirms the save.
+4. The command is run with `-Mode RunOnce -Execute`.
+5. If `confirmBeforeEachStep=true`, the operator types `YES` before each step.
 
 Command:
 
@@ -126,10 +128,13 @@ Ask IDENT or check on the client machine:
 7. Should the robot confirm an existing incoming request or create a new booking
    from scratch?
 
+The unified desktop worker uses backend claim/complete endpoints, prevents HTTP
+`GetTickets` and robot delivery from running at the same time, and stores a
+local non-patient receipt after a verified UI save. If the server response is
+lost, the same task is acknowledged later without repeating the UI actions.
+
 ## Production hardening still needed
 
-- add a backend claim/complete endpoint so two robots cannot process the same
-  ticket;
 - add screenshots on failure;
 - add patient duplicate resolution rules;
 - add an operator-visible dashboard for failed RPA tasks;

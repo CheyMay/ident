@@ -9,5 +9,7 @@ export const STATE_KEYS = [
   'amo-slots.json',
   'jobs.json',
   'settings.json',
-  'oauth-states.json'
+  'oauth-states.json',
+  'agents.json',
+  'agent-schemas.json'
 ];

@@ -78,6 +78,17 @@ if (-not (Test-Path -LiteralPath $robotConfigTarget)) {
     $robotConfig.workflow.confirmBeforeEachStep = $false
     $robotConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $robotConfigTarget -Encoding UTF8
 }
+else {
+    $robotConfig = Get-Content -LiteralPath $robotConfigTarget -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($robotConfig.workflow.PSObject.Properties.Name -notcontains 'successCondition') {
+        $robotConfig.workflow | Add-Member -NotePropertyName successCondition -NotePropertyValue ([pscustomobject]@{
+            type = 'elementMissing'
+            selector = 'saveButton'
+            timeoutSeconds = 15
+        })
+        $robotConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $robotConfigTarget -Encoding UTF8
+    }
+}
 
 $defaultAgentId = ('stomazub-' + $env:COMPUTERNAME).ToLowerInvariant() -replace '[^a-z0-9_-]', '-'
 $agentId = Read-WithDefault -Prompt 'Agent ID' -Default $defaultAgentId
@@ -98,7 +109,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.1.0'
+        version = '2.2.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -107,6 +118,7 @@ $config = [ordered]@{
     intervals = [ordered]@{
         heartbeatSeconds = 60
         scheduleSeconds = 600
+        schemaSeconds = 600
         robotSeconds = 30
     }
     sql = [ordered]@{
@@ -133,6 +145,7 @@ $config = [ordered]@{
         runtimeState = 'runtime-state.json'
         commandDirectory = 'commands'
         robotConfig = 'robot\config.local.json'
+        robotReceipts = 'robot-receipts.json'
     }
 }
 

@@ -242,7 +242,7 @@ export class TicketQueue {
     const changed = [];
 
     for (const record of records) {
-      if (!idSet.has(record.id)) continue;
+      if (!idSet.has(record.id) || record.status !== 'queued') continue;
       record.status = 'sent_to_ident';
       record.sentAt = now;
       record.updatedAt = now;
@@ -281,6 +281,25 @@ export class TicketQueue {
     record.robotResult = null;
     await this.writeRecords(records);
     return record;
+  }
+
+  async releaseExpiredRobotClaims() {
+    const records = await this.records();
+    const now = new Date();
+    let released = 0;
+    for (const record of records) {
+      if (record.status !== 'robot_processing') continue;
+      const leaseUntil = new Date(record.robotLeaseUntil || 0);
+      if (!Number.isNaN(leaseUntil.getTime()) && leaseUntil > now) continue;
+      record.status = 'queued';
+      record.robotAgentId = null;
+      record.robotClaimedAt = null;
+      record.robotLeaseUntil = null;
+      record.updatedAt = now.toISOString();
+      released += 1;
+    }
+    if (released) await this.writeRecords(records);
+    return released;
   }
 
   async claimForRobot(agentId, leaseSeconds = 300) {
@@ -372,6 +391,7 @@ export class AgentStatusStore {
       lastSeenAt: now,
       status: cleanAgentText(payload.status, 40) || 'online',
       schedule: normalizeAgentSection(payload.schedule),
+      schema: normalizeAgentSection(payload.schema),
       robot: normalizeAgentSection(payload.robot),
       system: normalizeAgentSection(payload.system),
       firstSeenAt: existing.firstSeenAt || now
@@ -414,6 +434,40 @@ export class AgentStatusStore {
     return data.desired[normalized];
   }
 
+  async isRobotConfigured(agentId) {
+    const normalized = normalizeAgentId(agentId);
+    const data = await this.read();
+    const agent = data.agents[normalized];
+    if (!agent) return false;
+    const current = this.withOnlineState(agent);
+    return current.online && current.robot?.configured === true;
+  }
+
+  async isRobotModeEnabled(agentId) {
+    const normalized = normalizeAgentId(agentId);
+    const data = await this.read();
+    const agent = data.agents[normalized];
+    return (
+      this.desiredForData(data, normalized).robotEnabled === true &&
+      Boolean(agent) &&
+      this.withOnlineState(agent).online &&
+      agent.robot?.configured === true
+    );
+  }
+
+  async hasRobotModeEnabled() {
+    const data = await this.read();
+    return Object.entries(data.desired).some(([agentId, desired]) => {
+      const agent = data.agents[agentId];
+      return (
+        desired?.robotEnabled === true &&
+        Boolean(agent) &&
+        this.withOnlineState(agent).online &&
+        agent.robot?.configured === true
+      );
+    });
+  }
+
   withOnlineState(agent) {
     const ageSeconds = agent?.lastSeenAt
       ? Math.max(0, Math.round((Date.now() - new Date(agent.lastSeenAt).getTime()) / 1000))
@@ -444,6 +498,43 @@ export class AgentStatusStore {
 
   async write(data) {
     await this.storage.writeJson(this.fileName, data);
+  }
+}
+
+export class AgentSchemaStore {
+  constructor(storage) {
+    this.storage = storage;
+    this.fileName = 'agent-schemas.json';
+  }
+
+  async put(agentId, schema) {
+    const normalizedAgentId = normalizeAgentId(agentId);
+    const normalizedSchema = normalizeAgentSchema(schema);
+    const data = await this.read();
+    const now = new Date().toISOString();
+    const record = {
+      agentId: normalizedAgentId,
+      receivedAt: now,
+      ...normalizedSchema
+    };
+    data.schemas[normalizedAgentId] = record;
+    data.updatedAt = now;
+    await this.storage.writeJson(this.fileName, data);
+    return record;
+  }
+
+  async get(agentId) {
+    const normalizedAgentId = normalizeAgentId(agentId);
+    const data = await this.read();
+    return data.schemas[normalizedAgentId] || null;
+  }
+
+  async read() {
+    const data = await this.storage.readJson(this.fileName, { schemas: {}, updatedAt: null });
+    return {
+      schemas: data.schemas && typeof data.schemas === 'object' ? data.schemas : {},
+      updatedAt: data.updatedAt || null
+    };
   }
 }
 
@@ -689,6 +780,66 @@ function normalizeAgentSection(value) {
       .filter(([key, item]) => /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) && ['string', 'number', 'boolean'].includes(typeof item))
       .map(([key, item]) => [key, typeof item === 'string' ? item.slice(0, 500) : item])
   );
+}
+
+function normalizeAgentSchema(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(value.tables)) {
+    throw badStorageInput('schema must contain a tables array');
+  }
+  if (value.tables.length > 5000) {
+    throw badStorageInput('schema contains too many tables');
+  }
+
+  let columnCount = 0;
+  const tables = value.tables.map((table, tableIndex) => {
+    if (!table || typeof table !== 'object' || Array.isArray(table) || !Array.isArray(table.columns)) {
+      throw badStorageInput(`schema.tables[${tableIndex}] must contain a columns array`);
+    }
+    if (table.columns.length > 2000) {
+      throw badStorageInput(`schema.tables[${tableIndex}] contains too many columns`);
+    }
+    columnCount += table.columns.length;
+    if (columnCount > 100000) {
+      throw badStorageInput('schema contains too many columns');
+    }
+    return {
+      schema: cleanAgentText(table.schema, 256),
+      name: cleanAgentText(table.name, 256),
+      type: cleanAgentText(table.type, 80),
+      columns: table.columns.map((column) => ({
+        position: optionalFiniteNumber(column?.position),
+        name: cleanAgentText(column?.name, 256),
+        type: cleanAgentText(column?.type, 128),
+        maxLength: optionalFiniteNumber(column?.maxLength),
+        precision: optionalFiniteNumber(column?.precision),
+        scale: optionalFiniteNumber(column?.scale),
+        nullable: column?.nullable === true
+      }))
+    };
+  });
+
+  return {
+    generatedAt: cleanAgentDate(value.generatedAt),
+    server: cleanAgentText(value.server, 256),
+    database: cleanAgentText(value.database, 256),
+    summary: {
+      tables: tables.length,
+      columns: columnCount
+    },
+    tables
+  };
+}
+
+function optionalFiniteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function badStorageInput(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
 }
 
 function ticketFingerprint(ticket) {

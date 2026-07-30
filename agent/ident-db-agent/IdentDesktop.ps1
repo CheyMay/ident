@@ -81,6 +81,9 @@ function Format-StateName {
         processing = 'обработка заявки'
         idle = 'ожидание'
         needs_configuration = 'нужна настройка'
+        needs_mapping = 'нужна настройка расписания'
+        not_available = 'структура еще не найдена'
+        awaiting_confirmation = 'ожидает подтверждения сервера'
     }
     if ($names.ContainsKey($Value)) {
         return $names[$Value]
@@ -153,7 +156,7 @@ $script:AllowClose = $false
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Code9 IDENT'
-$form.ClientSize = New-Object Drawing.Size(540, 575)
+$form.ClientSize = New-Object Drawing.Size(540, 635)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
@@ -188,60 +191,62 @@ $scheduleStateLabel = New-StatusLabel -Parent $form -Text 'Состояние: �
 $scheduleTimeLabel = New-StatusLabel -Parent $form -Text 'Последняя отправка: нет' -Top 244
 $scheduleCountLabel = New-StatusLabel -Parent $form -Text 'Врачи: 0  |  филиалы: 0  |  окна: 0' -Top 270
 $sqlConnectionLabel = New-StatusLabel -Parent $form -Text 'SQL: поиск еще не выполнялся' -Top 294
+$schemaLabel = New-StatusLabel -Parent $form -Text 'Структура БД: ожидает проверки' -Top 318
 
 $sendButton = New-Object System.Windows.Forms.Button
-$sendButton.Location = New-Object Drawing.Point(20, 322)
+$sendButton.Location = New-Object Drawing.Point(20, 346)
 $sendButton.Size = New-Object Drawing.Size(118, 34)
 $sendButton.Text = 'Отправить сейчас'
 $form.Controls.Add($sendButton)
 
 $autoSqlButton = New-Object System.Windows.Forms.Button
-$autoSqlButton.Location = New-Object Drawing.Point(148, 322)
+$autoSqlButton.Location = New-Object Drawing.Point(148, 346)
 $autoSqlButton.Size = New-Object Drawing.Size(118, 34)
 $autoSqlButton.Text = 'Найти SQL'
 $form.Controls.Add($autoSqlButton)
 
 $sqlButton = New-Object System.Windows.Forms.Button
-$sqlButton.Location = New-Object Drawing.Point(276, 322)
+$sqlButton.Location = New-Object Drawing.Point(276, 346)
 $sqlButton.Size = New-Object Drawing.Size(118, 34)
 $sqlButton.Text = 'Проверить базу'
 $form.Controls.Add($sqlButton)
 
 $restartButton = New-Object System.Windows.Forms.Button
-$restartButton.Location = New-Object Drawing.Point(404, 322)
+$restartButton.Location = New-Object Drawing.Point(404, 346)
 $restartButton.Size = New-Object Drawing.Size(110, 34)
 $restartButton.Text = 'Перезапуск'
 $form.Controls.Add($restartButton)
 
 $separator2 = New-Object System.Windows.Forms.Label
 $separator2.BorderStyle = [Windows.Forms.BorderStyle]::Fixed3D
-$separator2.Location = New-Object Drawing.Point(20, 374)
+$separator2.Location = New-Object Drawing.Point(20, 398)
 $separator2.Size = New-Object Drawing.Size(494, 2)
 $form.Controls.Add($separator2)
 
 $robotCheck = New-Object System.Windows.Forms.CheckBox
-$robotCheck.Location = New-Object Drawing.Point(20, 392)
+$robotCheck.Location = New-Object Drawing.Point(20, 416)
 $robotCheck.Size = New-Object Drawing.Size(280, 26)
 $robotCheck.Text = 'Робот подтверждения заявок включен'
 $robotCheck.Checked = [bool]$script:Config.features.robotEnabled
 $form.Controls.Add($robotCheck)
 
-$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 422
-$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 448
+$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 446
+$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 472
 
 $inspectButton = New-Object System.Windows.Forms.Button
-$inspectButton.Location = New-Object Drawing.Point(20, 482)
+$inspectButton.Location = New-Object Drawing.Point(20, 506)
 $inspectButton.Size = New-Object Drawing.Size(154, 34)
 $inspectButton.Text = 'Сканировать IDENT'
 $form.Controls.Add($inspectButton)
 
 $folderButton = New-Object System.Windows.Forms.Button
-$folderButton.Location = New-Object Drawing.Point(184, 482)
+$folderButton.Location = New-Object Drawing.Point(184, 506)
 $folderButton.Size = New-Object Drawing.Size(154, 34)
 $folderButton.Text = 'Открыть папку'
 $form.Controls.Add($folderButton)
 
-$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 532
+$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 558
+$errorLabel.Size = New-Object Drawing.Size(494, 60)
 $errorLabel.ForeColor = [Drawing.Color]::FromArgb(157, 35, 32)
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
@@ -338,10 +343,20 @@ function Refresh-Status {
     $robotStateLabel.Text = 'Робот: ' + (Format-StateName -Value ([string]$state.robot.state)) +
         $(if ([bool]$state.robot.configured) { '' } else { ' (не откалиброван)' })
     $robotTimeLabel.Text = 'Последнее выполнение: ' + (Format-DateValue -Value $state.robot.lastSuccessAt)
+    $schemaState = if ($state.PSObject.Properties.Name -contains 'schema') { $state.schema } else { $null }
+    if ($null -ne $schemaState) {
+        $schemaLabel.Text = 'Структура БД: ' + (Format-StateName -Value ([string]$schemaState.state)) +
+            $(if ([string]$schemaState.state -eq 'ok') {
+                "  |  таблиц: $($schemaState.tables)  |  колонок: $($schemaState.columns)"
+            } else {
+                ''
+            })
+    }
 
     $errors = @(
         [string]$state.worker.lastError,
         [string]$state.schedule.lastError,
+        $(if ($null -ne $schemaState) { [string]$schemaState.lastError } else { '' }),
         [string]$state.robot.lastError
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     $errorLabel.Text = ($errors -join ' | ')
@@ -350,6 +365,12 @@ function Refresh-Status {
         $tray.Icon = [Drawing.SystemIcons]::Error
     }
     elseif ([string]$state.robot.state -eq 'needs_configuration' -and [bool]$state.robot.enabled) {
+        $tray.Icon = [Drawing.SystemIcons]::Warning
+    }
+    elseif (
+        [string]$state.schedule.state -eq 'needs_mapping' -or
+        ($null -ne $schemaState -and [string]$schemaState.state -eq 'error')
+    ) {
         $tray.Icon = [Drawing.SystemIcons]::Warning
     }
     else {
