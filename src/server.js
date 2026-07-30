@@ -340,6 +340,15 @@ export function buildApp(config, logger, options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/bookings') {
         requireServiceApiKey(req, config);
         const body = await readJson(req);
+        const requireAmoLead = body.requireAmoLead === true;
+        if (requireAmoLead) {
+          const token = await tokenStore.get();
+          if (!amoClient || !token.accessToken) {
+            return sendJson(res, 409, {
+              error: 'amoCRM authorization is required before creating a test booking'
+            });
+          }
+        }
         const ticket = normalizeBookingTicket(body, {
           defaultAppointmentMinutes: config.amo.defaultAppointmentMinutes
         });
@@ -354,6 +363,11 @@ export function buildApp(config, logger, options = {}) {
         if (amoClient) {
           amoLead = await amoClient.createLeadWithContact(bookingToAmoLead(validation.ticket, config));
           if (amoLead?.id) validation.ticket.Id = `amo:${amoLead.id}`;
+        }
+        if (requireAmoLead && !amoLead?.id) {
+          return sendJson(res, 502, {
+            error: 'amoCRM did not return a lead ID; the booking was not queued for IDENT'
+          });
         }
 
         await queueTicketWithDedupe({

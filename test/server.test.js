@@ -272,6 +272,33 @@ test('queues booking and returns it through IDENT GetTickets', async () => {
   });
 });
 
+test('does not queue amoCRM test booking before amoCRM authorization', async () => {
+  await withTestServer(async ({ baseUrl }) => {
+    const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'booking-requires-amo',
+        dateAndTime: '2026-05-08T10:00:00+03:00',
+        clientFullName: 'Иванов Иван',
+        clientPhone: '+79110001122',
+        planStart: '2026-05-12T10:00:00+03:00',
+        planEnd: '2026-05-12T11:00:00+03:00',
+        requireAmoLead: true
+      })
+    });
+
+    assert.equal(bookingResponse.status, 409);
+    const booking = await bookingResponse.json();
+    assert.match(booking.error, /amoCRM authorization is required/);
+
+    const summaryResponse = await fetch(`${baseUrl}/api/tickets/summary`);
+    assert.equal(summaryResponse.status, 200);
+    const summary = await summaryResponse.json();
+    assert.equal(summary.total, 0);
+  });
+});
+
 test('diagnostics reports failed tickets and jobs as errors', async () => {
   await withTestServer(async ({ baseUrl, dataDir }) => {
     await writeFile(
