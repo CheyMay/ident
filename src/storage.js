@@ -143,7 +143,15 @@ export class TicketQueue {
 
   async summary() {
     const records = await this.records();
-    const statuses = { queued: 0, sent_to_ident: 0, failed: 0, ignored: 0 };
+    const statuses = {
+      queued: 0,
+      sent_to_ident: 0,
+      failed: 0,
+      ignored: 0,
+      robot_processing: 0,
+      robot_completed: 0,
+      robot_failed: 0
+    };
     for (const record of records) {
       statuses[record.status] = (statuses[record.status] || 0) + 1;
     }
@@ -194,7 +202,12 @@ export class TicketQueue {
       sentAt: changed ? null : existing?.sentAt || null,
       sentCount: existing?.sentCount || 0,
       lastError: meta.lastError || (changed ? null : existing?.lastError || null),
-      lastSourceEventAt: meta.lastSourceEventAt || existing?.lastSourceEventAt || null
+      lastSourceEventAt: meta.lastSourceEventAt || existing?.lastSourceEventAt || null,
+      robotAgentId: changed ? null : existing?.robotAgentId || null,
+      robotClaimedAt: changed ? null : existing?.robotClaimedAt || null,
+      robotLeaseUntil: changed ? null : existing?.robotLeaseUntil || null,
+      robotCompletedAt: changed ? null : existing?.robotCompletedAt || null,
+      robotResult: changed ? null : existing?.robotResult || null
     };
 
     if (index === -1) records.unshift(record);
@@ -213,7 +226,7 @@ export class TicketQueue {
 
     return (await this.records()).find((record) => {
       if (excludeId && record.id === excludeId) return false;
-      if (!['queued', 'sent_to_ident'].includes(record.status)) return false;
+      if (!['queued', 'sent_to_ident', 'robot_processing', 'robot_completed'].includes(record.status)) return false;
       if (record.duplicateKey !== duplicateKey) return false;
       if (!threshold) return true;
       const updatedAt = new Date(record.updatedAt || record.createdAt || 0).getTime();
@@ -261,12 +274,176 @@ export class TicketQueue {
     record.queuedAt = new Date().toISOString();
     record.updatedAt = record.queuedAt;
     record.lastError = null;
+    record.robotAgentId = null;
+    record.robotClaimedAt = null;
+    record.robotLeaseUntil = null;
+    record.robotCompletedAt = null;
+    record.robotResult = null;
+    await this.writeRecords(records);
+    return record;
+  }
+
+  async claimForRobot(agentId, leaseSeconds = 300) {
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId) return null;
+
+    const records = await this.records();
+    const now = new Date();
+    for (const record of records) {
+      if (record.status !== 'robot_processing') continue;
+      const leaseUntil = new Date(record.robotLeaseUntil || 0);
+      if (Number.isNaN(leaseUntil.getTime()) || leaseUntil <= now) {
+        record.status = 'queued';
+        record.robotAgentId = null;
+        record.robotClaimedAt = null;
+        record.robotLeaseUntil = null;
+        record.updatedAt = now.toISOString();
+      }
+    }
+
+    const record = records
+      .filter((item) => item.status === 'queued')
+      .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt))[0];
+    if (!record) {
+      await this.writeRecords(records);
+      return null;
+    }
+
+    record.status = 'robot_processing';
+    record.robotAgentId = normalizedAgentId;
+    record.robotClaimedAt = now.toISOString();
+    record.robotLeaseUntil = new Date(now.getTime() + Math.max(30, Number(leaseSeconds || 300)) * 1000).toISOString();
+    record.updatedAt = record.robotClaimedAt;
+    record.lastError = null;
+    await this.writeRecords(records);
+    return record;
+  }
+
+  async completeRobot(id, agentId, result = null) {
+    const records = await this.records();
+    const record = records.find((item) => item.id === String(id));
+    if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+    const now = new Date().toISOString();
+    record.status = 'robot_completed';
+    record.robotCompletedAt = now;
+    record.robotLeaseUntil = null;
+    record.robotResult = result && typeof result === 'object' ? result : null;
+    record.updatedAt = now;
+    record.lastError = null;
+    await this.writeRecords(records);
+    return record;
+  }
+
+  async failRobot(id, agentId, errorMessage) {
+    const records = await this.records();
+    const record = records.find((item) => item.id === String(id));
+    if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+    const now = new Date().toISOString();
+    record.status = 'robot_failed';
+    record.robotLeaseUntil = null;
+    record.updatedAt = now;
+    record.lastError = String(errorMessage || 'Robot failed');
     await this.writeRecords(records);
     return record;
   }
 
   async writeRecords(records) {
     await this.storage.writeJson(this.fileName, { updatedAt: new Date().toISOString(), records });
+  }
+}
+
+export class AgentStatusStore {
+  constructor(storage, offlineAfterSeconds = 180) {
+    this.storage = storage;
+    this.fileName = 'agents.json';
+    this.offlineAfterSeconds = Math.max(30, Number(offlineAfterSeconds || 180));
+  }
+
+  async heartbeat(payload = {}) {
+    const agentId = normalizeAgentId(payload.agentId);
+    const data = await this.read();
+    const now = new Date().toISOString();
+    const existing = data.agents[agentId] || {};
+    data.agents[agentId] = {
+      agentId,
+      deviceName: cleanAgentText(payload.deviceName, 120),
+      version: cleanAgentText(payload.version, 40),
+      startedAt: cleanAgentDate(payload.startedAt),
+      lastSeenAt: now,
+      status: cleanAgentText(payload.status, 40) || 'online',
+      schedule: normalizeAgentSection(payload.schedule),
+      robot: normalizeAgentSection(payload.robot),
+      system: normalizeAgentSection(payload.system),
+      firstSeenAt: existing.firstSeenAt || now
+    };
+    data.updatedAt = now;
+    await this.write(data);
+    return {
+      agent: this.withOnlineState(data.agents[agentId]),
+      desired: this.desiredForData(data, agentId)
+    };
+  }
+
+  async status() {
+    const data = await this.read();
+    return {
+      updatedAt: data.updatedAt,
+      agents: Object.values(data.agents)
+        .map((agent) => this.withOnlineState(agent))
+        .sort((left, right) => String(right.lastSeenAt).localeCompare(String(left.lastSeenAt))),
+      desired: data.desired
+    };
+  }
+
+  async desiredFor(agentId) {
+    const normalized = normalizeAgentId(agentId);
+    return this.desiredForData(await this.read(), normalized);
+  }
+
+  async setDesired(agentId, input = {}) {
+    const normalized = normalizeAgentId(agentId);
+    const data = await this.read();
+    const existing = this.desiredForData(data, normalized);
+    data.desired[normalized] = {
+      scheduleEnabled: typeof input.scheduleEnabled === 'boolean' ? input.scheduleEnabled : existing.scheduleEnabled,
+      robotEnabled: typeof input.robotEnabled === 'boolean' ? input.robotEnabled : existing.robotEnabled,
+      updatedAt: new Date().toISOString()
+    };
+    data.updatedAt = data.desired[normalized].updatedAt;
+    await this.write(data);
+    return data.desired[normalized];
+  }
+
+  withOnlineState(agent) {
+    const ageSeconds = agent?.lastSeenAt
+      ? Math.max(0, Math.round((Date.now() - new Date(agent.lastSeenAt).getTime()) / 1000))
+      : null;
+    return {
+      ...agent,
+      online: ageSeconds !== null && ageSeconds <= this.offlineAfterSeconds,
+      ageSeconds
+    };
+  }
+
+  desiredForData(data, agentId) {
+    return data.desired[agentId] || {
+      scheduleEnabled: true,
+      robotEnabled: false,
+      updatedAt: null
+    };
+  }
+
+  async read() {
+    const data = await this.storage.readJson(this.fileName, { agents: {}, desired: {}, updatedAt: null });
+    return {
+      agents: data.agents && typeof data.agents === 'object' ? data.agents : {},
+      desired: data.desired && typeof data.desired === 'object' ? data.desired : {},
+      updatedAt: data.updatedAt || null
+    };
+  }
+
+  async write(data) {
+    await this.storage.writeJson(this.fileName, data);
   }
 }
 
@@ -466,12 +643,52 @@ function normalizeRecord(record) {
     sentAt: record.sentAt || null,
     sentCount: Number(record.sentCount || 0),
     lastError: record.lastError || null,
-    lastSourceEventAt: record.lastSourceEventAt || null
+    lastSourceEventAt: record.lastSourceEventAt || null,
+    robotAgentId: record.robotAgentId || null,
+    robotClaimedAt: record.robotClaimedAt || null,
+    robotLeaseUntil: record.robotLeaseUntil || null,
+    robotCompletedAt: record.robotCompletedAt || null,
+    robotResult: record.robotResult && typeof record.robotResult === 'object' ? record.robotResult : null
   };
 }
 
 function normalizeStatus(status) {
-  return ['queued', 'sent_to_ident', 'failed', 'ignored'].includes(status) ? status : 'queued';
+  return [
+    'queued',
+    'sent_to_ident',
+    'failed',
+    'ignored',
+    'robot_processing',
+    'robot_completed',
+    'robot_failed'
+  ].includes(status) ? status : 'queued';
+}
+
+function normalizeAgentId(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(normalized)) {
+    throw new Error('Invalid agentId');
+  }
+  return normalized;
+}
+
+function cleanAgentText(value, maxLength) {
+  return String(value || '').trim().slice(0, maxLength);
+}
+
+function cleanAgentDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeAgentSection(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) => /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) && ['string', 'number', 'boolean'].includes(typeof item))
+      .map(([key, item]) => [key, typeof item === 'string' ? item.slice(0, 500) : item])
+  );
 }
 
 function ticketFingerprint(ticket) {

@@ -658,6 +658,169 @@ test('syncs IDENT timetable slots to amoCRM catalog', async () => {
   });
 });
 
+test('tracks clinic agent heartbeat and safely claims robot tickets', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const unauthorizedHeartbeat = await fetch(`${baseUrl}/api/agent/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'clinic-1' })
+      });
+      assert.equal(unauthorizedHeartbeat.status, 401);
+
+      const heartbeatResponse = await fetch(`${baseUrl}/api/agent/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          deviceName: 'IDENT-PC',
+          version: '2.0.0',
+          status: 'online',
+          schedule: { enabled: true, lastSuccessAt: '2026-07-30T10:00:00Z' },
+          robot: { enabled: false, state: 'disabled' }
+        })
+      });
+      assert.equal(heartbeatResponse.status, 200);
+      const heartbeat = await heartbeatResponse.json();
+      assert.equal(heartbeat.agent.online, true);
+      assert.equal(heartbeat.desired.robotEnabled, false);
+
+      const localSettingsResponse = await fetch(`${baseUrl}/api/agent/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({ agentId: 'clinic-1', scheduleEnabled: false })
+      });
+      assert.equal(localSettingsResponse.status, 200);
+      assert.equal((await localSettingsResponse.json()).desired.scheduleEnabled, false);
+
+      const timetableResponse = await fetch(`${baseUrl}/api/agent/timetable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          Doctors: [{ Id: 1, Name: 'Doctor Test' }],
+          Branches: [{ Id: 2, Name: 'Clinic Test' }],
+          Intervals: [{
+            DoctorId: 1,
+            BranchId: 2,
+            StartDateTime: '2026-08-01T10:00:00+03:00',
+            LengthInMinutes: 30,
+            IsBusy: false
+          }]
+        })
+      });
+      assert.equal(timetableResponse.status, 200);
+      assert.deepEqual((await timetableResponse.json()).summary, {
+        doctors: 1,
+        branches: 1,
+        intervals: 1,
+        freeIntervals: 1,
+        busyIntervals: 0
+      });
+
+      const settingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({ agentId: 'clinic-1', robotEnabled: true })
+      });
+      assert.equal(settingsResponse.status, 200);
+
+      const configResponse = await fetch(`${baseUrl}/api/agent/config?agentId=clinic-1`, {
+        headers: { 'X-Agent-Key': 'test-agent-key' }
+      });
+      assert.equal(configResponse.status, 200);
+      assert.equal((await configResponse.json()).desired.robotEnabled, true);
+
+      const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({
+          id: 'robot-test-1',
+          clientPhone: '+79990000000',
+          clientFullName: 'Robot Test',
+          planStart: '2026-08-01T10:00:00+03:00',
+          doctorName: 'Doctor Test'
+        })
+      });
+      assert.equal(bookingResponse.status, 201);
+
+      const claimResponse = await fetch(`${baseUrl}/api/robot/tasks/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({ agentId: 'clinic-1' })
+      });
+      assert.equal(claimResponse.status, 200);
+      const claimed = (await claimResponse.json()).record;
+      assert.equal(claimed.id, 'robot-test-1');
+      assert.equal(claimed.status, 'robot_processing');
+
+      const secondClaimResponse = await fetch(`${baseUrl}/api/robot/tasks/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({ agentId: 'clinic-1' })
+      });
+      assert.equal((await secondClaimResponse.json()).record, null);
+
+      const wrongCompleteResponse = await fetch(`${baseUrl}/api/robot/tasks/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({ id: 'robot-test-1', agentId: 'clinic-2' })
+      });
+      assert.equal(wrongCompleteResponse.status, 409);
+
+      const completeResponse = await fetch(`${baseUrl}/api/robot/tasks/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          id: 'robot-test-1',
+          agentId: 'clinic-1',
+          result: { appointmentCreated: true }
+        })
+      });
+      assert.equal(completeResponse.status, 200);
+      assert.equal((await completeResponse.json()).record.status, 'robot_completed');
+
+      const statusResponse = await fetch(`${baseUrl}/api/agent/status`, {
+        headers: { 'X-API-Key': 'test-service-key' }
+      });
+      assert.equal(statusResponse.status, 200);
+      const status = await statusResponse.json();
+      assert.equal(status.agents[0].agentId, 'clinic-1');
+      assert.equal(status.agents[0].online, true);
+    },
+    {
+      AGENT_API_KEY: 'test-agent-key',
+      SERVICE_API_KEY: 'test-service-key'
+    }
+  );
+});
+
 async function withTestServer(callback, env = {}) {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });

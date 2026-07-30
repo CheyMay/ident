@@ -2,7 +2,7 @@ param(
   [ValidateSet('Inspect', 'DryRun', 'RunOnce', 'Loop')]
   [string]$Mode = 'DryRun',
 
-  [string]$ConfigPath = (Join-Path $PSScriptRoot 'config.example.json'),
+  [string]$ConfigPath = '',
 
   [string]$TaskFile = '',
 
@@ -13,6 +13,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+  $ConfigPath = Join-Path $PSScriptRoot 'config.example.json'
+}
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes

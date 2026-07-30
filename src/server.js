@@ -29,7 +29,14 @@ import {
 } from './ident/db-client.js';
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
 import { buildEffectiveConfig, SettingsStore } from './settings.js';
-import { AmoSlotStore, createStorage, IntegrationJobQueue, TicketQueue, WebhookLog } from './storage.js';
+import {
+  AgentStatusStore,
+  AmoSlotStore,
+  createStorage,
+  IntegrationJobQueue,
+  TicketQueue,
+  WebhookLog
+} from './storage.js';
 
 export function buildApp(config, logger, options = {}) {
   const baseConfig = structuredClone(config);
@@ -39,6 +46,7 @@ export function buildApp(config, logger, options = {}) {
   const mappingStore = new MappingStore(storage);
   const slotStore = new AmoSlotStore(storage);
   const webhookLog = new WebhookLog(storage);
+  const agentStore = new AgentStatusStore(storage, config.agent.offlineAfterSeconds);
   const settingsStore = new SettingsStore(storage);
   const oauthStateStore = new OAuthStateStore(storage);
   const identDbClient = options.identDbClient || createIdentDbClient(config, logger);
@@ -69,6 +77,22 @@ export function buildApp(config, logger, options = {}) {
     workerTimer.unref?.();
   }
 
+  async function storeTimetable(body) {
+    const timetable = normalizeTimeTablePayload(body);
+    await storage.writeJson('timetable.json', timetable);
+    await mappingStore.syncFromTimetable(timetable);
+    logger.info('IDENT timetable received', timetable.Summary);
+
+    if (config.amo.syncTimetableToCatalog) {
+      await jobQueue.enqueue('amocrm.timetable_sync', {}, {
+        dedupeKey: 'amocrm.timetable_sync',
+        maxAttempts: config.jobs.maxAttempts
+      });
+    }
+
+    return timetable;
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     if (applyCors(req, res, config)) return;
@@ -90,19 +114,7 @@ export function buildApp(config, logger, options = {}) {
         const auth = validateIdentKey(req, config);
         if (!auth.ok) return sendText(res, auth.status, auth.message);
 
-        const body = await readJson(req);
-        const timetable = normalizeTimeTablePayload(body);
-        await storage.writeJson('timetable.json', timetable);
-        await mappingStore.syncFromTimetable(timetable);
-        logger.info('IDENT timetable received', timetable.Summary);
-
-        if (config.amo.syncTimetableToCatalog) {
-          await jobQueue.enqueue('amocrm.timetable_sync', {}, {
-            dedupeKey: 'amocrm.timetable_sync',
-            maxAttempts: config.jobs.maxAttempts
-          });
-        }
-
+        await storeTimetable(await readJson(req));
         return sendText(res, 200, 'OK');
       }
 
@@ -148,8 +160,82 @@ export function buildApp(config, logger, options = {}) {
           jobQueue,
           mappingStore,
           identDbClient,
-          amoClient
+          amoClient,
+          agentStore
         }));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/heartbeat') {
+        requireAgentApiKey(req, config);
+        return sendJson(res, 200, await agentStore.heartbeat(await readJson(req)));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/timetable') {
+        requireAgentApiKey(req, config);
+        const timetable = await storeTimetable(await readJson(req));
+        return sendJson(res, 200, {
+          ok: true,
+          receivedAt: timetable.receivedAt,
+          summary: timetable.Summary
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/agent/config') {
+        requireAgentApiKey(req, config);
+        const agentId = url.searchParams.get('agentId');
+        if (!agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        return sendJson(res, 200, { desired: await agentStore.desiredFor(agentId) });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/config') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        return sendJson(res, 200, {
+          agentId: String(body.agentId),
+          desired: await agentStore.setDesired(body.agentId, body)
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/agent/status') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, await agentStore.status());
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/settings') {
+        requireServiceApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        return sendJson(res, 200, {
+          agentId: String(body.agentId),
+          desired: await agentStore.setDesired(body.agentId, body)
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/robot/tasks/claim') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        const record = await ticketQueue.claimForRobot(body.agentId, config.agent.robotLeaseSeconds);
+        return sendJson(res, 200, { record });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/robot/tasks/complete') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.id || !body.agentId) return sendJson(res, 400, { error: 'id and agentId are required' });
+        const record = await ticketQueue.completeRobot(body.id, body.agentId, body.result);
+        if (!record) return sendJson(res, 409, { error: 'Robot task is not claimed by this agent' });
+        return sendJson(res, 200, { record });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/robot/tasks/fail') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.id || !body.agentId) return sendJson(res, 400, { error: 'id and agentId are required' });
+        const record = await ticketQueue.failRobot(body.id, body.agentId, body.error);
+        if (!record) return sendJson(res, 409, { error: 'Robot task is not claimed by this agent' });
+        return sendJson(res, 200, { record });
       }
 
       if (req.method === 'GET' && url.pathname === '/api/ident-db/status') {
@@ -901,6 +987,19 @@ function requireServiceApiKey(req, config) {
   if (!config.serviceApiKey) return;
   if (req.headers['x-api-key'] !== config.serviceApiKey) {
     const error = new Error('Invalid service API key');
+    error.status = 401;
+    throw error;
+  }
+}
+
+function requireAgentApiKey(req, config) {
+  if (!config.agent.apiKey) {
+    const error = new Error('AGENT_API_KEY is not configured');
+    error.status = 500;
+    throw error;
+  }
+  if (req.headers['x-agent-key'] !== config.agent.apiKey) {
+    const error = new Error('Invalid agent API key');
     error.status = 401;
     throw error;
   }

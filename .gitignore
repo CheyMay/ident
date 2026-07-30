@@ -6,6 +6,12 @@ data/
 robot/ident-rpa/config.local.json
 robot/ident-rpa/logs/
 robot/ident-rpa/ui-tree.json
+agent/ident-db-agent/config.local.json
+agent/ident-db-agent/mapping.local.json
+agent/ident-db-agent/secrets.local.json
+agent/ident-db-agent/logs/
+agent/ident-db-agent/schema-inventory.json
+agent/ident-db-agent/dist/
 backups/
 
 node_modules/

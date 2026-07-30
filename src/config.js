@@ -16,7 +16,7 @@ export function loadConfig(env = loadEnv()) {
     cors: {
       allowedOrigins: listFromEnv(env.CORS_ALLOWED_ORIGINS, ['https://*.amocrm.ru']),
       allowedMethods: listFromEnv(env.CORS_ALLOWED_METHODS, ['GET', 'POST', 'OPTIONS']),
-      allowedHeaders: listFromEnv(env.CORS_ALLOWED_HEADERS, ['Content-Type', 'X-API-Key', 'IDENT-Integration-Key'])
+      allowedHeaders: listFromEnv(env.CORS_ALLOWED_HEADERS, ['Content-Type', 'X-API-Key', 'X-Agent-Key', 'IDENT-Integration-Key'])
     },
     dataDir,
     storage: {
@@ -30,6 +30,11 @@ export function loadConfig(env = loadEnv()) {
       batchSize: intFromEnv(env.JOB_BATCH_SIZE, 10),
       maxAttempts: intFromEnv(env.JOB_MAX_ATTEMPTS, 8),
       retryBaseDelayMs: intFromEnv(env.JOB_RETRY_BASE_DELAY_MS, 60_000)
+    },
+    agent: {
+      apiKey: env.AGENT_API_KEY || '',
+      offlineAfterSeconds: intFromEnv(env.AGENT_OFFLINE_AFTER_SECONDS, 180),
+      robotLeaseSeconds: intFromEnv(env.AGENT_ROBOT_LEASE_SECONDS, 300)
     },
     dedupe: {
       enabled: parseBool(env.IDENT_DEDUPE_ENABLED, true),

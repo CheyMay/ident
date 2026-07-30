@@ -2,6 +2,12 @@
 
 HTTP bridge for IDENT custom integrations and amoCRM.
 
+For clinics where the official IDENT custom HTTP service is unavailable, a
+read-only Windows schedule agent is available in `agent/ident-db-agent`. It
+discovers the SQL Server instance, exports schema metadata without patient
+rows, runs explicitly configured read-only queries, and forwards the normalized
+`PostTimeTable` payload to this service.
+
 Current scope:
 
 - `POST /PostTimeTable` receives the schedule exported by IDENT and stores the latest snapshot.
@@ -189,7 +195,7 @@ domains:
 ```bash
 CORS_ALLOWED_ORIGINS=https://*.amocrm.ru
 CORS_ALLOWED_METHODS=GET,POST,OPTIONS
-CORS_ALLOWED_HEADERS=Content-Type,X-API-Key,IDENT-Integration-Key
+CORS_ALLOWED_HEADERS=Content-Type,X-API-Key,X-Agent-Key,IDENT-Integration-Key
 ```
 
 ## First Deployment
@@ -206,6 +212,7 @@ cp docs/production.env.example .env
 PUBLIC_BASE_URL=
 IDENT_INTEGRATION_KEY=
 SERVICE_API_KEY=
+AGENT_API_KEY=
 AMOCRM_BASE_URL=
 AMOCRM_CLIENT_ID=
 AMOCRM_CLIENT_SECRET=
@@ -438,6 +445,34 @@ Returns the latest schedule snapshot received from IDENT.
 ### `GET /api/free-slots`
 
 Returns only free intervals from the latest IDENT schedule export.
+
+### Clinic desktop agent
+
+The unified Windows package is built from `agent/ident-db-agent`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\agent\ident-db-agent\Build-IdentDesktopPackage.ps1
+```
+
+It creates `agent/ident-db-agent/dist/ident-desktop-2.0.0.zip`. The installer
+registers the background worker and status panel at Windows logon. Schedule
+export is enabled by default; the UI booking robot is disabled and cannot
+claim tasks until its local IDENT selectors are configured.
+
+Agent-only endpoints require `X-Agent-Key: <AGENT_API_KEY>`:
+
+- `POST /api/agent/heartbeat`
+- `POST /api/agent/timetable`
+- `GET|POST /api/agent/config`
+- `POST /api/robot/tasks/claim`
+- `POST /api/robot/tasks/complete`
+- `POST /api/robot/tasks/fail`
+
+Widget/admin endpoints use `X-API-Key: <SERVICE_API_KEY>`:
+
+- `GET /api/agent/status`
+- `POST /api/agent/settings`
 
 ### `GET /api/tickets`
 

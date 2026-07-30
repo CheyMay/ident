@@ -36,6 +36,7 @@ SQLITE_FILE=/opt/ident-amocrm/data/integration.sqlite
 CORS_ALLOWED_ORIGINS=https://*.amocrm.ru
 IDENT_INTEGRATION_KEY=<strong-random-secret>
 SERVICE_API_KEY=<strong-random-secret>
+AGENT_API_KEY=<separate-strong-random-secret>
 AMOCRM_BASE_URL=https://example.amocrm.ru
 AMOCRM_CLIENT_ID=<client-id>
 AMOCRM_CLIENT_SECRET=<client-secret>

@@ -6,15 +6,17 @@ export async function buildDiagnostics({
   jobQueue,
   mappingStore,
   identDbClient,
-  amoClient
+  amoClient,
+  agentStore
 }) {
-  const [token, timetable, tickets, jobs, mappings, webhooks] = await Promise.all([
+  const [token, timetable, tickets, jobs, mappings, webhooks, agents] = await Promise.all([
     tokenStore.get(),
     storage.readJson('timetable.json', null),
     ticketQueue.summary(),
     jobQueue.summary(),
     mappingStore.get(),
-    storage.readJson('amocrm-webhooks.json', { events: [] })
+    storage.readJson('amocrm-webhooks.json', { events: [] }),
+    agentStore?.status?.() || Promise.resolve({ agents: [], desired: {} })
   ]);
 
   const issues = [];
@@ -24,6 +26,7 @@ export async function buildDiagnostics({
 
   addIssue(issues, !config.identIntegrationKey, 'error', 'ident_key_missing', 'IDENT_INTEGRATION_KEY is not configured');
   addIssue(issues, !config.serviceApiKey, 'warn', 'service_api_key_missing', 'SERVICE_API_KEY is not configured; internal API endpoints are unprotected');
+  addIssue(issues, !config.agent.apiKey, 'warn', 'agent_api_key_missing', 'AGENT_API_KEY is not configured');
   addIssue(issues, !timetable, 'warn', 'ident_timetable_missing', 'IDENT timetable has not been received yet');
   addIssue(
     issues,
@@ -110,7 +113,8 @@ export async function buildDiagnostics({
       dedupeWindowMinutes: config.dedupe.windowMinutes,
       storageDriver: config.storage.driver,
       jobWorkerEnabled: config.jobs.workerEnabled,
-      jobWorkerIntervalMs: config.jobs.workerIntervalMs
+      jobWorkerIntervalMs: config.jobs.workerIntervalMs,
+      agentApiKeyConfigured: Boolean(config.agent.apiKey)
     },
     ident: {
       integrationKeyConfigured: Boolean(config.identIntegrationKey),
@@ -161,6 +165,7 @@ export async function buildDiagnostics({
     },
     tickets,
     jobs,
+    agents,
     webhooks: {
       totalStored: webhookEvents.length,
       lastReceivedAt: webhookEvents[0]?.receivedAt || null,

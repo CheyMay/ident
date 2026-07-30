@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "agent": {
+    "id": "stomazub-COMPUTERNAME",
+    "version": "2.0.0"
+  },
+  "features": {
+    "scheduleEnabled": true,
+    "robotEnabled": false
+  },
+  "intervals": {
+    "heartbeatSeconds": 60,
+    "scheduleSeconds": 600,
+    "robotSeconds": 30
+  },
+  "sql": {
+    "server": "192.168.0.3",
+    "instanceName": "",
+    "port": 0,
+    "database": "",
+    "user": "readonly_user",
+    "encrypt": false,
+    "trustServerCertificate": true,
+    "connectTimeoutSeconds": 8,
+    "commandTimeoutSeconds": 60
+  },
+  "backend": {
+    "baseUrl": "https://ident.code9dev.ru",
+    "timeoutSeconds": 60
+  },
+  "paths": {
+    "secrets": "secrets.local.json",
+    "mapping": "mapping.local.json",
+    "schemaOutput": "schema-inventory.json",
+    "log": "logs\\agent.log",
+    "pushResult": "last-push-result.json",
+    "runtimeState": "runtime-state.json",
+    "commandDirectory": "commands",
+    "robotConfig": "robot\\config.local.json"
+  }
+}
