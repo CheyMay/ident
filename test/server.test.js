@@ -299,6 +299,49 @@ test('does not queue amoCRM test booking before amoCRM authorization', async () 
   });
 });
 
+test('accepts trusted amoCRM widget installation callback without OAuth state', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const callbackResponse = await fetch(
+          `${baseUrl}/oauth/amocrm/callback?code=widget-code&referer=${encodeURIComponent(amoBaseUrl)}&from_widget=1`
+        );
+        assert.equal(callbackResponse.status, 200);
+        assert.match(await callbackResponse.text(), /authorization completed/);
+
+        const healthResponse = await fetch(`${baseUrl}/health`);
+        assert.equal(healthResponse.status, 200);
+        const health = await healthResponse.json();
+        assert.equal(health.amoConfigured, true);
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_CLIENT_ID: 'client-id',
+        AMOCRM_CLIENT_SECRET: 'client-secret',
+        AMOCRM_REDIRECT_URI: 'https://integration.example/oauth/amocrm/callback'
+      }
+    );
+  });
+});
+
+test('rejects amoCRM widget installation callback from another account', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const callbackResponse = await fetch(
+        `${baseUrl}/oauth/amocrm/callback?code=widget-code&referer=other.amocrm.ru&from_widget=1`
+      );
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /Invalid OAuth state/);
+    },
+    {
+      AMOCRM_BASE_URL: 'https://stomazub.amocrm.ru',
+      AMOCRM_CLIENT_ID: 'client-id',
+      AMOCRM_CLIENT_SECRET: 'client-secret',
+      AMOCRM_REDIRECT_URI: 'https://integration.example/oauth/amocrm/callback'
+    }
+  );
+});
+
 test('diagnostics reports failed tickets and jobs as errors', async () => {
   await withTestServer(async ({ baseUrl, dataDir }) => {
     await writeFile(
@@ -951,6 +994,15 @@ async function withMockAmoServer(callback) {
     const body = Buffer.concat(chunks).toString('utf8');
     const url = new URL(req.url, 'http://127.0.0.1');
     requests.push({ method: req.method, url: url.pathname, query: url.search, body });
+
+    if (req.method === 'POST' && url.pathname === '/oauth2/access_token') {
+      return sendMockJson(res, 200, {
+        token_type: 'Bearer',
+        expires_in: 86400,
+        access_token: 'access-token',
+        refresh_token: 'refresh-token'
+      });
+    }
 
     if (req.method === 'GET' && url.pathname === '/api/v4/leads') {
       return sendMockJson(res, 200, {

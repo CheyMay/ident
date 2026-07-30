@@ -476,7 +476,10 @@ export function buildApp(config, logger, options = {}) {
         if (url.searchParams.get('error')) {
           return sendHtml(res, 400, oauthHtml('amoCRM authorization rejected'));
         }
-        const stateOk = await oauthStateStore.consume(url.searchParams.get('state'));
+        const state = url.searchParams.get('state');
+        const stateOk = state
+          ? await oauthStateStore.consume(state)
+          : isTrustedAmoWidgetCallback(url, config);
         if (!stateOk) return sendHtml(res, 400, oauthHtml('Invalid OAuth state'));
         if (!amoClient) return sendHtml(res, 500, oauthHtml('amoCRM OAuth is not configured'));
 
@@ -1055,6 +1058,23 @@ function requireAgentApiKey(req, config) {
     const error = new Error('Invalid agent API key');
     error.status = 401;
     throw error;
+  }
+}
+
+function isTrustedAmoWidgetCallback(url, config) {
+  if (!url.searchParams.get('from_widget')) return false;
+  const expectedHost = normalizeHost(config.amo.baseUrl);
+  const refererHost = normalizeHost(url.searchParams.get('referer'));
+  return Boolean(expectedHost && refererHost && expectedHost === refererHost);
+}
+
+function normalizeHost(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).host.toLowerCase();
+  } catch {
+    return '';
   }
 }
 
