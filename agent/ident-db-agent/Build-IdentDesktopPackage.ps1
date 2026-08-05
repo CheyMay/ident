@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OutputDirectory = ''
 )
@@ -8,29 +8,27 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$stagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop'))
-$releaseVersion = '2.4.0'
-$archivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-desktop-$releaseVersion.zip"))
+$releaseVersion = '2.4.1'
+$releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
+$installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
+$releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
+$installerArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-desktop-$releaseVersion.zip"))
 $outputPrefix = $OutputDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-if (-not $stagingDirectory.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Staging directory must stay inside the output directory.'
+foreach ($path in @($releaseStagingDirectory, $installerStagingDirectory, $releaseArchivePath, $installerArchivePath)) {
+    if (-not $path.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Build paths must stay inside the output directory.'
+    }
 }
 
-if (Test-Path -LiteralPath $stagingDirectory) {
-    Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
+foreach ($directory in @($releaseStagingDirectory, $installerStagingDirectory)) {
+    if (Test-Path -LiteralPath $directory) {
+        Remove-Item -LiteralPath $directory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
 }
-New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $stagingDirectory 'robot-source') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $releaseStagingDirectory 'robot-source') | Out-Null
 
-$files = @(
-    '1-Setup.cmd',
-    '2-First-Check.cmd',
-    '3-Export-Schema.cmd',
-    '4-Preview.cmd',
-    '5-Install-Autostart.cmd',
-    '6-Run-Now.cmd',
-    '7-Remove-Autostart.cmd',
-    '8-Open-Status.cmd',
+$payloadFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
     'IdentDesktop.ps1',
@@ -42,17 +40,18 @@ $files = @(
     'mapping.example.json',
     'README.txt'
 )
-foreach ($file in $files) {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $stagingDirectory $file)
+foreach ($file in $payloadFiles) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $releaseStagingDirectory $file)
 }
 
 $robotSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\robot\ident-rpa'))
-Copy-Item -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') -Destination (Join-Path $stagingDirectory 'robot-source\Start-IdentRobot.ps1')
-Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destination (Join-Path $stagingDirectory 'robot-source\config.example.json')
+Copy-Item -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') -Destination (Join-Path $releaseStagingDirectory 'robot-source\Start-IdentRobot.ps1')
+Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destination (Join-Path $releaseStagingDirectory 'robot-source\config.example.json')
 
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
+    notes = 'Code9 IDENT Desktop 2.4.1: single-file clinic installer'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
@@ -64,11 +63,39 @@ $releaseManifest = [ordered]@{
         @{ source = 'robot-source/Start-IdentRobot.ps1'; destination = 'robot/Start-IdentRobot.ps1' }
     )
 }
-$releaseManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stagingDirectory 'release.json') -Encoding UTF8
+$releaseManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $releaseStagingDirectory 'release.json') -Encoding UTF8
 
-if (Test-Path -LiteralPath $archivePath) {
-    Remove-Item -LiteralPath $archivePath -Force
+foreach ($archive in @($releaseArchivePath, $installerArchivePath)) {
+    if (Test-Path -LiteralPath $archive) {
+        Remove-Item -LiteralPath $archive -Force
+    }
 }
-Compress-Archive -Path (Join-Path $stagingDirectory '*') -DestinationPath $archivePath -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $releaseStagingDirectory '*') -DestinationPath $releaseArchivePath -CompressionLevel Optimal
 
-Write-Host "Package built: $archivePath" -ForegroundColor Green
+$payloadBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($releaseArchivePath), [Base64FormattingOptions]::InsertLineBreaks)
+$installerHeader = @'
+@echo off
+chcp 65001 >nul
+setlocal
+title Code9 IDENT Setup
+set "CODE9_INSTALLER=%~f0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $source=$env:CODE9_INSTALLER; $marker='__CODE9_PAYLOAD__'; $raw=[IO.File]::ReadAllText($source,[Text.Encoding]::ASCII); $index=$raw.LastIndexOf($marker,[StringComparison]::Ordinal); if($index -lt 0){throw 'Installation payload was not found.'}; $temporary=Join-Path $env:TEMP ('Code9IdentInstall-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $temporary|Out-Null; try{$archive=Join-Path $temporary 'agent.zip'; $base64=$raw.Substring($index+$marker.Length); [IO.File]::WriteAllBytes($archive,[Convert]::FromBase64String($base64)); $files=Join-Path $temporary 'files'; Expand-Archive -LiteralPath $archive -DestinationPath $files -Force; & (Join-Path $files 'Setup-IdentAgent.ps1'); if(-not $?){throw 'Code9 IDENT setup did not finish.'}}finally{Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue}"
+set "CODE9_RESULT=%ERRORLEVEL%"
+if not "%CODE9_RESULT%"=="0" (
+  echo.
+  echo Setup did not finish. Send the error text to the Code9 specialist.
+) else (
+  echo.
+  echo Code9 IDENT setup completed.
+)
+pause
+exit /b %CODE9_RESULT%
+__CODE9_PAYLOAD__
+'@
+$installerPath = Join-Path $installerStagingDirectory '1-УСТАНОВИТЬ.cmd'
+[IO.File]::WriteAllText($installerPath, ($installerHeader + $payloadBase64 + [Environment]::NewLine), [Text.Encoding]::ASCII)
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'INSTALLATION.txt') -Destination (Join-Path $installerStagingDirectory '2-ИНСТРУКЦИЯ.txt')
+Compress-Archive -Path (Join-Path $installerStagingDirectory '*') -DestinationPath $installerArchivePath -CompressionLevel Optimal
+
+Write-Host "Client package built: $installerArchivePath" -ForegroundColor Green
+Write-Host "Remote update release built: $releaseArchivePath" -ForegroundColor Green
