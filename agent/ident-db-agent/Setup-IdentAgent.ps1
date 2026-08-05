@@ -43,6 +43,7 @@ $runtimeFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
     'IdentDesktop.ps1',
+    'Apply-IdentAgentUpdate.ps1',
     'Install-IdentAgentTask.ps1',
     'Uninstall-IdentAgentTask.ps1'
 )
@@ -109,7 +110,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.3.0'
+        version = '2.4.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -146,6 +147,8 @@ $config = [ordered]@{
         commandDirectory = 'commands'
         robotConfig = 'robot\config.local.json'
         robotReceipts = 'robot-receipts.json'
+        updateDirectory = 'updates'
+        updateStatus = 'update-status.json'
     }
 }
 

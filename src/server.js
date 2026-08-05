@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { URL } from 'node:url';
+import { AgentReleaseStore } from './agent-releases.js';
 import { bootstrapAmoDefaults } from './amocrm/bootstrap.js';
 import { AmoClient } from './amocrm/client.js';
 import { buildAmoAuthorizeUrl, OAuthStateStore, verifyDisconnectSignature } from './amocrm/oauth.js';
@@ -50,6 +51,10 @@ export function buildApp(config, logger, options = {}) {
   const webhookLog = new WebhookLog(storage);
   const agentStore = new AgentStatusStore(storage, config.agent.offlineAfterSeconds);
   const agentSchemaStore = new AgentSchemaStore(storage);
+  const agentReleaseStore = new AgentReleaseStore(storage, {
+    directory: config.agent.releaseDirectory,
+    maxArchiveBytes: config.agent.releaseMaxBytes
+  });
   const settingsStore = new SettingsStore(storage);
   const oauthStateStore = new OAuthStateStore(storage);
   const identDbClient = options.identDbClient || createIdentDbClient(config, logger);
@@ -236,10 +241,45 @@ export function buildApp(config, logger, options = {}) {
         return sendJson(res, 200, await agentStore.status());
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/agent/releases') {
+        requireServiceApiKey(req, config);
+        return sendJson(res, 200, { releases: await agentReleaseStore.list() });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/releases') {
+        requireServiceApiKey(req, config);
+        const body = await readJson(req, Math.ceil(config.agent.releaseMaxBytes * 1.4) + 128 * 1024);
+        return sendJson(res, 201, { release: await agentReleaseStore.publish(body) });
+      }
+
+      const releaseDownloadMatch = url.pathname.match(/^\/api\/agent\/releases\/([^/]+)\/download$/);
+      if (req.method === 'GET' && releaseDownloadMatch) {
+        requireAgentApiKey(req, config);
+        const stored = await agentReleaseStore.readArchive(decodeURIComponent(releaseDownloadMatch[1]));
+        if (!stored) return sendJson(res, 404, { error: 'Agent release not found' });
+        return sendBuffer(res, 200, stored.archive, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="ident-desktop-${stored.release.version}.zip"`,
+          'X-Content-Type-Options': 'nosniff',
+          'X-Agent-Release-Version': stored.release.version,
+          'X-Agent-Release-SHA256': stored.release.sha256
+        });
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/agent/settings') {
         requireServiceApiKey(req, config);
         const body = normalizeAgentDesiredInput(await readJson(req));
         if (!body.agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        if (Object.prototype.hasOwnProperty.call(body, 'targetVersion')) {
+          const targetVersion = String(body.targetVersion || '').trim();
+          if (!targetVersion) {
+            body.update = null;
+          } else {
+            const release = await agentReleaseStore.get(targetVersion);
+            if (!release) return sendJson(res, 404, { error: 'Agent release not found' });
+            body.update = release;
+          }
+        }
         if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
           return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
         }
@@ -1028,9 +1068,14 @@ function optionalNonNegativeInt(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = 2 * 1024 * 1024) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) throw new BadRequestError(`Request body exceeds ${maxBytes} bytes`);
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) return {};
   try {
@@ -1103,6 +1148,14 @@ function sendJson(res, status, body) {
     'Content-Length': Buffer.byteLength(payload)
   });
   res.end(payload);
+}
+
+function sendBuffer(res, status, body, headers = {}) {
+  res.writeHead(status, {
+    ...headers,
+    'Content-Length': body.length
+  });
+  res.end(body);
 }
 
 function applyCors(req, res, config) {

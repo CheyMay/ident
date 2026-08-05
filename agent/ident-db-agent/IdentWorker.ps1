@@ -77,6 +77,17 @@ function Get-ConfigContext {
         MappingPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.mapping)
         SchemaPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.schemaOutput)
         LogPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.log)
+        UpdateDirectory = if ($config.paths.PSObject.Properties.Name -contains 'updateDirectory') {
+            Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.updateDirectory)
+        } else {
+            Join-Path $baseDirectory 'updates'
+        }
+        UpdateStatusPath = if ($config.paths.PSObject.Properties.Name -contains 'updateStatus') {
+            Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.updateStatus)
+        } else {
+            Join-Path $baseDirectory 'update-status.json'
+        }
+        UpdaterPath = Join-Path $baseDirectory 'Apply-IdentAgentUpdate.ps1'
     }
 }
 
@@ -136,6 +147,109 @@ function Invoke-AgentRequest {
         $parameters.Body = [Text.Encoding]::UTF8.GetBytes($json)
     }
     return Invoke-RestMethod @parameters
+}
+
+function Write-UpdateStatus {
+    param(
+        [string]$Status,
+        [string]$TargetVersion,
+        [string]$Message
+    )
+
+    $payload = [ordered]@{
+        targetVersion = $TargetVersion
+        currentVersion = [string]$script:Context.Config.agent.version
+        status = $Status
+        message = $Message
+        updatedAt = (Get-Date).ToString('o')
+    }
+    $temporaryPath = "$($script:Context.UpdateStatusPath).tmp-$PID"
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.UpdateStatusPath -Force
+    $script:State.update.targetVersion = $TargetVersion
+    $script:State.update.currentVersion = [string]$script:Context.Config.agent.version
+    $script:State.update.status = $Status
+    $script:State.update.message = $Message
+    $script:State.update.updatedAt = $payload.updatedAt
+}
+
+function Request-AgentUpdate {
+    param([object]$Update)
+
+    if ($null -eq $Update) {
+        if (
+            -not [string]::IsNullOrWhiteSpace([string]$script:State.update.targetVersion) -or
+            [string]$script:State.update.status -ne 'idle'
+        ) {
+            Write-UpdateStatus -Status 'idle' -TargetVersion '' -Message ''
+        }
+        return
+    }
+    $targetVersion = [string]$Update.version
+    $expectedHash = ([string]$Update.sha256).Trim().ToUpperInvariant()
+    $downloadPath = [string]$Update.downloadPath
+    $expectedSize = [long]$Update.size
+    if ($targetVersion -eq [string]$script:Context.Config.agent.version) {
+        if ([string]$script:State.update.status -ne 'succeeded') {
+            Write-UpdateStatus -Status 'succeeded' -TargetVersion $targetVersion -Message 'Assigned version is installed.'
+        }
+        return
+    }
+    if (
+        [string]$script:State.update.targetVersion -eq $targetVersion -and
+        @('downloading', 'applying', 'failed') -contains [string]$script:State.update.status
+    ) {
+        return
+    }
+
+    try {
+        if ($targetVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw 'Server assigned an invalid update version.'
+        }
+        if ($expectedHash -notmatch '^[A-F0-9]{64}$' -or $expectedSize -le 0) {
+            throw 'Server assigned invalid update integrity data.'
+        }
+        if ($downloadPath -notmatch '^/api/agent/releases/[^/]+/download$') {
+            throw 'Server assigned an invalid update download path.'
+        }
+        if (-not (Test-Path -LiteralPath $script:Context.UpdaterPath)) {
+            throw 'The local update component is missing.'
+        }
+
+        New-Item -ItemType Directory -Force -Path $script:Context.UpdateDirectory | Out-Null
+        $temporaryArchive = Join-Path $script:Context.UpdateDirectory ("ident-desktop-$targetVersion.zip.part")
+        $archivePath = Join-Path $script:Context.UpdateDirectory ("ident-desktop-$targetVersion.zip")
+        Write-UpdateStatus -Status 'downloading' -TargetVersion $targetVersion -Message 'Downloading assigned update.'
+        $url = ([string]$script:Context.Config.backend.baseUrl).TrimEnd('/') + $downloadPath
+        Invoke-WebRequest `
+            -Uri $url `
+            -Method Get `
+            -Headers @{ 'X-Agent-Key' = $script:Context.AgentKey } `
+            -OutFile $temporaryArchive `
+            -TimeoutSec ([int]$script:Context.Config.backend.timeoutSeconds) `
+            -UseBasicParsing
+        $downloaded = Get-Item -LiteralPath $temporaryArchive
+        if ($downloaded.Length -ne $expectedSize) {
+            throw 'Downloaded update size does not match the release metadata.'
+        }
+        $actualHash = (Get-FileHash -LiteralPath $temporaryArchive -Algorithm SHA256).Hash.ToUpperInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw 'Downloaded update failed SHA-256 verification.'
+        }
+        Move-Item -LiteralPath $temporaryArchive -Destination $archivePath -Force
+        Write-UpdateStatus -Status 'applying' -TargetVersion $targetVersion -Message 'Update is ready to install.'
+
+        $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$($script:Context.UpdaterPath)`" " +
+            "-ArchivePath `"$archivePath`" -InstallDirectory `"$($script:Context.BaseDirectory)`" " +
+            "-ExpectedVersion `"$targetVersion`" -ExpectedSha256 `"$expectedHash`" -WorkerProcessId $PID"
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
+        Write-WorkerLog -Level 'info' -EventName 'update_started' -Data @{ version = $targetVersion; sha256 = $expectedHash }
+        $script:StopRequested = $true
+    }
+    catch {
+        Write-UpdateStatus -Status 'failed' -TargetVersion $targetVersion -Message $_.Exception.Message
+        Write-WorkerLog -Level 'error' -EventName 'update_failed' -Data @{ version = $targetVersion; message = $_.Exception.Message }
+    }
 }
 
 function Save-FeatureState {
@@ -313,6 +427,15 @@ function Apply-DesiredState {
     $script:State.robot.enabled = $robotEnabled
 
     if (
+        $Desired.PSObject.Properties.Name -contains 'scheduleRequestRevision' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.scheduleRequestRevision) -and
+        [string]$Desired.scheduleRequestRevision -ne [string]$script:State.schedule.requestRevision
+    ) {
+        $script:State.schedule.requestRevision = [string]$Desired.scheduleRequestRevision
+        New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
+    }
+
+    if (
         $Desired.PSObject.Properties.Name -contains 'scheduleMapping' -and
         $Desired.PSObject.Properties.Name -contains 'mappingRevision' -and
         $null -ne $Desired.scheduleMapping -and
@@ -327,6 +450,10 @@ function Apply-DesiredState {
             $script:State.schedule.lastError = $_.Exception.Message
             Write-WorkerLog -Level 'error' -EventName 'schedule_mapping_rejected' -Data @{ message = $_.Exception.Message }
         }
+    }
+
+    if ($Desired.PSObject.Properties.Name -contains 'update') {
+        Request-AgentUpdate -Update $Desired.update
     }
 }
 
@@ -632,6 +759,7 @@ function Invoke-RobotPoll {
 
 $script:Context = $null
 $script:State = $null
+$script:StopRequested = $false
 $createdNew = $false
 $mutex = New-Object Threading.Mutex($true, 'Local\Code9IdentAgentWorker', [ref]$createdNew)
 if (-not $createdNew) {
@@ -642,6 +770,16 @@ if (-not $createdNew) {
 try {
     $script:Context = Get-ConfigContext
     New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
+    New-Item -ItemType Directory -Force -Path $script:Context.UpdateDirectory | Out-Null
+    $previousUpdate = $null
+    if (Test-Path -LiteralPath $script:Context.UpdateStatusPath) {
+        try {
+            $previousUpdate = Read-JsonFile -Path $script:Context.UpdateStatusPath
+        }
+        catch {
+            $previousUpdate = $null
+        }
+    }
     $script:State = [ordered]@{
         version = [string]$script:Context.Config.agent.version
         agentId = [string]$script:Context.Config.agent.id
@@ -657,6 +795,7 @@ try {
             state = 'starting'
             mappingConfigured = Test-ScheduleMappingConfigured
             mappingRevision = ''
+            requestRevision = ''
             lastAttemptAt = $null
             lastSuccessAt = $null
             lastError = ''
@@ -683,6 +822,13 @@ try {
             lastTaskId = ''
             lastError = ''
         }
+        update = [ordered]@{
+            targetVersion = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.targetVersion } else { '' })
+            currentVersion = [string]$script:Context.Config.agent.version
+            status = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.status } else { 'idle' })
+            message = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.message } else { '' })
+            updatedAt = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.updatedAt } else { $null })
+        }
         updatedAt = (Get-Date).ToString('o')
     }
 
@@ -697,7 +843,7 @@ try {
     $nextSchema = [DateTime]::MinValue
     $nextRobot = [DateTime]::MinValue
 
-    while ($true) {
+    while (-not $script:StopRequested) {
         $now = Get-Date
         $sendNowPath = Join-Path $script:Context.CommandDirectory 'send-now'
         if (Test-Path -LiteralPath $sendNowPath) {
@@ -708,6 +854,9 @@ try {
         if ($now -ge $nextHeartbeat) {
             Send-Heartbeat
             $nextHeartbeat = $now.AddSeconds([Math]::Max(30, [int]$script:Context.Config.intervals.heartbeatSeconds))
+            if ($script:StopRequested) {
+                break
+            }
         }
 
         if ($now -ge $nextSchema) {

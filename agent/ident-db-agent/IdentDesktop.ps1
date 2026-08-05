@@ -326,6 +326,15 @@ function Refresh-Status {
         return
     }
 
+    $updateState = if ($state.PSObject.Properties.Name -contains 'update') { $state.update } else { $null }
+    $agentLabel.Text = "Агент: $($script:Config.agent.id)  |  версия $($state.version)" + $(if (
+        $null -ne $updateState -and -not [string]::IsNullOrWhiteSpace([string]$updateState.targetVersion)
+    ) {
+        "  |  обновление: $($updateState.status)"
+    } else {
+        ''
+    })
+
     $script:Refreshing = $true
     try {
         $scheduleCheck.Checked = [bool]$state.schedule.enabled

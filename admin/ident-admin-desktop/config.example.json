@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "appVersion": "1.0.0",
+  "backend": {
+    "baseUrl": "https://ident.code9dev.ru",
+    "timeoutSeconds": 60,
+    "refreshSeconds": 30
+  },
+  "paths": {
+    "secrets": "secrets.local.json"
+  }
+}

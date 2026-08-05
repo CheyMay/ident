@@ -8,6 +8,7 @@ export function loadConfig(env = loadEnv()) {
   const dataDir = path.resolve(rootDir, env.DATA_DIR || './data');
   const tokenFile = path.resolve(rootDir, env.AMOCRM_TOKEN_FILE || path.join(dataDir, 'amocrm-token.json'));
   const sqliteFile = path.resolve(rootDir, env.SQLITE_FILE || path.join(dataDir, 'integration.sqlite'));
+  const agentReleaseDirectory = path.resolve(rootDir, env.AGENT_RELEASE_DIRECTORY || path.join(dataDir, 'agent-releases'));
 
   return {
     rootDir,
@@ -34,7 +35,9 @@ export function loadConfig(env = loadEnv()) {
     agent: {
       apiKey: env.AGENT_API_KEY || '',
       offlineAfterSeconds: intFromEnv(env.AGENT_OFFLINE_AFTER_SECONDS, 180),
-      robotLeaseSeconds: intFromEnv(env.AGENT_ROBOT_LEASE_SECONDS, 300)
+      robotLeaseSeconds: intFromEnv(env.AGENT_ROBOT_LEASE_SECONDS, 300),
+      releaseDirectory: agentReleaseDirectory,
+      releaseMaxBytes: intFromEnv(env.AGENT_RELEASE_MAX_BYTES, 25 * 1024 * 1024)
     },
     dedupe: {
       enabled: parseBool(env.IDENT_DEDUPE_ENABLED, true),

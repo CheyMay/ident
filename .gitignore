@@ -12,6 +12,7 @@ agent/ident-db-agent/secrets.local.json
 agent/ident-db-agent/logs/
 agent/ident-db-agent/schema-inventory.json
 agent/ident-db-agent/dist/
+admin/ident-admin-desktop/dist/
 backups/
 
 node_modules/

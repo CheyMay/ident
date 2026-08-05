@@ -9,7 +9,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $stagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop'))
-$archivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-desktop-2.3.0.zip'))
+$releaseVersion = '2.4.0'
+$archivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-desktop-$releaseVersion.zip"))
 $outputPrefix = $OutputDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $stagingDirectory.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Staging directory must stay inside the output directory.'
@@ -33,6 +34,7 @@ $files = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
     'IdentDesktop.ps1',
+    'Apply-IdentAgentUpdate.ps1',
     'Setup-IdentAgent.ps1',
     'Install-IdentAgentTask.ps1',
     'Uninstall-IdentAgentTask.ps1',
@@ -47,6 +49,22 @@ foreach ($file in $files) {
 $robotSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\robot\ident-rpa'))
 Copy-Item -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') -Destination (Join-Path $stagingDirectory 'robot-source\Start-IdentRobot.ps1')
 Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destination (Join-Path $stagingDirectory 'robot-source\config.example.json')
+
+$releaseManifest = [ordered]@{
+    product = 'code9-ident-agent'
+    version = $releaseVersion
+    files = @(
+        @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
+        @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
+        @{ source = 'IdentDesktop.ps1'; destination = 'IdentDesktop.ps1' },
+        @{ source = 'Apply-IdentAgentUpdate.ps1'; destination = 'Apply-IdentAgentUpdate.ps1' },
+        @{ source = 'Setup-IdentAgent.ps1'; destination = 'Setup-IdentAgent.ps1' },
+        @{ source = 'Install-IdentAgentTask.ps1'; destination = 'Install-IdentAgentTask.ps1' },
+        @{ source = 'Uninstall-IdentAgentTask.ps1'; destination = 'Uninstall-IdentAgentTask.ps1' },
+        @{ source = 'robot-source/Start-IdentRobot.ps1'; destination = 'robot/Start-IdentRobot.ps1' }
+    )
+}
+$releaseManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stagingDirectory 'release.json') -Encoding UTF8
 
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force

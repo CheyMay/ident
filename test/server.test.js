@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -1004,6 +1005,110 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
   );
 });
 
+test('publishes immutable agent releases and assigns a verified update to one clinic', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const manifest = {
+        product: 'code9-ident-agent',
+        version: '2.4.0',
+        files: [
+          { source: 'IdentAgent.ps1', destination: 'IdentAgent.ps1' },
+          { source: 'IdentWorker.ps1', destination: 'IdentWorker.ps1' },
+          { source: 'IdentDesktop.ps1', destination: 'IdentDesktop.ps1' },
+          { source: 'Apply-IdentAgentUpdate.ps1', destination: 'Apply-IdentAgentUpdate.ps1' },
+          { source: 'Install-IdentAgentTask.ps1', destination: 'Install-IdentAgentTask.ps1' }
+        ]
+      };
+      const archive = createStoredZip({
+        'release.json': JSON.stringify(manifest),
+        'IdentAgent.ps1': '# agent',
+        'IdentWorker.ps1': '# worker',
+        'IdentDesktop.ps1': '# desktop',
+        'Apply-IdentAgentUpdate.ps1': '# updater',
+        'Install-IdentAgentTask.ps1': '# tasks'
+      });
+      const sha256 = crypto.createHash('sha256').update(archive).digest('hex').toUpperCase();
+
+      const unauthorized = await fetch(`${baseUrl}/api/agent/releases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '2.4.0', archiveBase64: archive.toString('base64') })
+      });
+      assert.equal(unauthorized.status, 401);
+
+      const publish = await fetch(`${baseUrl}/api/agent/releases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'test-service-key' },
+        body: JSON.stringify({
+          version: '2.4.0',
+          sha256,
+          notes: 'Controlled pilot',
+          archiveBase64: archive.toString('base64')
+        })
+      });
+      assert.equal(publish.status, 201);
+      const release = (await publish.json()).release;
+      assert.equal(release.version, '2.4.0');
+      assert.equal(release.sha256, sha256);
+      assert.equal(release.size, archive.length);
+
+      const duplicate = await fetch(`${baseUrl}/api/agent/releases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'test-service-key' },
+        body: JSON.stringify({ version: '2.4.0', archiveBase64: archive.toString('base64') })
+      });
+      assert.equal(duplicate.status, 409);
+
+      const missingAssignment = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'test-service-key' },
+        body: JSON.stringify({ agentId: 'clinic-release', targetVersion: '9.9.9' })
+      });
+      assert.equal(missingAssignment.status, 404);
+
+      const assignment = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'test-service-key' },
+        body: JSON.stringify({ agentId: 'clinic-release', targetVersion: '2.4.0', requestScheduleNow: true })
+      });
+      assert.equal(assignment.status, 200);
+      const desired = (await assignment.json()).desired;
+      assert.equal(desired.update.version, '2.4.0');
+      assert.equal(desired.update.sha256, sha256);
+      assert.equal(Number.isNaN(new Date(desired.scheduleRequestRevision).getTime()), false);
+
+      const heartbeat = await fetch(`${baseUrl}/api/agent/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Agent-Key': 'test-agent-key' },
+        body: JSON.stringify({
+          agentId: 'clinic-release',
+          version: '2.3.0',
+          update: { targetVersion: '2.4.0', status: 'downloading', message: 'Downloading' }
+        })
+      });
+      assert.equal(heartbeat.status, 200);
+      assert.equal((await heartbeat.json()).desired.update.version, '2.4.0');
+
+      const download = await fetch(`${baseUrl}${release.downloadPath}`, {
+        headers: { 'X-Agent-Key': 'test-agent-key' }
+      });
+      assert.equal(download.status, 200);
+      const downloaded = Buffer.from(await download.arrayBuffer());
+      assert.equal(crypto.createHash('sha256').update(downloaded).digest('hex').toUpperCase(), sha256);
+
+      const statuses = await fetch(`${baseUrl}/api/agent/status`, {
+        headers: { 'X-API-Key': 'test-service-key' }
+      });
+      const agent = (await statuses.json()).agents[0];
+      assert.equal(agent.update.status, 'downloading');
+    },
+    {
+      AGENT_API_KEY: 'test-agent-key',
+      SERVICE_API_KEY: 'test-service-key'
+    }
+  );
+});
+
 async function withTestServer(callback, env = {}) {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });
@@ -1026,6 +1131,62 @@ async function withTestServer(callback, env = {}) {
     app.close?.();
     await rm(dataDir, { recursive: true, force: true });
   }
+}
+
+function createStoredZip(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const [name, value] of Object.entries(files)) {
+    const nameBuffer = Buffer.from(name, 'utf8');
+    const data = Buffer.from(value, 'utf8');
+    const crc = crc32(data);
+    const local = Buffer.alloc(30 + nameBuffer.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuffer.length, 26);
+    nameBuffer.copy(local, 30);
+    localParts.push(local, data);
+
+    const central = Buffer.alloc(46 + nameBuffer.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuffer.length, 28);
+    central.writeUInt32LE(offset, 42);
+    nameBuffer.copy(central, 46);
+    centralParts.push(central);
+    offset += local.length + data.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(centralParts.length, 8);
+  end.writeUInt16LE(centralParts.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 async function withMockAmoServer(callback) {

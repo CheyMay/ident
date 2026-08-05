@@ -393,6 +393,7 @@ export class AgentStatusStore {
       schedule: normalizeAgentSection(payload.schedule),
       schema: normalizeAgentSection(payload.schema),
       robot: normalizeAgentSection(payload.robot),
+      update: normalizeAgentSection(payload.update),
       system: normalizeAgentSection(payload.system),
       firstSeenAt: existing.firstSeenAt || now
     };
@@ -428,6 +429,7 @@ export class AgentStatusStore {
     const existing = this.desiredForData(data, normalized);
     const now = new Date().toISOString();
     const mappingProvided = Object.prototype.hasOwnProperty.call(input, 'scheduleMapping');
+    const updateProvided = Object.prototype.hasOwnProperty.call(input, 'update');
     data.desired[normalized] = {
       scheduleEnabled: typeof input.scheduleEnabled === 'boolean' ? input.scheduleEnabled : existing.scheduleEnabled,
       robotEnabled: typeof input.robotEnabled === 'boolean' ? input.robotEnabled : existing.robotEnabled,
@@ -435,6 +437,8 @@ export class AgentStatusStore {
         ? normalizeDesiredScheduleMapping(input.scheduleMapping)
         : existing.scheduleMapping,
       mappingRevision: mappingProvided ? now : existing.mappingRevision,
+      scheduleRequestRevision: input.requestScheduleNow === true ? now : existing.scheduleRequestRevision,
+      update: updateProvided ? normalizeDesiredUpdate(input.update) : existing.update,
       updatedAt: now
     };
     data.updatedAt = data.desired[normalized].updatedAt;
@@ -494,6 +498,8 @@ export class AgentStatusStore {
       robotEnabled: typeof stored.robotEnabled === 'boolean' ? stored.robotEnabled : false,
       scheduleMapping: normalizeDesiredScheduleMapping(stored.scheduleMapping),
       mappingRevision: cleanAgentDate(stored.mappingRevision),
+      scheduleRequestRevision: cleanAgentDate(stored.scheduleRequestRevision),
+      update: normalizeDesiredUpdate(stored.update),
       updatedAt: cleanAgentDate(stored.updatedAt)
     };
   }
@@ -807,6 +813,24 @@ function normalizeDesiredScheduleMapping(value) {
       ? value.notes.slice(0, 20).map((item) => cleanAgentText(item, 500)).filter(Boolean)
       : []
   };
+}
+
+function normalizeDesiredUpdate(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const version = cleanAgentText(value.version, 64);
+  const sha256 = cleanAgentText(value.sha256, 64).toUpperCase();
+  const size = Number(value.size || 0);
+  const downloadPath = cleanAgentText(value.downloadPath, 300);
+  if (
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ||
+    !/^[A-F0-9]{64}$/.test(sha256) ||
+    !Number.isSafeInteger(size) || size <= 0 ||
+    !/^\/api\/agent\/releases\/[^/]+\/download$/.test(downloadPath)
+  ) {
+    return null;
+  }
+  return { version, sha256, size, downloadPath, publishedAt: cleanAgentDate(value.publishedAt) };
 }
 
 function normalizeAgentSchema(value) {
