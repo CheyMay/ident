@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "appVersion": "1.0.0",
+  "appVersion": "1.0.1",
   "backend": {
     "baseUrl": "https://ident.code9dev.ru",
     "timeoutSeconds": 60,

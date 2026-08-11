@@ -54,8 +54,7 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Start-ScheduledTask -TaskName $WorkerTaskName
-Start-ScheduledTask -TaskName $DesktopTaskName
 
 Write-Host "Autostart installed: $WorkerTaskName" -ForegroundColor Green
 Write-Host "Status panel installed: $DesktopTaskName" -ForegroundColor Green
-Write-Host 'Both start automatically when this Windows user signs in.'
+Write-Host 'Both will start automatically when this Windows user signs in.'

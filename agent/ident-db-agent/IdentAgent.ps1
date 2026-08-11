@@ -130,6 +130,13 @@ function Write-AgentLog {
 function Get-SqlDataSource {
     param([pscustomobject]$SqlConfig)
 
+    if (
+        $SqlConfig.PSObject.Properties.Name -contains 'dataSource' -and
+        -not [string]::IsNullOrWhiteSpace([string]$SqlConfig.dataSource)
+    ) {
+        return [string]$SqlConfig.dataSource
+    }
+
     $server = [string]$SqlConfig.server
     $instanceName = [string]$SqlConfig.instanceName
     $port = 0
@@ -263,33 +270,225 @@ function Get-ObjectPropertyValue {
     return $null
 }
 
-function Find-IdentSqlConnections {
-    $connections = @()
-    try {
-        $identProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.ProcessName -match '(?i)ident' -or $_.MainWindowTitle -match '(?i)ident'
-        })
-        foreach ($process in $identProcesses) {
-            $processConnections = @(Get-NetTCPConnection -OwningProcess $process.Id -State Established -ErrorAction SilentlyContinue)
-            foreach ($connection in $processConnections) {
-                if (
-                    [string]::IsNullOrWhiteSpace([string]$connection.RemoteAddress) -or
-                    [int]$connection.RemotePort -le 0 -or
-                    [int]$connection.RemotePort -in @(53, 80, 443)
-                ) {
-                    continue
-                }
-                $connections += [pscustomobject]@{
-                    Server = [string]$connection.RemoteAddress
-                    Port = [int]$connection.RemotePort
-                    ProcessName = [string]$process.ProcessName
+function ConvertTo-SqlEndpoint {
+    param(
+        [string]$DataSource,
+        [string]$Source
+    )
+
+    $value = $DataSource.Trim().Trim('"').Trim("'")
+    if ([string]::IsNullOrWhiteSpace($value) -or $value -match '(?i)\|DataDirectory\||LocalDB') {
+        return $null
+    }
+
+    if ($value -match '(?i)^np:(?<pipe>.+)$') {
+        $pipe = [string]$Matches.pipe
+        $pipeServer = ''
+        if ($pipe -match '^\\\\(?<server>[^\\]+)\\') {
+            $pipeServer = [string]$Matches.server
+        }
+        return [pscustomobject]@{
+            Server = $pipeServer
+            InstanceName = ''
+            Port = 0
+            DataSource = "np:$pipe"
+            Source = $Source
+        }
+    }
+    if ($value -match '(?i)^tcp:(?<server>[^,]+),(?<port>\d+)$') {
+        return [pscustomobject]@{
+            Server = [string]$Matches.server
+            InstanceName = ''
+            Port = [int]$Matches.port
+            DataSource = "tcp:$([string]$Matches.server),$([int]$Matches.port)"
+            Source = $Source
+        }
+    }
+    if ($value -match '^(?<server>[^,\\]+),(?<port>\d+)$') {
+        return [pscustomobject]@{
+            Server = [string]$Matches.server
+            InstanceName = ''
+            Port = [int]$Matches.port
+            DataSource = "tcp:$([string]$Matches.server),$([int]$Matches.port)"
+            Source = $Source
+        }
+    }
+    if ($value -match '^(?<server>[^\\]+)\\(?<instance>[^\\]+)$') {
+        return [pscustomobject]@{
+            Server = [string]$Matches.server
+            InstanceName = [string]$Matches.instance
+            Port = 0
+            DataSource = $value
+            Source = $Source
+        }
+    }
+
+    return [pscustomobject]@{
+        Server = $value
+        InstanceName = ''
+        Port = 0
+        DataSource = $value
+        Source = $Source
+    }
+}
+
+function Find-IdentConfigurationEndpoints {
+    $roots = @()
+    $identProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessName -match '(?i)ident' -or $_.MainWindowTitle -match '(?i)ident'
+    })
+    foreach ($process in $identProcesses) {
+        try {
+            if (-not [string]::IsNullOrWhiteSpace([string]$process.Path)) {
+                $roots += Split-Path -Parent ([string]$process.Path)
+            }
+        }
+        catch {}
+    }
+
+    foreach ($path in @(
+        (Join-Path $env:ProgramData 'IDENT'),
+        (Join-Path $env:ProgramData 'Dent-IT'),
+        (Join-Path $env:APPDATA 'IDENT'),
+        (Join-Path $env:LOCALAPPDATA 'IDENT')
+    )) {
+        if (Test-Path -LiteralPath $path) {
+            $roots += $path
+        }
+    }
+
+    $endpoints = @()
+    $files = @()
+    foreach ($root in @($roots | Sort-Object -Unique)) {
+        try {
+            $files += Get-ChildItem `
+                -LiteralPath $root `
+                -Recurse `
+                -File `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Length -le 2097152 -and
+                    $_.Extension -match '(?i)^\.(config|ini|xml|json|txt)$'
+                } |
+                Select-Object -First 250
+        }
+        catch {}
+    }
+
+    $patterns = @(
+        '(?i)(?:data\s+source|server|network\s+address)\s*=\s*(?<value>[^;\r\n"<]+)',
+        '(?i)"(?:dataSource|server|sqlServer|serverName|host)"\s*:\s*"(?<value>[^"]+)"'
+    )
+    foreach ($file in @($files | Sort-Object FullName -Unique)) {
+        try {
+            $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+            foreach ($pattern in $patterns) {
+                foreach ($match in [regex]::Matches($content, $pattern)) {
+                    $endpoint = ConvertTo-SqlEndpoint `
+                        -DataSource ([string]$match.Groups['value'].Value) `
+                        -Source "IDENT config $($file.Name)"
+                    if ($null -ne $endpoint) {
+                        $endpoints += $endpoint
+                    }
                 }
             }
         }
+        catch {}
     }
-    catch {
-        return @()
+    return $endpoints
+}
+
+function Find-SqlClientAliasEndpoints {
+    $endpoints = @()
+    foreach ($registryPath in @(
+        'HKCU:\SOFTWARE\Microsoft\MSSQLServer\Client\ConnectTo',
+        'HKLM:\SOFTWARE\Microsoft\MSSQLServer\Client\ConnectTo',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\MSSQLServer\Client\ConnectTo'
+    )) {
+        try {
+            $item = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
+            foreach ($property in $item.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' }) {
+                $value = [string]$property.Value
+                $dataSource = ''
+                if ($value -match '(?i)^DBMSSOCN,(?<server>[^,]+),(?<port>\d+)$') {
+                    $dataSource = "tcp:$([string]$Matches.server),$([int]$Matches.port)"
+                }
+                elseif ($value -match '(?i)^DBNMPNTW,(?<pipe>.+)$') {
+                    $dataSource = "np:$([string]$Matches.pipe)"
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($value)) {
+                    $dataSource = $value
+                }
+                $endpoint = ConvertTo-SqlEndpoint -DataSource $dataSource -Source "SQL client alias $($property.Name)"
+                if ($null -ne $endpoint) {
+                    $endpoints += $endpoint
+                }
+            }
+        }
+        catch {}
     }
+    return $endpoints
+}
+
+function Find-LocalSqlEndpoints {
+    $endpoints = @()
+    try {
+        foreach ($service in @(Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^MSSQL(\$|SERVER$)' })) {
+            $dataSource = if ($service.Name -eq 'MSSQLSERVER') {
+                $env:COMPUTERNAME
+            }
+            else {
+                "$env:COMPUTERNAME\$($service.Name.Substring(6))"
+            }
+            $endpoint = ConvertTo-SqlEndpoint -DataSource $dataSource -Source "local SQL service $($service.Name)"
+            if ($null -ne $endpoint) {
+                $endpoints += $endpoint
+            }
+        }
+    }
+    catch {}
+    return $endpoints
+}
+
+function Find-IdentSqlConnections {
+    param([string[]]$PreferredServers = @())
+
+    $connections = @()
+    try {
+        $allConnections = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
+        $identProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProcessName -match '(?i)ident' -or $_.MainWindowTitle -match '(?i)ident'
+        })
+        $identProcessIds = @($identProcesses | ForEach-Object { [int]$_.Id })
+        foreach ($connection in $allConnections) {
+            $remoteAddress = [string]$connection.RemoteAddress
+            $remotePort = [int]$connection.RemotePort
+            if (
+                [string]::IsNullOrWhiteSpace($remoteAddress) -or
+                $remotePort -le 0 -or
+                $remotePort -in @(53, 80, 443, 445, 3389)
+            ) {
+                continue
+            }
+            $isIdentProcess = [int]$connection.OwningProcess -in $identProcessIds
+            $isPreferredServer = @($PreferredServers | Where-Object { $_ -ieq $remoteAddress }).Count -gt 0
+            if (-not $isIdentProcess -and -not $isPreferredServer) {
+                continue
+            }
+            $processName = ''
+            try {
+                $processName = [string](Get-Process -Id $connection.OwningProcess -ErrorAction Stop).ProcessName
+            }
+            catch {}
+            $connections += [pscustomobject]@{
+                Server = $remoteAddress
+                Port = $remotePort
+                ProcessName = $processName
+                Source = $(if ($isIdentProcess) { "IDENT process $processName" } else { "active connection to $remoteAddress" })
+            }
+        }
+    }
+    catch {}
     return @($connections | Sort-Object Server, Port -Unique)
 }
 
@@ -301,77 +500,101 @@ function Get-SqlEndpointCandidates {
     $configuredInstance = [string]$Context.Config.sql.instanceName
     $candidates = @()
 
-    foreach ($connection in @(Find-IdentSqlConnections)) {
+    $configuredDataSource = Get-SqlDataSource -SqlConfig $Context.Config.sql
+    $configuredEndpoint = ConvertTo-SqlEndpoint -DataSource $configuredDataSource -Source 'saved configuration'
+    if ($null -ne $configuredEndpoint) {
+        $candidates += $configuredEndpoint
+    }
+
+    $configurationEndpoints = @(Find-IdentConfigurationEndpoints)
+    $aliasEndpoints = @(Find-SqlClientAliasEndpoints)
+    $localEndpoints = @(Find-LocalSqlEndpoints)
+    $candidates += $configurationEndpoints
+    $candidates += $aliasEndpoints
+    $candidates += $localEndpoints
+
+    $servers = @($server)
+    $servers += @($configurationEndpoints | ForEach-Object { [string]$_.Server })
+    $servers += @($aliasEndpoints | ForEach-Object { [string]$_.Server })
+    $servers = @($servers | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+
+    foreach ($connection in @(Find-IdentSqlConnections -PreferredServers $servers)) {
         $candidates += [pscustomobject]@{
             Server = [string]$connection.Server
             InstanceName = ''
             Port = [int]$connection.Port
             DataSource = "tcp:$($connection.Server),$($connection.Port)"
-            Source = "IDENT process $($connection.ProcessName)"
+            Source = [string]$connection.Source
+        }
+    }
+
+    foreach ($browserServer in $servers) {
+        foreach ($instance in @(Find-SqlBrowserInstances -Server $browserServer)) {
+            $instanceName = [string](Get-ObjectPropertyValue -Object $instance -Names @('InstanceName'))
+            $tcpText = [string](Get-ObjectPropertyValue -Object $instance -Names @('tcp'))
+            $namedPipe = [string](Get-ObjectPropertyValue -Object $instance -Names @('np'))
+            $tcpPort = 0
+            [void][int]::TryParse($tcpText, [ref]$tcpPort)
+            if ($tcpPort -gt 0) {
+                $candidates += [pscustomobject]@{
+                    Server = $browserServer
+                    InstanceName = $instanceName
+                    Port = $tcpPort
+                    DataSource = "tcp:$browserServer,$tcpPort"
+                    Source = 'SQL Browser TCP'
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($namedPipe)) {
+                $pipeDataSource = if ($namedPipe.StartsWith('\\')) {
+                    "np:$namedPipe"
+                }
+                else {
+                    "np:\\$browserServer\$($namedPipe.TrimStart('\'))"
+                }
+                $pipeEndpoint = ConvertTo-SqlEndpoint -DataSource $pipeDataSource -Source 'SQL Browser named pipe'
+                if ($null -ne $pipeEndpoint) {
+                    $pipeEndpoint.InstanceName = $instanceName
+                    $candidates += $pipeEndpoint
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($instanceName)) {
+                $candidates += [pscustomobject]@{
+                    Server = $browserServer
+                    InstanceName = $instanceName
+                    Port = 0
+                    DataSource = "$browserServer\$instanceName"
+                    Source = 'SQL Browser instance'
+                }
+            }
         }
     }
 
     if ($configuredPort -gt 0) {
-        $candidates += [pscustomobject]@{
-            Server = $server
-            InstanceName = ''
-            Port = $configuredPort
-            DataSource = "tcp:$server,$configuredPort"
-            Source = 'saved configuration'
-        }
+        $candidates += ConvertTo-SqlEndpoint -DataSource "tcp:$server,$configuredPort" -Source 'saved TCP port'
     }
     if (-not [string]::IsNullOrWhiteSpace($configuredInstance)) {
-        $candidates += [pscustomobject]@{
-            Server = $server
-            InstanceName = $configuredInstance
-            Port = 0
-            DataSource = "$server\$configuredInstance"
-            Source = 'saved configuration'
-        }
+        $candidates += ConvertTo-SqlEndpoint -DataSource "$server\$configuredInstance" -Source 'saved SQL instance'
     }
-
-    foreach ($instance in @(Find-SqlBrowserInstances -Server $server)) {
-        $instanceName = [string](Get-ObjectPropertyValue -Object $instance -Names @('InstanceName'))
-        $tcpText = [string](Get-ObjectPropertyValue -Object $instance -Names @('tcp'))
-        $tcpPort = 0
-        [void][int]::TryParse($tcpText, [ref]$tcpPort)
-        if ($tcpPort -gt 0) {
-            $candidates += [pscustomobject]@{
-                Server = $server
-                InstanceName = $instanceName
-                Port = $tcpPort
-                DataSource = "tcp:$server,$tcpPort"
-                Source = 'SQL Browser'
-            }
-        }
-        elseif (-not [string]::IsNullOrWhiteSpace($instanceName)) {
-            $candidates += [pscustomobject]@{
-                Server = $server
-                InstanceName = $instanceName
-                Port = 0
-                DataSource = "$server\$instanceName"
-                Source = 'SQL Browser'
-            }
-        }
-    }
-
-    $candidates += [pscustomobject]@{
-        Server = $server
-        InstanceName = ''
-        Port = 1433
-        DataSource = "tcp:$server,1433"
-        Source = 'standard SQL port'
+    foreach ($candidateServer in $servers) {
+        $candidates += ConvertTo-SqlEndpoint -DataSource $candidateServer -Source 'server default protocol'
+        $candidates += ConvertTo-SqlEndpoint -DataSource "tcp:$candidateServer,1433" -Source 'standard SQL port'
     }
 
     $unique = @{}
     $result = @()
     foreach ($candidate in $candidates) {
+        if ($null -eq $candidate -or [string]::IsNullOrWhiteSpace([string]$candidate.DataSource)) {
+            continue
+        }
         $key = ([string]$candidate.DataSource).ToLowerInvariant()
         if ($unique.ContainsKey($key)) {
             continue
         }
         $unique[$key] = $true
         $result += $candidate
+        if ($result.Count -ge 30) {
+            break
+        }
     }
     return $result
 }
@@ -573,10 +796,34 @@ function Save-SqlDiscovery {
     $config.sql.server = [string]$ConnectionResult.Endpoint.Server
     $config.sql.instanceName = [string]$ConnectionResult.Endpoint.InstanceName
     $config.sql.port = [int]$ConnectionResult.Endpoint.Port
+    if ($config.sql.PSObject.Properties.Name -contains 'dataSource') {
+        $config.sql.dataSource = [string]$ConnectionResult.Endpoint.DataSource
+    }
+    else {
+        $config.sql | Add-Member -NotePropertyName dataSource -NotePropertyValue ([string]$ConnectionResult.Endpoint.DataSource)
+    }
     $config.sql.database = [string]$Database.Name
     $temporaryPath = "$($Context.ConfigPath).tmp-$PID"
     $config | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
     Move-Item -LiteralPath $temporaryPath -Destination $Context.ConfigPath -Force
+}
+
+function Save-SqlDiscoveryReport {
+    param(
+        [pscustomobject]$Context,
+        [object[]]$Attempts,
+        [string]$Result
+    )
+
+    $path = Join-Path $Context.BaseDirectory 'sql-discovery.json'
+    [ordered]@{
+        timestamp = (Get-Date).ToString('o')
+        computer = $env:COMPUTERNAME
+        result = $Result
+        configuredServer = [string]$Context.Config.sql.server
+        attempts = @($Attempts)
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
+    return $path
 }
 
 function Invoke-AutoConfigureSql {
@@ -586,18 +833,36 @@ function Invoke-AutoConfigureSql {
     $candidates = @(Get-SqlEndpointCandidates -Context $Context)
     Write-Host "Candidates: $($candidates.Count)"
     $connections = @()
+    $attempts = @()
     foreach ($candidate in $candidates) {
         Write-Host "  Trying $($candidate.DataSource) [$($candidate.Source)]..."
         try {
-            $connections += Test-SqlEndpoint -Context $Context -Endpoint $candidate
+            $connection = Test-SqlEndpoint -Context $Context -Endpoint $candidate
+            $connections += $connection
+            $attempts += [ordered]@{
+                dataSource = [string]$candidate.DataSource
+                source = [string]$candidate.Source
+                connected = $true
+                databases = @($connection.Databases)
+                error = ''
+            }
             Write-Host '  Connected.' -ForegroundColor Green
         }
         catch {
-            Write-Host "  Not available: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            $message = [string]$_.Exception.Message
+            $attempts += [ordered]@{
+                dataSource = [string]$candidate.DataSource
+                source = [string]$candidate.Source
+                connected = $false
+                databases = @()
+                error = $message
+            }
+            Write-Host "  Not available: $message" -ForegroundColor DarkYellow
         }
     }
     if ($connections.Count -eq 0) {
-        throw 'SQL Server was not found. Keep IDENT open and verify that readonly_user can connect from this computer.'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'no_connection'
+        throw "SQL Server was not found. Keep IDENT open and verify that readonly_user can connect from this computer. Diagnostic file: $reportPath"
     }
 
     $accessibleDatabaseCount = @(
@@ -606,7 +871,8 @@ function Invoke-AutoConfigureSql {
             Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') }
     ).Count
     if ($accessibleDatabaseCount -eq 0) {
-        throw 'The SQL login connected, but it cannot access any non-system databases.'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'no_accessible_database'
+        throw "The SQL login connected, but it cannot access any non-system databases. Diagnostic file: $reportPath"
     }
 
     Write-Step 'Identifying the IDENT database from schema metadata'
@@ -629,7 +895,8 @@ function Invoke-AutoConfigureSql {
         }
     }
     if ($fingerprints.Count -eq 0) {
-        throw 'No accessible database schema could be inspected.'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'schema_unavailable'
+        throw "No accessible database schema could be inspected. Diagnostic file: $reportPath"
     }
 
     $fingerprints |
@@ -661,8 +928,10 @@ function Invoke-AutoConfigureSql {
     Write-Host 'Configuration saved.' -ForegroundColor Green
 
     $schema = Export-SqlSchema -Context $Context
+    $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'configured'
     Write-Host "Schema exported: $($schema.summary.tables) tables/views, $($schema.summary.columns) columns." -ForegroundColor Green
     Write-Host "File: $($Context.SchemaPath)" -ForegroundColor Green
+    Write-Host "Discovery report: $reportPath" -ForegroundColor Green
     Write-AgentLog -Context $Context -Level 'info' -Event 'sql_auto_configured' -Data @{
         dataSource = [string]$connectionResult.Endpoint.DataSource
         database = [string]$selected.Name
@@ -1088,6 +1357,23 @@ function Invoke-AgentSelfTest {
     ) -ConfiguredDatabase ''
     if ($null -ne $genericNamedDatabase) {
         throw 'Self-test trusted a generic clinic database name without schema evidence.'
+    }
+    $tcpEndpoint = ConvertTo-SqlEndpoint -DataSource 'tcp:192.168.0.3,51433' -Source 'self-test'
+    if ($tcpEndpoint.Server -ne '192.168.0.3' -or $tcpEndpoint.Port -ne 51433) {
+        throw 'Self-test failed to parse a TCP SQL endpoint.'
+    }
+    $pipeEndpoint = ConvertTo-SqlEndpoint -DataSource 'np:\\SERVER\pipe\MSSQL$IDENT\sql\query' -Source 'self-test'
+    if ($pipeEndpoint.Server -ne 'SERVER' -or $pipeEndpoint.DataSource -notmatch '^np:') {
+        throw 'Self-test failed to parse a named-pipe SQL endpoint.'
+    }
+    $explicitSource = Get-SqlDataSource -SqlConfig ([pscustomobject]@{
+        dataSource = 'np:\\SERVER\pipe\sql\query'
+        server = 'ignored'
+        instanceName = ''
+        port = 0
+    })
+    if ($explicitSource -ne 'np:\\SERVER\pipe\sql\query') {
+        throw 'Self-test failed to preserve an explicit SQL data source.'
     }
     Write-Host 'SELF-TEST OK' -ForegroundColor Green
 }

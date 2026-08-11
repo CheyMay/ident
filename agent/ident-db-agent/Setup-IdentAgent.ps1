@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Code9\IdentAgent')
+    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Code9\IdentAgent'),
+    [switch]$SkipAutostart,
+    [switch]$NoShortcut,
+    [switch]$NoLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +29,47 @@ function Protect-Secret {
         return ''
     }
     return ConvertFrom-SecureString -SecureString $Value
+}
+
+function New-PowerShellShortcut {
+    param(
+        [string]$ShortcutPath,
+        [string]$ScriptPath,
+        [string]$Arguments = '',
+        [int]$WindowStyle = 1
+    )
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $shortcut.TargetPath = 'powershell.exe'
+    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $Arguments".Trim()
+    $shortcut.WorkingDirectory = Split-Path -Parent $ScriptPath
+    $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,14"
+    $shortcut.WindowStyle = $WindowStyle
+    $shortcut.Save()
+}
+
+function Install-StartupShortcuts {
+    param(
+        [string]$Directory,
+        [string]$ConfigFile
+    )
+
+    $startupDirectory = [Environment]::GetFolderPath('Startup')
+    if ([string]::IsNullOrWhiteSpace($startupDirectory)) {
+        throw 'Windows startup folder was not found.'
+    }
+    New-Item -ItemType Directory -Force -Path $startupDirectory | Out-Null
+    New-PowerShellShortcut `
+        -ShortcutPath (Join-Path $startupDirectory 'Code9 IDENT Agent.lnk') `
+        -ScriptPath (Join-Path $Directory 'IdentWorker.ps1') `
+        -Arguments "-ConfigPath `"$ConfigFile`"" `
+        -WindowStyle 7
+    New-PowerShellShortcut `
+        -ShortcutPath (Join-Path $startupDirectory 'Code9 IDENT Agent Status.lnk') `
+        -ScriptPath (Join-Path $Directory 'IdentDesktop.ps1') `
+        -Arguments "-ConfigPath `"$ConfigFile`" -StartMinimized" `
+        -WindowStyle 7
 }
 
 Write-Host ''
@@ -110,7 +154,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.4.1'
+        version = '2.5.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -126,6 +170,7 @@ $config = [ordered]@{
         server = $sqlServer
         instanceName = ''
         port = 0
+        dataSource = ''
         database = ''
         user = $sqlUser
         encrypt = $false
@@ -166,8 +211,15 @@ $secrets | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $secretsPath -Enco
 Write-Host ''
 Write-Host "Agent installed to: $InstallDirectory" -ForegroundColor Green
 Write-Host 'Searching for SQL Server and the IDENT database...'
-& (Join-Path $InstallDirectory 'IdentAgent.ps1') -ConfigPath $configPath -AutoConfigureSql
-if ($LASTEXITCODE -ne 0) {
+$agentScript = Join-Path $InstallDirectory 'IdentAgent.ps1'
+& powershell.exe `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $agentScript `
+    -ConfigPath $configPath `
+    -AutoConfigureSql
+$sqlDiscoveryExitCode = $LASTEXITCODE
+if ($sqlDiscoveryExitCode -ne 0) {
     Write-Host ''
     Write-Host 'Automatic SQL discovery did not finish. The agent will still be installed.' -ForegroundColor Yellow
     Write-Host 'Keep IDENT open and use "Find SQL automatically" in the status panel.' -ForegroundColor Yellow
@@ -175,8 +227,47 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ''
 Write-Host 'Installing startup tasks...'
-& (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') -InstallDirectory $InstallDirectory
+$autostartMode = 'not installed'
+if (-not $SkipAutostart) {
+    $autostartMode = 'scheduled tasks'
+    try {
+        & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') -InstallDirectory $InstallDirectory
+        $startupDirectory = [Environment]::GetFolderPath('Startup')
+        foreach ($name in @('Code9 IDENT Agent.lnk', 'Code9 IDENT Agent Status.lnk')) {
+            Remove-Item -LiteralPath (Join-Path $startupDirectory $name) -Force -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-Host "Scheduled tasks are unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host 'Installing startup-folder shortcuts instead.' -ForegroundColor Yellow
+        try {
+            & (Join-Path $InstallDirectory 'Uninstall-IdentAgentTask.ps1') -ErrorAction SilentlyContinue
+        }
+        catch {}
+        Install-StartupShortcuts -Directory $InstallDirectory -ConfigFile $configPath
+        Start-Process `
+            -FilePath 'powershell.exe' `
+            -WindowStyle Hidden `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentWorker.ps1')`" -ConfigPath `"$configPath`""
+        $autostartMode = 'startup folder'
+    }
+}
+
+$desktopDirectory = [Environment]::GetFolderPath('Desktop')
+if (-not $NoShortcut -and -not [string]::IsNullOrWhiteSpace($desktopDirectory)) {
+    New-PowerShellShortcut `
+        -ShortcutPath (Join-Path $desktopDirectory 'Code9 IDENT.lnk') `
+        -ScriptPath (Join-Path $InstallDirectory 'IdentDesktop.ps1') `
+        -Arguments "-ConfigPath `"$configPath`""
+}
+
+if (-not $NoLaunch) {
+    Start-Process `
+        -FilePath 'powershell.exe' `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentDesktop.ps1')`" -ConfigPath `"$configPath`""
+}
 
 Write-Host ''
 Write-Host 'Setup finished. The status panel is available in the Windows notification area.' -ForegroundColor Green
+Write-Host "Autostart: $autostartMode." -ForegroundColor Green
 Write-Host 'The booking robot remains disabled until its IDENT controls are calibrated.'
