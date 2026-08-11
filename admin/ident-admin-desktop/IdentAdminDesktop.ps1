@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
-param([string]$ConfigPath = '')
+param(
+    [string]$ConfigPath = '',
+    [string]$DiagnosticsCapturePath = ''
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -242,6 +245,10 @@ $mappingTab = New-Object Windows.Forms.TabPage
 $mappingTab.Text = 'База IDENT'
 $mappingTab.BackColor = [Drawing.Color]::FromArgb(244, 247, 248)
 [void]$tabs.TabPages.Add($mappingTab)
+$diagnosticsTab = New-Object Windows.Forms.TabPage
+$diagnosticsTab.Text = 'Диагностика'
+$diagnosticsTab.BackColor = [Drawing.Color]::FromArgb(244, 247, 248)
+[void]$tabs.TabPages.Add($diagnosticsTab)
 $updatesTab = New-Object Windows.Forms.TabPage
 $updatesTab.Text = 'Версии'
 $updatesTab.BackColor = [Drawing.Color]::FromArgb(244, 247, 248)
@@ -354,6 +361,46 @@ $doctorsSql = New-SqlEditor -Parent $doctorsSqlTab
 $branchesSql = New-SqlEditor -Parent $branchesSqlTab
 $intervalsSql = New-SqlEditor -Parent $intervalsSqlTab
 
+$diagnosticsReport = New-Object Windows.Forms.TextBox
+$diagnosticsReport.Location = New-Object Drawing.Point(0, 126)
+$diagnosticsReport.Size = New-Object Drawing.Size(1128, 476)
+$diagnosticsReport.Anchor = [Windows.Forms.AnchorStyles]::Top -bor [Windows.Forms.AnchorStyles]::Bottom -bor [Windows.Forms.AnchorStyles]::Left -bor [Windows.Forms.AnchorStyles]::Right
+$diagnosticsReport.Multiline = $true
+$diagnosticsReport.ReadOnly = $true
+$diagnosticsReport.ScrollBars = [Windows.Forms.ScrollBars]::Both
+$diagnosticsReport.WordWrap = $false
+$diagnosticsReport.Font = New-Object Drawing.Font('Consolas', 9)
+$diagnosticsReport.BackColor = [Drawing.Color]::White
+$diagnosticsTab.Controls.Add($diagnosticsReport)
+$diagnosticsToolbar = New-Object Windows.Forms.Panel
+$diagnosticsToolbar.Location = New-Object Drawing.Point(0, 0)
+$diagnosticsToolbar.Size = New-Object Drawing.Size(1128, 126)
+$diagnosticsToolbar.Anchor = [Windows.Forms.AnchorStyles]::Top -bor [Windows.Forms.AnchorStyles]::Left -bor [Windows.Forms.AnchorStyles]::Right
+$diagnosticsToolbar.Height = 126
+$diagnosticsToolbar.BackColor = [Drawing.Color]::FromArgb(244, 247, 248)
+$diagnosticsTab.Controls.Add($diagnosticsToolbar)
+$diagnosticsToolbar.BringToFront()
+$diagnosticsAgentLabel = New-Label -Parent $diagnosticsToolbar -Text 'Агент не выбран' -Left 12 -Top 9 -Width 225 -Height 26 -Bold $true
+$requestDiagnosticsButton = New-Button -Parent $diagnosticsToolbar -Text 'Запросить отчет' -Left 245 -Top 5 -Width 140
+$loadDiagnosticsButton = New-Button -Parent $diagnosticsToolbar -Text 'Загрузить отчет' -Left 395 -Top 5 -Width 140
+$discoverSqlButton = New-Button -Parent $diagnosticsToolbar -Text 'Найти SQL удаленно' -Left 545 -Top 5 -Width 170
+$restartAgentButton = New-Button -Parent $diagnosticsToolbar -Text 'Перезапустить агент' -Left 725 -Top 5 -Width 170
+[void](New-Label -Parent $diagnosticsToolbar -Text 'Data Source' -Left 12 -Top 50 -Width 85 -Height 24)
+$remoteDataSource = New-Object Windows.Forms.TextBox
+$remoteDataSource.Location = New-Object Drawing.Point(100, 48)
+$remoteDataSource.Size = New-Object Drawing.Size(360, 28)
+$remoteDataSource.Font = New-Object Drawing.Font('Consolas', 9)
+$diagnosticsToolbar.Controls.Add($remoteDataSource)
+[void](New-Label -Parent $diagnosticsToolbar -Text 'База' -Left 470 -Top 50 -Width 40 -Height 24)
+$remoteDatabase = New-Object Windows.Forms.TextBox
+$remoteDatabase.Location = New-Object Drawing.Point(515, 48)
+$remoteDatabase.Size = New-Object Drawing.Size(175, 28)
+$remoteDatabase.Font = New-Object Drawing.Font('Consolas', 9)
+$diagnosticsToolbar.Controls.Add($remoteDatabase)
+$applySqlConnectionButton = New-Button -Parent $diagnosticsToolbar -Text 'Применить подключение' -Left 705 -Top 44 -Width 190
+$diagnosticsHint = New-Label -Parent $diagnosticsToolbar -Text 'Команды выполняются при следующем сигнале агента. Пароль SQL остается зашифрованным на компьютере клиники.' -Left 12 -Top 88 -Width 1080 -Height 24
+$diagnosticsHint.ForeColor = [Drawing.Color]::FromArgb(76, 91, 101)
+
 $releaseGrid = New-Object Windows.Forms.DataGridView
 $releaseGrid.Location = New-Object Drawing.Point(16, 50)
 $releaseGrid.Size = New-Object Drawing.Size(1128, 330)
@@ -399,6 +446,12 @@ function Update-TabLayouts {
     $scheduleSummary.Width = $contentWidth
     $scheduleGrid.Size = New-Object Drawing.Size($contentWidth, ([Math]::Max(220, $scheduleTab.ClientSize.Height - 66)))
 
+    $diagnosticsToolbar.Width = [Math]::Max(700, $diagnosticsTab.ClientSize.Width)
+    $diagnosticsReport.Size = New-Object Drawing.Size(
+        ([Math]::Max(700, $diagnosticsTab.ClientSize.Width)),
+        ([Math]::Max(220, $diagnosticsTab.ClientSize.Height - $diagnosticsToolbar.Height))
+    )
+
     $updatesWidth = [Math]::Max(700, $updatesTab.ClientSize.Width - 32)
     $updatesPanelHeight = 190
     $releaseGridHeight = [Math]::Max(170, $updatesTab.ClientSize.Height - 50 - 12 - $updatesPanelHeight - 16)
@@ -429,10 +482,17 @@ function Sync-AgentSelection {
     $desired = Get-DesiredForAgent -AgentId $script:SelectedAgentId
     $selectedLabel.Text = "Агент: $($script:SelectedAgentId)"
     $mappingAgentLabel.Text = "Агент: $($script:SelectedAgentId)"
+    $diagnosticsAgentLabel.Text = "Агент: $($script:SelectedAgentId)"
     $updateAgentLabel.Text = "Агент: $($script:SelectedAgentId)"
+    $remoteDataSource.Text = ''
+    $remoteDatabase.Text = ''
     if ($null -ne $desired) {
         $scheduleCheck.Checked = [bool]$desired.scheduleEnabled
         $robotCheck.Checked = [bool]$desired.robotEnabled
+        if ((Test-ObjectProperty -Value $desired -Name 'sqlConfiguration') -and $null -ne $desired.sqlConfiguration) {
+            $remoteDataSource.Text = [string]$desired.sqlConfiguration.dataSource
+            $remoteDatabase.Text = [string]$desired.sqlConfiguration.database
+        }
     }
     if ($null -ne $agent) {
         $agentUpdate = if (Test-ObjectProperty -Value $agent -Name 'update') { $agent.update } else { $null }
@@ -554,6 +614,7 @@ function Refresh-All {
         Render-Agents
         Render-Timetable
         Render-Releases
+        if ($tabs.SelectedTab -eq $diagnosticsTab) { Load-AgentDiagnostics -Silent }
         Set-StatusMessage -Text ("Обновлено: " + (Get-Date).ToString('HH:mm:ss'))
     }
     catch {
@@ -593,6 +654,126 @@ function Request-ScheduleNow {
         requestScheduleNow = $true
     })
     Set-StatusMessage -Text 'Команда на отправку расписания передана агенту.'
+}
+
+function Request-AgentDiagnostics {
+    if ([string]::IsNullOrWhiteSpace($script:SelectedAgentId)) { throw 'Сначала выберите агент.' }
+    [void](Invoke-AdminApi -Method POST -Path '/api/agent/settings' -Body @{
+        agentId = $script:SelectedAgentId
+        requestDiagnosticsNow = $true
+    })
+    Set-StatusMessage -Text 'Диагностика запрошена. Отчет появится после следующего сигнала агента.'
+}
+
+function Request-AgentSqlDiscovery {
+    if ([string]::IsNullOrWhiteSpace($script:SelectedAgentId)) { throw 'Сначала выберите агент.' }
+    $answer = [Windows.Forms.MessageBox]::Show(
+        'Запустить повторный поиск SQL на компьютере клиники? На время поиска выгрузка может остановиться примерно на минуту.',
+        'Code9 IDENT Admin',
+        [Windows.Forms.MessageBoxButtons]::YesNo,
+        [Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
+    [void](Invoke-AdminApi -Method POST -Path '/api/agent/settings' -Body @{
+        agentId = $script:SelectedAgentId
+        requestSqlDiscovery = $true
+    })
+    Set-StatusMessage -Text 'Команда поиска SQL передана агенту. Через минуту загрузите диагностический отчет.'
+}
+
+function Request-AgentRestart {
+    if ([string]::IsNullOrWhiteSpace($script:SelectedAgentId)) { throw 'Сначала выберите агент.' }
+    $answer = [Windows.Forms.MessageBox]::Show(
+        "Перезапустить агент $($script:SelectedAgentId)?",
+        'Code9 IDENT Admin',
+        [Windows.Forms.MessageBoxButtons]::YesNo,
+        [Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
+    [void](Invoke-AdminApi -Method POST -Path '/api/agent/settings' -Body @{
+        agentId = $script:SelectedAgentId
+        requestRestart = $true
+    })
+    Set-StatusMessage -Text 'Перезапуск назначен. Агент вернется на связь автоматически.'
+}
+
+function Save-AgentSqlConnection {
+    if ([string]::IsNullOrWhiteSpace($script:SelectedAgentId)) { throw 'Сначала выберите агент.' }
+    $dataSource = $remoteDataSource.Text.Trim()
+    $database = $remoteDatabase.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($dataSource) -or [string]::IsNullOrWhiteSpace($database)) {
+        throw 'Заполните Data Source и базу данных.'
+    }
+    if ($dataSource -match '[;\r\n]' -or $database -match '[;\r\n]') {
+        throw 'Data Source и название базы не должны содержать точку с запятой или перенос строки.'
+    }
+    [void](Invoke-AdminApi -Method POST -Path '/api/agent/settings' -Body @{
+        agentId = $script:SelectedAgentId
+        sqlConfiguration = @{
+            dataSource = $dataSource
+            database = $database
+        }
+        requestDiagnosticsNow = $true
+        requestScheduleNow = $true
+    })
+    Set-StatusMessage -Text 'Подключение сохранено. Агент проверит базу и отправит новый отчет.'
+}
+
+function Load-AgentDiagnostics {
+    param([switch]$Silent)
+
+    if ([string]::IsNullOrWhiteSpace($script:SelectedAgentId)) {
+        if ($Silent) { return }
+        throw 'Сначала выберите агент.'
+    }
+    $encoded = [Uri]::EscapeDataString($script:SelectedAgentId)
+    try {
+        $report = Invoke-AdminApi -Method GET -Path "/api/agent/diagnostics?agentId=$encoded"
+    }
+    catch {
+        if ($Silent) { return }
+        throw
+    }
+
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.AppendLine("ОТЧЕТ АГЕНТА: $($report.agentId)")
+    [void]$builder.AppendLine("Получен: $(Format-DateValue $report.receivedAt)  |  сформирован: $(Format-DateValue $report.generatedAt)")
+    [void]$builder.AppendLine("Компьютер: $($report.agent.deviceName)  |  версия: $($report.agent.version)  |  PID: $($report.agent.processId)")
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine('SQL')
+    [void]$builder.AppendLine("  Data Source: $($report.sql.dataSource)")
+    [void]$builder.AppendLine("  База: $($report.sql.database)  |  пользователь: $($report.sql.user)")
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine('АВТОЗАПУСК')
+    [void]$builder.AppendLine("  Служба: $($report.autostart.workerTask)  |  панель: $($report.autostart.desktopTask)")
+    [void]$builder.AppendLine("  Резервные ярлыки: служба=$($report.autostart.workerShortcut), панель=$($report.autostart.desktopShortcut)")
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine("ПОИСК SQL: $($report.discovery.result)  |  $(Format-DateValue $report.discovery.timestamp)")
+    foreach ($attempt in @($report.discovery.attempts)) {
+        $databases = if (Test-ObjectProperty -Value $attempt -Name 'databases') { [string]$attempt.databases } else { '' }
+        $errorText = if (Test-ObjectProperty -Value $attempt -Name 'error') { [string]$attempt.error } else { '' }
+        [void]$builder.AppendLine("  $($attempt.dataSource)  |  источник: $($attempt.source)  |  подключение: $($attempt.connected)")
+        if (-not [string]::IsNullOrWhiteSpace($databases)) { [void]$builder.AppendLine("    базы: $databases") }
+        if (-not [string]::IsNullOrWhiteSpace($errorText)) { [void]$builder.AppendLine("    ошибка: $errorText") }
+    }
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine('СОСТОЯНИЕ')
+    foreach ($section in @('worker', 'schedule', 'schema', 'robot', 'update', 'diagnostics')) {
+        if (Test-ObjectProperty -Value $report.state -Name $section) {
+            [void]$builder.AppendLine("  ${section}: " + (($report.state.$section | ConvertTo-Json -Compress -Depth 4)))
+        }
+    }
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine('ПОСЛЕДНИЕ СОБЫТИЯ')
+    foreach ($line in @($report.logs)) { [void]$builder.AppendLine([string]$line) }
+    $diagnosticsReport.Text = $builder.ToString()
+    if (-not [string]::IsNullOrWhiteSpace([string]$report.sql.dataSource)) {
+        $remoteDataSource.Text = [string]$report.sql.dataSource
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$report.sql.database)) {
+        $remoteDatabase.Text = [string]$report.sql.database
+    }
+    if (-not $Silent) { Set-StatusMessage -Text 'Диагностический отчет загружен.' }
 }
 
 function Load-AgentSchema {
@@ -731,6 +912,11 @@ $openSchemaButton.Add_Click({ $tabs.SelectedTab = $mappingTab; Invoke-UiAction {
 $loadSchemaButton.Add_Click({ Invoke-UiAction { Load-AgentSchema } })
 $loadMappingButton.Add_Click({ Invoke-UiAction { Load-AgentMapping } })
 $saveMappingButton.Add_Click({ Invoke-UiAction { Save-AgentMapping } })
+$requestDiagnosticsButton.Add_Click({ Invoke-UiAction { Request-AgentDiagnostics } })
+$loadDiagnosticsButton.Add_Click({ Invoke-UiAction { Load-AgentDiagnostics } })
+$discoverSqlButton.Add_Click({ Invoke-UiAction { Request-AgentSqlDiscovery } })
+$restartAgentButton.Add_Click({ Invoke-UiAction { Request-AgentRestart } })
+$applySqlConnectionButton.Add_Click({ Invoke-UiAction { Save-AgentSqlConnection } })
 $publishButton.Add_Click({ Invoke-UiAction { Publish-Release } })
 $assignButton.Add_Click({ Invoke-UiAction { Assign-Release } })
 $clearUpdateButton.Add_Click({ Invoke-UiAction { Clear-AssignedRelease } })
@@ -741,7 +927,32 @@ $refreshTimer.Add_Tick({ Refresh-All })
 $statusTab.Add_Resize({ Update-TabLayouts })
 $scheduleTab.Add_Resize({ Update-TabLayouts })
 $updatesTab.Add_Resize({ Update-TabLayouts })
-$form.Add_Shown({ Update-TabLayouts; Refresh-All; $refreshTimer.Start() })
+$form.Add_Shown({
+    if (-not [string]::IsNullOrWhiteSpace($DiagnosticsCapturePath)) {
+        $tabs.SelectedTab = $diagnosticsTab
+    }
+    Update-TabLayouts
+    Refresh-All
+    if ([string]::IsNullOrWhiteSpace($DiagnosticsCapturePath)) {
+        $refreshTimer.Start()
+        return
+    }
+    $capturePath = [IO.Path]::GetFullPath($DiagnosticsCapturePath)
+    $captureDirectory = Split-Path -Parent $capturePath
+    New-Item -ItemType Directory -Force -Path $captureDirectory | Out-Null
+    $form.Refresh()
+    [Windows.Forms.Application]::DoEvents()
+    $bitmap = New-Object Drawing.Bitmap($diagnosticsTab.Width, $diagnosticsTab.Height)
+    try {
+        $diagnosticsTab.DrawToBitmap(
+            $bitmap,
+            (New-Object Drawing.Rectangle(0, 0, $diagnosticsTab.Width, $diagnosticsTab.Height))
+        )
+        $bitmap.Save($capturePath, [Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally { $bitmap.Dispose() }
+    $form.Close()
+})
 $form.Add_FormClosed({ $refreshTimer.Stop(); $refreshTimer.Dispose() })
 
 [void]$form.ShowDialog()

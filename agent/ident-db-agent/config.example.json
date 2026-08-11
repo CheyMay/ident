@@ -2,7 +2,7 @@
   "version": 2,
   "agent": {
     "id": "stomazub-COMPUTERNAME",
-    "version": "2.5.0"
+    "version": "2.6.0"
   },
   "features": {
     "scheduleEnabled": true,
@@ -37,6 +37,7 @@
     "log": "logs\\agent.log",
     "pushResult": "last-push-result.json",
     "runtimeState": "runtime-state.json",
+    "remoteControlState": "remote-control-state.json",
     "commandDirectory": "commands",
     "robotConfig": "robot\\config.local.json",
     "robotReceipts": "robot-receipts.json",

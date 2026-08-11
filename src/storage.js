@@ -394,6 +394,7 @@ export class AgentStatusStore {
       schema: normalizeAgentSection(payload.schema),
       robot: normalizeAgentSection(payload.robot),
       update: normalizeAgentSection(payload.update),
+      diagnostics: normalizeAgentSection(payload.diagnostics),
       system: normalizeAgentSection(payload.system),
       firstSeenAt: existing.firstSeenAt || now
     };
@@ -429,6 +430,7 @@ export class AgentStatusStore {
     const existing = this.desiredForData(data, normalized);
     const now = new Date().toISOString();
     const mappingProvided = Object.prototype.hasOwnProperty.call(input, 'scheduleMapping');
+    const sqlConfigurationProvided = Object.prototype.hasOwnProperty.call(input, 'sqlConfiguration');
     const updateProvided = Object.prototype.hasOwnProperty.call(input, 'update');
     data.desired[normalized] = {
       scheduleEnabled: typeof input.scheduleEnabled === 'boolean' ? input.scheduleEnabled : existing.scheduleEnabled,
@@ -437,7 +439,14 @@ export class AgentStatusStore {
         ? normalizeDesiredScheduleMapping(input.scheduleMapping)
         : existing.scheduleMapping,
       mappingRevision: mappingProvided ? now : existing.mappingRevision,
+      sqlConfiguration: sqlConfigurationProvided
+        ? normalizeDesiredSqlConfiguration(input.sqlConfiguration)
+        : existing.sqlConfiguration,
+      sqlConfigurationRevision: sqlConfigurationProvided ? now : existing.sqlConfigurationRevision,
       scheduleRequestRevision: input.requestScheduleNow === true ? now : existing.scheduleRequestRevision,
+      diagnosticsRequestRevision: input.requestDiagnosticsNow === true ? now : existing.diagnosticsRequestRevision,
+      sqlDiscoveryRequestRevision: input.requestSqlDiscovery === true ? now : existing.sqlDiscoveryRequestRevision,
+      restartRequestRevision: input.requestRestart === true ? now : existing.restartRequestRevision,
       update: updateProvided ? normalizeDesiredUpdate(input.update) : existing.update,
       updatedAt: now
     };
@@ -498,7 +507,12 @@ export class AgentStatusStore {
       robotEnabled: typeof stored.robotEnabled === 'boolean' ? stored.robotEnabled : false,
       scheduleMapping: normalizeDesiredScheduleMapping(stored.scheduleMapping),
       mappingRevision: cleanAgentDate(stored.mappingRevision),
+      sqlConfiguration: normalizeDesiredSqlConfiguration(stored.sqlConfiguration),
+      sqlConfigurationRevision: cleanAgentDate(stored.sqlConfigurationRevision),
       scheduleRequestRevision: cleanAgentDate(stored.scheduleRequestRevision),
+      diagnosticsRequestRevision: cleanAgentDate(stored.diagnosticsRequestRevision),
+      sqlDiscoveryRequestRevision: cleanAgentDate(stored.sqlDiscoveryRequestRevision),
+      restartRequestRevision: cleanAgentDate(stored.restartRequestRevision),
       update: normalizeDesiredUpdate(stored.update),
       updatedAt: cleanAgentDate(stored.updatedAt)
     };
@@ -515,6 +529,41 @@ export class AgentStatusStore {
 
   async write(data) {
     await this.storage.writeJson(this.fileName, data);
+  }
+}
+
+export class AgentDiagnosticsStore {
+  constructor(storage) {
+    this.storage = storage;
+    this.fileName = 'agent-diagnostics.json';
+  }
+
+  async put(agentId, report) {
+    const normalizedAgentId = normalizeAgentId(agentId);
+    const normalizedReport = normalizeAgentDiagnostics(report);
+    const data = await this.read();
+    const now = new Date().toISOString();
+    data.reports[normalizedAgentId] = {
+      agentId: normalizedAgentId,
+      receivedAt: now,
+      ...normalizedReport
+    };
+    data.updatedAt = now;
+    await this.storage.writeJson(this.fileName, data);
+    return data.reports[normalizedAgentId];
+  }
+
+  async get(agentId) {
+    const data = await this.read();
+    return data.reports[normalizeAgentId(agentId)] || null;
+  }
+
+  async read() {
+    const data = await this.storage.readJson(this.fileName, { reports: {}, updatedAt: null });
+    return {
+      reports: data.reports && typeof data.reports === 'object' ? data.reports : {},
+      updatedAt: data.updatedAt || null
+    };
   }
 }
 
@@ -794,9 +843,61 @@ function normalizeAgentSection(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key, item]) => /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) && ['string', 'number', 'boolean'].includes(typeof item))
+      .filter(([key, item]) => (
+        /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) &&
+        !/(password|secret|token|api_?key|credential)/i.test(key) &&
+        ['string', 'number', 'boolean'].includes(typeof item)
+      ))
       .map(([key, item]) => [key, typeof item === 'string' ? item.slice(0, 500) : item])
   );
+}
+
+function normalizeAgentDiagnostics(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw badStorageInput('diagnostics report must be an object');
+  }
+
+  const discovery = value.discovery && typeof value.discovery === 'object' && !Array.isArray(value.discovery)
+    ? value.discovery
+    : {};
+  const attempts = Array.isArray(discovery.attempts)
+    ? discovery.attempts.slice(-50).map((attempt) => ({
+        ...normalizeAgentSection(attempt),
+        databases: Array.isArray(attempt?.databases)
+          ? attempt.databases.slice(0, 50).map((name) => cleanAgentText(name, 256)).filter(Boolean).join(', ')
+          : cleanAgentText(attempt?.databases, 1000)
+      }))
+    : [];
+  const state = value.state && typeof value.state === 'object' && !Array.isArray(value.state)
+    ? Object.fromEntries(
+        Object.entries(value.state)
+          .filter(([key, section]) => /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(key) && section && typeof section === 'object' && !Array.isArray(section))
+          .slice(0, 12)
+          .map(([key, section]) => [key, normalizeAgentSection(section)])
+      )
+    : {};
+
+  return {
+    generatedAt: cleanAgentDate(value.generatedAt) || new Date().toISOString(),
+    agent: normalizeAgentSection(value.agent),
+    sql: normalizeAgentSection(value.sql),
+    autostart: normalizeAgentSection(value.autostart),
+    state,
+    discovery: {
+      timestamp: cleanAgentDate(discovery.timestamp),
+      result: cleanAgentText(discovery.result, 100),
+      configuredServer: cleanAgentText(discovery.configuredServer, 500),
+      attempts
+    },
+    logs: Array.isArray(value.logs)
+      ? value.logs.slice(-100).map((line) => redactAgentDiagnosticText(cleanAgentText(line, 2000))).filter(Boolean)
+      : []
+  };
+}
+
+function redactAgentDiagnosticText(value) {
+  return String(value || '')
+    .replace(/((?:"?(?:password|secret|token|api[_-]?key|credential)"?)\s*[=:]\s*"?)[^\s,;"}]+/gi, '$1[REDACTED]');
 }
 
 function normalizeDesiredScheduleMapping(value) {
@@ -813,6 +914,14 @@ function normalizeDesiredScheduleMapping(value) {
       ? value.notes.slice(0, 20).map((item) => cleanAgentText(item, 500)).filter(Boolean)
       : []
   };
+}
+
+function normalizeDesiredSqlConfiguration(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const dataSource = cleanAgentText(value.dataSource, 500);
+  const database = cleanAgentText(value.database, 256);
+  if (!dataSource || !database || /[;\r\n]/.test(dataSource) || /[;\r\n]/.test(database)) return null;
+  return { dataSource, database };
 }
 
 function normalizeDesiredUpdate(value) {

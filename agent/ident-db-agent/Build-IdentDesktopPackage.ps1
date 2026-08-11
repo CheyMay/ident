@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.5.0'
+$releaseVersion = '2.6.0'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -51,7 +51,7 @@ Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destinati
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.5.0: reliable setup and expanded SQL discovery'
+    notes = 'Code9 IDENT Desktop 2.6.0: remote diagnostics and control without AnyDesk'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },

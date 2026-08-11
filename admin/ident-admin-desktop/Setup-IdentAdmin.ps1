@@ -42,7 +42,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'IdentAdminDesktop.ps1') -Destin
 
 $config = [ordered]@{
     version = 1
-    appVersion = '1.0.1'
+    appVersion = '1.1.0'
     backend = [ordered]@{
         baseUrl = $BackendUrl.TrimEnd('/')
         timeoutSeconds = 60

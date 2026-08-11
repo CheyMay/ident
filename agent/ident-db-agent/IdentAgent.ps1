@@ -20,6 +20,8 @@ param(
     [Parameter(ParameterSetName = 'AutoConfigureSql')]
     [switch]$AutoConfigureSql,
 
+    [switch]$NonInteractive,
+
     [Parameter(ParameterSetName = 'SelfTest')]
     [switch]$SelfTest
 )
@@ -592,7 +594,7 @@ function Get-SqlEndpointCandidates {
         }
         $unique[$key] = $true
         $result += $candidate
-        if ($result.Count -ge 30) {
+        if ($result.Count -ge 20) {
             break
         }
     }
@@ -613,7 +615,7 @@ function Test-SqlEndpoint {
     $builder['Password'] = $password
     $builder['Integrated Security'] = $false
     $builder['Application Name'] = 'Code9 IDENT SQL Discovery'
-    $builder['Connect Timeout'] = [Math]::Min(6, [int]$Context.Config.sql.connectTimeoutSeconds)
+    $builder['Connect Timeout'] = [Math]::Min(4, [int]$Context.Config.sql.connectTimeoutSeconds)
     $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
     $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
     $builder['Pooling'] = $false
@@ -677,7 +679,7 @@ function Get-DatabaseFingerprint {
     $builder['Password'] = $password
     $builder['Integrated Security'] = $false
     $builder['Application Name'] = 'Code9 IDENT Database Discovery'
-    $builder['Connect Timeout'] = [Math]::Min(6, [int]$Context.Config.sql.connectTimeoutSeconds)
+    $builder['Connect Timeout'] = [Math]::Min(4, [int]$Context.Config.sql.connectTimeoutSeconds)
     $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
     $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
     $builder['Pooling'] = $false
@@ -908,6 +910,11 @@ function Invoke-AutoConfigureSql {
         -ConfiguredDataSource (Get-SqlDataSource -SqlConfig $Context.Config.sql)
     if ($null -eq $selected) {
         $ordered = @($fingerprints | Sort-Object Score, TableCount -Descending)
+        if ($NonInteractive) {
+            $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'database_selection_required'
+            $options = @($ordered | ForEach-Object { "$($_.DataSource) / $($_.Name)" }) -join ', '
+            throw "Several databases are possible: $options. Select Data Source and database in Code9 IDENT Admin. Diagnostic file: $reportPath"
+        }
         Write-Host 'Several databases are possible. Choose one number:' -ForegroundColor Yellow
         for ($index = 0; $index -lt $ordered.Count; $index++) {
             Write-Host "  $($index + 1). $($ordered[$index].DataSource) / $($ordered[$index].Name)"

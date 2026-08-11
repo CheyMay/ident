@@ -32,6 +32,7 @@ import {
 import { bookingToAmoLead, leadToIdentTicket } from './ident/mappers.js';
 import { buildEffectiveConfig, SettingsStore } from './settings.js';
 import {
+  AgentDiagnosticsStore,
   AgentSchemaStore,
   AgentStatusStore,
   AmoSlotStore,
@@ -50,6 +51,7 @@ export function buildApp(config, logger, options = {}) {
   const slotStore = new AmoSlotStore(storage);
   const webhookLog = new WebhookLog(storage);
   const agentStore = new AgentStatusStore(storage, config.agent.offlineAfterSeconds);
+  const agentDiagnosticsStore = new AgentDiagnosticsStore(storage);
   const agentSchemaStore = new AgentSchemaStore(storage);
   const agentReleaseStore = new AgentReleaseStore(storage, {
     directory: config.agent.releaseDirectory,
@@ -205,6 +207,26 @@ export function buildApp(config, logger, options = {}) {
           receivedAt: record.receivedAt,
           summary: record.summary
         });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/diagnostics') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req, 512 * 1024);
+        if (!body.agentId || !body.report) {
+          return sendJson(res, 400, { error: 'agentId and report are required' });
+        }
+        return sendJson(res, 200, {
+          report: await agentDiagnosticsStore.put(body.agentId, body.report)
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/agent/diagnostics') {
+        requireServiceApiKey(req, config);
+        const agentId = url.searchParams.get('agentId');
+        if (!agentId) return sendJson(res, 400, { error: 'agentId is required' });
+        const report = await agentDiagnosticsStore.get(agentId);
+        if (!report) return sendJson(res, 404, { error: 'Agent diagnostics have not been received yet' });
+        return sendJson(res, 200, report);
       }
 
       if (req.method === 'GET' && url.pathname === '/api/agent/schema') {
@@ -1126,18 +1148,33 @@ function normalizeHost(value) {
 
 function normalizeAgentDesiredInput(input = {}) {
   const result = { ...input };
-  if (!Object.prototype.hasOwnProperty.call(input, 'scheduleMapping')) return result;
-  if (input.scheduleMapping === null) {
-    throw new BadRequestError('scheduleMapping cannot be null; disable scheduleEnabled instead');
+  if (Object.prototype.hasOwnProperty.call(input, 'scheduleMapping')) {
+    if (input.scheduleMapping === null) {
+      throw new BadRequestError('scheduleMapping cannot be null; disable scheduleEnabled instead');
+    }
+
+    const mapping = normalizeIdentDbMapping(input.scheduleMapping);
+    result.scheduleMapping = {
+      doctorsSql: validateReadOnlySql(mapping.doctorsSql, 'doctorsSql'),
+      branchesSql: validateReadOnlySql(mapping.branchesSql, 'branchesSql'),
+      intervalsSql: validateReadOnlySql(mapping.intervalsSql, 'intervalsSql'),
+      notes: mapping.notes
+    };
   }
 
-  const mapping = normalizeIdentDbMapping(input.scheduleMapping);
-  result.scheduleMapping = {
-    doctorsSql: validateReadOnlySql(mapping.doctorsSql, 'doctorsSql'),
-    branchesSql: validateReadOnlySql(mapping.branchesSql, 'branchesSql'),
-    intervalsSql: validateReadOnlySql(mapping.intervalsSql, 'intervalsSql'),
-    notes: mapping.notes
-  };
+  if (Object.prototype.hasOwnProperty.call(input, 'sqlConfiguration')) {
+    const dataSource = String(input.sqlConfiguration?.dataSource || '').trim();
+    const database = String(input.sqlConfiguration?.database || '').trim();
+    if (
+      !dataSource || !database ||
+      dataSource.length > 500 || database.length > 256 ||
+      /[;\r\n]/.test(dataSource) || /[;\r\n]/.test(database)
+    ) {
+      throw new BadRequestError('sqlConfiguration requires safe dataSource and database values');
+    }
+    result.sqlConfiguration = { dataSource, database };
+  }
+
   return result;
 }
 

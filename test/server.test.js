@@ -833,6 +833,42 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       assert.equal(schema.database, 'IDENT');
       assert.equal(schema.tables[0].columns[0].name, 'Id');
 
+      const diagnosticsUploadResponse = await fetch(`${baseUrl}/api/agent/diagnostics`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Key': 'test-agent-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          report: {
+            generatedAt: '2026-07-30T10:05:00Z',
+            agent: { version: '2.6.0', deviceName: 'IDENT-PC' },
+            sql: { dataSource: 'tcp:192.168.0.3,51433', database: 'IDENT', password: 'must-not-be-stored' },
+            autostart: { workerTask: 'Running', desktopTask: 'Ready' },
+            state: { schedule: { state: 'ok', doctors: 5, intervals: 120 } },
+            discovery: {
+              result: 'configured',
+              configuredServer: '192.168.0.3',
+              attempts: [{ dataSource: 'tcp:192.168.0.3,51433', connected: true }]
+            },
+            logs: ['event=ok', 'password=must-not-be-stored', '{"token":"must-not-be-stored"}']
+          }
+        })
+      });
+      assert.equal(diagnosticsUploadResponse.status, 200);
+
+      const diagnosticsResponse = await fetch(`${baseUrl}/api/agent/diagnostics?agentId=clinic-1`, {
+        headers: { 'X-API-Key': 'test-service-key' }
+      });
+      assert.equal(diagnosticsResponse.status, 200);
+      const agentDiagnostics = await diagnosticsResponse.json();
+      assert.equal(agentDiagnostics.sql.dataSource, 'tcp:192.168.0.3,51433');
+      assert.equal(agentDiagnostics.sql.password, undefined);
+      assert.match(agentDiagnostics.logs[1], /\[REDACTED\]/);
+      assert.match(agentDiagnostics.logs[2], /\[REDACTED\]/);
+      assert.doesNotMatch(agentDiagnostics.logs[2], /must-not-be-stored/);
+
       const invalidMappingResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',
         headers: {
@@ -871,6 +907,45 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       const mappingSettings = await mappingSettingsResponse.json();
       assert.deepEqual(mappingSettings.desired.scheduleMapping.doctorsSql, scheduleMapping.doctorsSql);
       assert.equal(Number.isNaN(new Date(mappingSettings.desired.mappingRevision).getTime()), false);
+
+      const remoteControlResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          requestDiagnosticsNow: true,
+          requestSqlDiscovery: true,
+          requestRestart: true,
+          sqlConfiguration: { dataSource: 'tcp:192.168.0.3,51433', database: 'IDENT' }
+        })
+      });
+      assert.equal(remoteControlResponse.status, 200);
+      const remoteDesired = (await remoteControlResponse.json()).desired;
+      assert.equal(remoteDesired.sqlConfiguration.dataSource, 'tcp:192.168.0.3,51433');
+      for (const field of [
+        'diagnosticsRequestRevision',
+        'sqlDiscoveryRequestRevision',
+        'restartRequestRevision',
+        'sqlConfigurationRevision'
+      ]) {
+        assert.equal(Number.isNaN(new Date(remoteDesired[field]).getTime()), false);
+      }
+
+      const invalidSqlConfigurationResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'test-service-key'
+        },
+        body: JSON.stringify({
+          agentId: 'clinic-1',
+          sqlConfiguration: { dataSource: 'tcp:192.168.0.3;Password=unsafe', database: 'IDENT' }
+        })
+      });
+      assert.equal(invalidSqlConfigurationResponse.status, 400);
 
       const prematureRobotSettingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',

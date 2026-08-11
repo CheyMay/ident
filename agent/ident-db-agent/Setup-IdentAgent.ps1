@@ -154,7 +154,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.5.0'
+        version = '2.6.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -189,6 +189,7 @@ $config = [ordered]@{
         log = 'logs\agent.log'
         pushResult = 'last-push-result.json'
         runtimeState = 'runtime-state.json'
+        remoteControlState = 'remote-control-state.json'
         commandDirectory = 'commands'
         robotConfig = 'robot\config.local.json'
         robotReceipts = 'robot-receipts.json'

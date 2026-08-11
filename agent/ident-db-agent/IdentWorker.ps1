@@ -77,6 +77,12 @@ function Get-ConfigContext {
         MappingPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.mapping)
         SchemaPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.schemaOutput)
         LogPath = Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.log)
+        ControlStatePath = if ($config.paths.PSObject.Properties.Name -contains 'remoteControlState') {
+            Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.remoteControlState)
+        } else {
+            Join-Path $baseDirectory 'remote-control-state.json'
+        }
+        DiscoveryReportPath = Join-Path $baseDirectory 'sql-discovery.json'
         UpdateDirectory = if ($config.paths.PSObject.Properties.Name -contains 'updateDirectory') {
             Resolve-LocalPath -BaseDirectory $baseDirectory -Value ([string]$config.paths.updateDirectory)
         } else {
@@ -116,6 +122,280 @@ function Write-RuntimeState {
     $temporaryPath = "$($script:Context.StatePath).tmp-$PID"
     $script:State | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
     Move-Item -LiteralPath $temporaryPath -Destination $script:Context.StatePath -Force
+}
+
+function Read-ControlState {
+    $defaults = [ordered]@{
+        diagnosticsRequestRevision = ''
+        sqlDiscoveryRequestRevision = ''
+        sqlConfigurationRevision = ''
+        restartRequestRevision = ''
+    }
+    if (-not (Test-Path -LiteralPath $script:Context.ControlStatePath)) {
+        return [pscustomobject]$defaults
+    }
+    try {
+        $stored = Read-JsonFile -Path $script:Context.ControlStatePath
+        foreach ($name in @($defaults.Keys)) {
+            if ($stored.PSObject.Properties.Name -contains $name) {
+                $defaults[$name] = [string]$stored.$name
+            }
+        }
+        return [pscustomobject]$defaults
+    }
+    catch {
+        return [pscustomobject]$defaults
+    }
+}
+
+function Set-ControlRevision {
+    param([string]$Name, [string]$Revision)
+
+    if ($script:ControlState.PSObject.Properties.Name -contains $Name) {
+        $script:ControlState.$Name = $Revision
+    }
+    else {
+        $script:ControlState | Add-Member -NotePropertyName $Name -NotePropertyValue $Revision
+    }
+    $payload = [ordered]@{
+        diagnosticsRequestRevision = [string]$script:ControlState.diagnosticsRequestRevision
+        sqlDiscoveryRequestRevision = [string]$script:ControlState.sqlDiscoveryRequestRevision
+        sqlConfigurationRevision = [string]$script:ControlState.sqlConfigurationRevision
+        restartRequestRevision = [string]$script:ControlState.restartRequestRevision
+        updatedAt = (Get-Date).ToString('o')
+    }
+    $temporaryPath = "$($script:Context.ControlStatePath).tmp-$PID"
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.ControlStatePath -Force
+    $script:ControlState = [pscustomobject]$payload
+}
+
+function Get-ConfiguredSqlDataSource {
+    $sql = $script:Context.Config.sql
+    if (
+        $sql.PSObject.Properties.Name -contains 'dataSource' -and
+        -not [string]::IsNullOrWhiteSpace([string]$sql.dataSource)
+    ) {
+        return [string]$sql.dataSource
+    }
+    if ([int]$sql.port -gt 0) {
+        return "tcp:$([string]$sql.server),$([int]$sql.port)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$sql.instanceName)) {
+        return "$([string]$sql.server)\$([string]$sql.instanceName)"
+    }
+    return [string]$sql.server
+}
+
+function Get-AutostartSummary {
+    $workerTask = 'missing'
+    $desktopTask = 'missing'
+    try {
+        $worker = Get-ScheduledTask -TaskName 'Code9 IDENT Agent' -ErrorAction SilentlyContinue
+        if ($null -ne $worker) { $workerTask = [string]$worker.State }
+        $desktop = Get-ScheduledTask -TaskName 'Code9 IDENT Agent Status' -ErrorAction SilentlyContinue
+        if ($null -ne $desktop) { $desktopTask = [string]$desktop.State }
+    }
+    catch {}
+    $startupDirectory = [Environment]::GetFolderPath('Startup')
+    return [ordered]@{
+        workerTask = $workerTask
+        desktopTask = $desktopTask
+        workerShortcut = Test-Path -LiteralPath (Join-Path $startupDirectory 'Code9 IDENT Agent.lnk')
+        desktopShortcut = Test-Path -LiteralPath (Join-Path $startupDirectory 'Code9 IDENT Agent Status.lnk')
+    }
+}
+
+function Get-DiagnosticsStateSnapshot {
+    $snapshot = [ordered]@{}
+    foreach ($sectionName in @('worker', 'schedule', 'schema', 'robot', 'update', 'diagnostics')) {
+        if (-not $script:State.Contains($sectionName)) { continue }
+        $section = $script:State[$sectionName]
+        $sectionSnapshot = [ordered]@{}
+        if ($section -is [Collections.IDictionary]) {
+            foreach ($entry in $section.GetEnumerator()) {
+                if (
+                    $null -eq $entry.Value -or
+                    $entry.Value -is [string] -or
+                    $entry.Value -is [bool] -or
+                    $entry.Value -is [ValueType]
+                ) {
+                    $sectionSnapshot[[string]$entry.Key] = $entry.Value
+                }
+            }
+        }
+        $snapshot[$sectionName] = $sectionSnapshot
+    }
+    return $snapshot
+}
+
+function New-AgentDiagnosticsReport {
+    $discovery = [pscustomobject]@{
+        timestamp = $null
+        result = 'not_run'
+        configuredServer = [string]$script:Context.Config.sql.server
+        attempts = @()
+    }
+    if (Test-Path -LiteralPath $script:Context.DiscoveryReportPath) {
+        try { $discovery = Read-JsonFile -Path $script:Context.DiscoveryReportPath } catch {}
+    }
+    [string[]]$logs = @()
+    if (Test-Path -LiteralPath $script:Context.LogPath) {
+        try { $logs = [string[]]@(Get-Content -LiteralPath $script:Context.LogPath -Tail 100 -Encoding UTF8) } catch {}
+    }
+    return [ordered]@{
+        generatedAt = (Get-Date).ToString('o')
+        agent = [ordered]@{
+            agentId = [string]$script:Context.Config.agent.id
+            version = [string]$script:Context.Config.agent.version
+            deviceName = $env:COMPUTERNAME
+            processId = $PID
+        }
+        sql = [ordered]@{
+            dataSource = Get-ConfiguredSqlDataSource
+            database = [string]$script:Context.Config.sql.database
+            user = [string]$script:Context.Config.sql.user
+            encrypt = [bool]$script:Context.Config.sql.encrypt
+            trustServerCertificate = [bool]$script:Context.Config.sql.trustServerCertificate
+        }
+        autostart = Get-AutostartSummary
+        state = Get-DiagnosticsStateSnapshot
+        discovery = $discovery
+        logs = $logs
+    }
+}
+
+function Send-AgentDiagnostics {
+    $script:State.diagnostics.state = 'sending'
+    $script:State.diagnostics.lastAttemptAt = (Get-Date).ToString('o')
+    $script:State.diagnostics.lastError = ''
+    Write-RuntimeState
+    try {
+        $report = New-AgentDiagnosticsReport
+        $reportJson = $report | ConvertTo-Json -Depth 12 -Compress
+        Write-WorkerLog -Level 'info' -EventName 'diagnostics_report_built' -Data @{
+            logLines = @($report.logs).Count
+            bytes = [Text.Encoding]::UTF8.GetByteCount($reportJson)
+        }
+        [void](Invoke-AgentRequest -Method POST -Path '/api/agent/diagnostics' -Body @{
+            agentId = [string]$script:Context.Config.agent.id
+            report = $report
+        })
+        $script:State.diagnostics.state = 'ok'
+        $script:State.diagnostics.lastSuccessAt = (Get-Date).ToString('o')
+        $script:State.diagnostics.lastError = ''
+        Write-WorkerLog -Level 'info' -EventName 'diagnostics_uploaded' -Data @{}
+    }
+    catch {
+        $script:State.diagnostics.state = 'error'
+        $script:State.diagnostics.lastError = $_.Exception.Message
+        Write-WorkerLog -Level 'error' -EventName 'diagnostics_upload_failed' -Data @{ message = $_.Exception.Message }
+    }
+    Write-RuntimeState
+}
+
+function Save-RemoteSqlConfiguration {
+    param([object]$SqlConfiguration, [string]$Revision)
+
+    $dataSource = [string]$SqlConfiguration.dataSource
+    $database = [string]$SqlConfiguration.database
+    if (
+        [string]::IsNullOrWhiteSpace($dataSource) -or
+        [string]::IsNullOrWhiteSpace($database) -or
+        $dataSource.Length -gt 500 -or
+        $database.Length -gt 256 -or
+        $dataSource -match '[;\r\n]' -or
+        $database -match '[;\r\n]'
+    ) {
+        throw 'Remote SQL configuration is invalid.'
+    }
+    $config = Read-JsonFile -Path $script:Context.ConfigPath
+    if ($config.sql.PSObject.Properties.Name -contains 'dataSource') {
+        $config.sql.dataSource = $dataSource.Trim()
+    }
+    else {
+        $config.sql | Add-Member -NotePropertyName dataSource -NotePropertyValue $dataSource.Trim()
+    }
+    $config.sql.database = $database.Trim()
+    $temporaryPath = "$($script:Context.ConfigPath).tmp-$PID"
+    $config | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.ConfigPath -Force
+    $script:Context = Get-ConfigContext
+    Set-ControlRevision -Name 'sqlConfigurationRevision' -Revision $Revision
+    $script:State.diagnostics.sqlConfigurationRevision = $Revision
+    $script:State.schema.state = 'starting'
+    $script:State.schedule.state = 'starting'
+    New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'schema-now') | Out-Null
+    New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
+    Write-WorkerLog -Level 'info' -EventName 'remote_sql_configuration_applied' -Data @{
+        dataSource = $dataSource
+        database = $database
+    }
+}
+
+function Invoke-RemoteSqlDiscovery {
+    param([string]$Revision)
+
+    $script:State.diagnostics.sqlDiscoveryState = 'running'
+    $script:State.diagnostics.sqlDiscoveryLastAttemptAt = (Get-Date).ToString('o')
+    $script:State.diagnostics.sqlDiscoveryLastError = ''
+    Write-RuntimeState
+    $outputText = ''
+    try {
+        $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
+        $output = @(& powershell.exe `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File $agentScript `
+            -ConfigPath $script:Context.ConfigPath `
+            -AutoConfigureSql `
+            -NonInteractive 2>&1)
+        $exitCode = $LASTEXITCODE
+        $outputText = ($output | Select-Object -Last 20 | Out-String).Trim()
+        if ($exitCode -ne 0) {
+            throw "SQL discovery exited with code $exitCode. $outputText"
+        }
+        $script:Context = Get-ConfigContext
+        $script:State.diagnostics.sqlDiscoveryState = 'ok'
+        $script:State.diagnostics.sqlDiscoveryLastSuccessAt = (Get-Date).ToString('o')
+        $script:State.diagnostics.sqlDiscoveryLastError = ''
+        $script:State.schema.state = 'starting'
+        $script:State.schedule.state = 'starting'
+        New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'schema-now') | Out-Null
+        New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
+        Write-WorkerLog -Level 'info' -EventName 'remote_sql_discovery_completed' -Data @{}
+    }
+    catch {
+        $script:State.diagnostics.sqlDiscoveryState = 'error'
+        $script:State.diagnostics.sqlDiscoveryLastError = $_.Exception.Message
+        Write-WorkerLog -Level 'error' -EventName 'remote_sql_discovery_failed' -Data @{ message = $_.Exception.Message }
+    }
+    Set-ControlRevision -Name 'sqlDiscoveryRequestRevision' -Revision $Revision
+    $script:State.diagnostics.sqlDiscoveryRequestRevision = $Revision
+    Send-AgentDiagnostics
+}
+
+function Request-RemoteRestart {
+    param([string]$Revision)
+
+    Set-ControlRevision -Name 'restartRequestRevision' -Revision $Revision
+    $script:State.diagnostics.restartRequestRevision = $Revision
+    $script:State.diagnostics.state = 'restarting'
+    Write-RuntimeState
+    try { Send-AgentDiagnostics } catch {}
+    $script:State.diagnostics.state = 'restarting'
+    Write-RuntimeState
+
+    $workerPath = (Join-Path $script:Context.BaseDirectory 'IdentWorker.ps1').Replace("'", "''")
+    $workerConfigPath = $script:Context.ConfigPath.Replace("'", "''")
+    $launcher = "Start-Sleep -Seconds 5; Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','$workerPath','-ConfigPath','$workerConfigPath')"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcher))
+    Start-Process `
+        -FilePath 'powershell.exe' `
+        -WindowStyle Hidden `
+        -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded"
+    $script:StopRequested = $true
 }
 
 function Invoke-AgentRequest {
@@ -452,8 +732,56 @@ function Apply-DesiredState {
         }
     }
 
+    if (
+        $Desired.PSObject.Properties.Name -contains 'sqlConfiguration' -and
+        $Desired.PSObject.Properties.Name -contains 'sqlConfigurationRevision' -and
+        $null -ne $Desired.sqlConfiguration -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.sqlConfigurationRevision) -and
+        [string]$Desired.sqlConfigurationRevision -ne [string]$script:ControlState.sqlConfigurationRevision
+    ) {
+        try {
+            Save-RemoteSqlConfiguration `
+                -SqlConfiguration $Desired.sqlConfiguration `
+                -Revision ([string]$Desired.sqlConfigurationRevision)
+        }
+        catch {
+            Set-ControlRevision -Name 'sqlConfigurationRevision' -Revision ([string]$Desired.sqlConfigurationRevision)
+            $script:State.diagnostics.sqlConfigurationRevision = [string]$Desired.sqlConfigurationRevision
+            $script:State.diagnostics.state = 'error'
+            $script:State.diagnostics.lastError = $_.Exception.Message
+            Write-WorkerLog -Level 'error' -EventName 'remote_sql_configuration_rejected' -Data @{ message = $_.Exception.Message }
+        }
+    }
+
+    if (
+        $Desired.PSObject.Properties.Name -contains 'sqlDiscoveryRequestRevision' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.sqlDiscoveryRequestRevision) -and
+        [string]$Desired.sqlDiscoveryRequestRevision -ne [string]$script:ControlState.sqlDiscoveryRequestRevision
+    ) {
+        Invoke-RemoteSqlDiscovery -Revision ([string]$Desired.sqlDiscoveryRequestRevision)
+    }
+
+    if (
+        $Desired.PSObject.Properties.Name -contains 'diagnosticsRequestRevision' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.diagnosticsRequestRevision) -and
+        [string]$Desired.diagnosticsRequestRevision -ne [string]$script:ControlState.diagnosticsRequestRevision
+    ) {
+        Send-AgentDiagnostics
+        Set-ControlRevision -Name 'diagnosticsRequestRevision' -Revision ([string]$Desired.diagnosticsRequestRevision)
+        $script:State.diagnostics.requestRevision = [string]$Desired.diagnosticsRequestRevision
+    }
+
     if ($Desired.PSObject.Properties.Name -contains 'update') {
         Request-AgentUpdate -Update $Desired.update
+    }
+
+    if (
+        -not $script:StopRequested -and
+        $Desired.PSObject.Properties.Name -contains 'restartRequestRevision' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Desired.restartRequestRevision) -and
+        [string]$Desired.restartRequestRevision -ne [string]$script:ControlState.restartRequestRevision
+    ) {
+        Request-RemoteRestart -Revision ([string]$Desired.restartRequestRevision)
     }
 }
 
@@ -467,6 +795,7 @@ function Send-Heartbeat {
         schedule = $script:State.schedule
         schema = $script:State.schema
         robot = $script:State.robot
+        diagnostics = $script:State.diagnostics
         system = [ordered]@{
             processId = $PID
             windowsVersion = [Environment]::OSVersion.VersionString
@@ -769,6 +1098,7 @@ if (-not $createdNew) {
 
 try {
     $script:Context = Get-ConfigContext
+    $script:ControlState = Read-ControlState
     New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
     New-Item -ItemType Directory -Force -Path $script:Context.UpdateDirectory | Out-Null
     $previousUpdate = $null
@@ -829,6 +1159,20 @@ try {
             message = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.message } else { '' })
             updatedAt = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.updatedAt } else { $null })
         }
+        diagnostics = [ordered]@{
+            state = 'idle'
+            requestRevision = [string]$script:ControlState.diagnosticsRequestRevision
+            lastAttemptAt = $null
+            lastSuccessAt = $null
+            lastError = ''
+            sqlDiscoveryState = 'idle'
+            sqlDiscoveryRequestRevision = [string]$script:ControlState.sqlDiscoveryRequestRevision
+            sqlDiscoveryLastAttemptAt = $null
+            sqlDiscoveryLastSuccessAt = $null
+            sqlDiscoveryLastError = ''
+            sqlConfigurationRevision = [string]$script:ControlState.sqlConfigurationRevision
+            restartRequestRevision = [string]$script:ControlState.restartRequestRevision
+        }
         updatedAt = (Get-Date).ToString('o')
     }
 
@@ -849,6 +1193,11 @@ try {
         if (Test-Path -LiteralPath $sendNowPath) {
             Remove-Item -LiteralPath $sendNowPath -Force
             $nextSchedule = [DateTime]::MinValue
+        }
+        $schemaNowPath = Join-Path $script:Context.CommandDirectory 'schema-now'
+        if (Test-Path -LiteralPath $schemaNowPath) {
+            Remove-Item -LiteralPath $schemaNowPath -Force
+            $nextSchema = [DateTime]::MinValue
         }
 
         if ($now -ge $nextHeartbeat) {

@@ -6,7 +6,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$version = '1.0.1'
+$version = '1.1.0'
 $payloadDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-admin-payload'))
 $installerDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-admin-installer'))
 $payloadArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-admin-payload.zip'))
