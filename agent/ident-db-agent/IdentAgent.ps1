@@ -693,6 +693,27 @@ function Get-SqlEndpointCandidates {
     return $result
 }
 
+function Get-NestedSqlErrorNumber {
+    param([object]$Exception)
+
+    $current = $Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
+        $numberProperty = $current.PSObject.Properties | Where-Object { $_.Name -eq 'Number' } | Select-Object -First 1
+        if ($null -ne $numberProperty) {
+            $number = 0
+            if ([int]::TryParse([string]$numberProperty.Value, [ref]$number)) {
+                return $number
+            }
+        }
+        $innerProperty = $current.PSObject.Properties | Where-Object { $_.Name -eq 'InnerException' } | Select-Object -First 1
+        if ($null -eq $innerProperty -or $null -eq $innerProperty.Value) {
+            break
+        }
+        $current = $innerProperty.Value
+    }
+    return 0
+}
+
 function Test-SqlEndpoint {
     param(
         [pscustomobject]$Context,
@@ -778,10 +799,8 @@ ORDER BY name;
         catch {
             $message = [string]$_.Exception.Message
             $errors += "${catalog}: $message"
-            $isCatalogOrLoginError = (
-                $_.Exception -is [System.Data.SqlClient.SqlException] -and
-                [int]$_.Exception.Number -in @(18456, 4060)
-            ) -or $message -match '(?i)(login failed|cannot open database)'
+            $sqlErrorNumber = Get-NestedSqlErrorNumber -Exception $_.Exception
+            $isCatalogOrLoginError = $sqlErrorNumber -in @(18456, 4060) -or $message -match '(?i)(login failed|cannot open database)'
             if ($catalogIndex -eq 0 -and -not $isCatalogOrLoginError) {
                 break
             }
@@ -948,6 +967,7 @@ function Save-SqlDiscoveryReport {
     param(
         [pscustomobject]$Context,
         [object[]]$Attempts,
+        [object[]]$DatabaseCandidates,
         [string]$Result
     )
 
@@ -957,6 +977,12 @@ function Save-SqlDiscoveryReport {
         computer = $env:COMPUTERNAME
         result = $Result
         configuredServer = [string]$Context.Config.sql.server
+        databaseCandidates = @($DatabaseCandidates | ForEach-Object {
+            [ordered]@{
+                name = [string]$_.Name
+                source = [string]$_.Source
+            }
+        })
         attempts = @($Attempts)
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
     return $path
@@ -1004,7 +1030,7 @@ function Invoke-AutoConfigureSql {
         }
     }
     if ($connections.Count -eq 0) {
-        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'no_connection'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -DatabaseCandidates $databaseCandidates -Result 'no_connection'
         throw "SQL Server was not found. Keep IDENT open and verify that readonly_user can connect from this computer. Diagnostic file: $reportPath"
     }
 
@@ -1014,7 +1040,7 @@ function Invoke-AutoConfigureSql {
             Where-Object { $_ -notin @('master', 'model', 'msdb', 'tempdb') }
     ).Count
     if ($accessibleDatabaseCount -eq 0) {
-        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'no_accessible_database'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -DatabaseCandidates $databaseCandidates -Result 'no_accessible_database'
         throw "The SQL login connected, but it cannot access any non-system databases. Diagnostic file: $reportPath"
     }
 
@@ -1038,7 +1064,7 @@ function Invoke-AutoConfigureSql {
         }
     }
     if ($fingerprints.Count -eq 0) {
-        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'schema_unavailable'
+        $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -DatabaseCandidates $databaseCandidates -Result 'schema_unavailable'
         throw "No accessible database schema could be inspected. Diagnostic file: $reportPath"
     }
 
@@ -1052,7 +1078,7 @@ function Invoke-AutoConfigureSql {
     if ($null -eq $selected) {
         $ordered = @($fingerprints | Sort-Object Score, TableCount -Descending)
         if ($NonInteractive) {
-            $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'database_selection_required'
+            $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -DatabaseCandidates $databaseCandidates -Result 'database_selection_required'
             $options = @($ordered | ForEach-Object { "$($_.DataSource) / $($_.Name)" }) -join ', '
             throw "Several databases are possible: $options. Select Data Source and database in Code9 IDENT Admin. Diagnostic file: $reportPath"
         }
@@ -1076,7 +1102,7 @@ function Invoke-AutoConfigureSql {
     Write-Host 'Configuration saved.' -ForegroundColor Green
 
     $schema = Export-SqlSchema -Context $Context
-    $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -Result 'configured'
+    $reportPath = Save-SqlDiscoveryReport -Context $Context -Attempts $attempts -DatabaseCandidates $databaseCandidates -Result 'configured'
     Write-Host "Schema exported: $($schema.summary.tables) tables/views, $($schema.summary.columns) columns." -ForegroundColor Green
     Write-Host "File: $($Context.SchemaPath)" -ForegroundColor Green
     Write-Host "Discovery report: $reportPath" -ForegroundColor Green
@@ -1522,6 +1548,12 @@ function Invoke-AgentSelfTest {
     })
     if ($explicitSource -ne 'np:\\SERVER\pipe\sql\query') {
         throw 'Self-test failed to preserve an explicit SQL data source.'
+    }
+    $nestedNumber = Get-NestedSqlErrorNumber -Exception ([pscustomobject]@{
+        InnerException = [pscustomobject]@{ Number = 18456 }
+    })
+    if ($nestedNumber -ne 18456) {
+        throw 'Self-test failed to read a nested SQL error number.'
     }
     $configurationDatabases = @(Get-DatabaseNamesFromConfigurationText -Content @'
 Server=tcp:192.168.0.3,15000;Initial Catalog=IDENT_MAIN;User ID=readonly_user;
