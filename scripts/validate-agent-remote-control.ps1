@@ -243,7 +243,18 @@ finally {
         (Test-Path -LiteralPath $testRoot) -and
         [IO.Path]::GetFullPath($testRoot).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)
     ) {
-        Remove-Item -LiteralPath $testRoot -Recurse -Force
+        for ($attempt = 1; $attempt -le 10 -and (Test-Path -LiteralPath $testRoot); $attempt++) {
+            try {
+                Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
+            }
+            catch {
+                if ($attempt -eq 10) {
+                    Write-Warning "Remote control test passed, but its temporary directory is still locked: $testRoot"
+                    break
+                }
+                Start-Sleep -Milliseconds 300
+            }
+        }
     }
     elseif (Test-Path -LiteralPath $testRoot) {
         Write-Warning "Remote control test data kept for inspection: $testRoot"

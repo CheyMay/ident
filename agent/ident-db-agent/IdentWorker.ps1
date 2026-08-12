@@ -818,9 +818,41 @@ function Send-Heartbeat {
 }
 
 function Invoke-SchemaUpload {
+    param([switch]$Refresh)
+
+    if ($Refresh -or -not (Test-Path -LiteralPath $script:Context.SchemaPath)) {
+        $script:State.schema.state = 'exporting'
+        $script:State.schema.lastAttemptAt = (Get-Date).ToString('o')
+        $script:State.schema.lastError = ''
+        Write-RuntimeState
+        try {
+            $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
+            $output = @(& powershell.exe `
+                -NoProfile `
+                -NonInteractive `
+                -ExecutionPolicy Bypass `
+                -File $agentScript `
+                -ConfigPath $script:Context.ConfigPath `
+                -ExportSchema `
+                -NonInteractive 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+                $outputText = ($output | Select-Object -Last 12 | Out-String).Trim()
+                throw "Schema export exited with code $exitCode. $outputText"
+            }
+        }
+        catch {
+            $script:State.schema.state = 'error'
+            $script:State.schema.lastError = $_.Exception.Message
+            Write-WorkerLog -Level 'error' -EventName 'schema_export_failed' -Data @{ message = $_.Exception.Message }
+            Write-RuntimeState
+            return
+        }
+    }
+
     if (-not (Test-Path -LiteralPath $script:Context.SchemaPath)) {
         $script:State.schema.state = 'not_available'
-        $script:State.schema.lastError = ''
+        $script:State.schema.lastError = 'Schema export completed without creating the schema file.'
         Write-RuntimeState
         return
     }
@@ -1189,6 +1221,7 @@ try {
 
     while (-not $script:StopRequested) {
         $now = Get-Date
+        $refreshSchema = $false
         $sendNowPath = Join-Path $script:Context.CommandDirectory 'send-now'
         if (Test-Path -LiteralPath $sendNowPath) {
             Remove-Item -LiteralPath $sendNowPath -Force
@@ -1198,6 +1231,7 @@ try {
         if (Test-Path -LiteralPath $schemaNowPath) {
             Remove-Item -LiteralPath $schemaNowPath -Force
             $nextSchema = [DateTime]::MinValue
+            $refreshSchema = $true
         }
 
         if ($now -ge $nextHeartbeat) {
@@ -1209,7 +1243,7 @@ try {
         }
 
         if ($now -ge $nextSchema) {
-            Invoke-SchemaUpload
+            Invoke-SchemaUpload -Refresh:$refreshSchema
             $schemaSeconds = if ($script:Context.Config.intervals.PSObject.Properties.Name -contains 'schemaSeconds') {
                 [int]$script:Context.Config.intervals.schemaSeconds
             } else {

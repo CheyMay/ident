@@ -334,7 +334,7 @@ function ConvertTo-SqlEndpoint {
     }
 }
 
-function Find-IdentConfigurationEndpoints {
+function Get-IdentConfigurationFiles {
     $roots = @()
     $identProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $_.ProcessName -match '(?i)ident' -or $_.MainWindowTitle -match '(?i)ident'
@@ -359,7 +359,6 @@ function Find-IdentConfigurationEndpoints {
         }
     }
 
-    $endpoints = @()
     $files = @()
     foreach ($root in @($roots | Sort-Object -Unique)) {
         try {
@@ -376,6 +375,13 @@ function Find-IdentConfigurationEndpoints {
         }
         catch {}
     }
+
+    return @($files | Sort-Object FullName -Unique)
+}
+
+function Find-IdentConfigurationEndpoints {
+    $endpoints = @()
+    $files = @(Get-IdentConfigurationFiles)
 
     $patterns = @(
         '(?i)(?:data\s+source|server|network\s+address)\s*=\s*(?<value>[^;\r\n"<]+)',
@@ -398,6 +404,92 @@ function Find-IdentConfigurationEndpoints {
         catch {}
     }
     return $endpoints
+}
+
+function Get-DatabaseNamesFromConfigurationText {
+    param(
+        [string]$Content,
+        [string]$Source = 'configuration'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Content)) {
+        return @()
+    }
+
+    $patterns = @(
+        "(?i)(?:initial\s+catalog|database)\s*=\s*[`"']?(?<value>[^;`"'\r\n<>]+)",
+        "(?i)`"(?:database|databaseName|initialCatalog|catalog)`"\s*:\s*`"(?<value>[^`"]+)`"",
+        '(?i)<(?:database|databaseName|initialCatalog|catalog)>\s*(?<value>[^<]+)\s*</'
+    )
+    $systemDatabases = @('master', 'model', 'msdb', 'tempdb')
+    $result = @()
+    $seen = @{}
+    foreach ($pattern in $patterns) {
+        foreach ($match in [regex]::Matches($Content, $pattern)) {
+            $value = ([string]$match.Groups['value'].Value).Trim()
+            if (
+                [string]::IsNullOrWhiteSpace($value) -or
+                $value.Length -gt 128 -or
+                $value -in $systemDatabases -or
+                $value -match '[;\r\n\x00-\x1f=]' -or
+                $value -match '^(?i:true|false|null|none|default|localhost)$'
+            ) {
+                continue
+            }
+            $key = $value.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) {
+                continue
+            }
+            $seen[$key] = $true
+            $result += [pscustomobject]@{
+                Name = $value
+                Source = $Source
+            }
+        }
+    }
+    return $result
+}
+
+function Get-IdentDatabaseCandidates {
+    param([pscustomobject]$Context)
+
+    $candidates = @()
+    $configuredDatabase = [string]$Context.Config.sql.database
+    if (-not [string]::IsNullOrWhiteSpace($configuredDatabase)) {
+        $candidates += [pscustomobject]@{
+            Name = $configuredDatabase.Trim()
+            Source = 'saved configuration'
+        }
+    }
+
+    foreach ($file in @(Get-IdentConfigurationFiles)) {
+        try {
+            $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+            $candidates += @(Get-DatabaseNamesFromConfigurationText `
+                -Content $content `
+                -Source "IDENT config $($file.Name)")
+        }
+        catch {}
+    }
+
+    $unique = @{}
+    $result = @()
+    foreach ($candidate in $candidates) {
+        $name = [string]$candidate.Name
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+        $key = $name.ToLowerInvariant()
+        if ($unique.ContainsKey($key)) {
+            continue
+        }
+        $unique[$key] = $true
+        $result += $candidate
+        if ($result.Count -ge 12) {
+            break
+        }
+    }
+    return $result
 }
 
 function Find-SqlClientAliasEndpoints {
@@ -604,64 +696,106 @@ function Get-SqlEndpointCandidates {
 function Test-SqlEndpoint {
     param(
         [pscustomobject]$Context,
-        [pscustomobject]$Endpoint
+        [pscustomobject]$Endpoint,
+        [object[]]$DatabaseCandidates = @()
     )
 
     $password = Get-PlainTextSecret -EncryptedValue ([string]$Context.Secrets.sqlPasswordDpapi)
-    $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-    $builder['Data Source'] = [string]$Endpoint.DataSource
-    $builder['Initial Catalog'] = 'master'
-    $builder['User ID'] = [string]$Context.Config.sql.user
-    $builder['Password'] = $password
-    $builder['Integrated Security'] = $false
-    $builder['Application Name'] = 'Code9 IDENT SQL Discovery'
-    $builder['Connect Timeout'] = [Math]::Min(4, [int]$Context.Config.sql.connectTimeoutSeconds)
-    $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
-    $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
-    $builder['Pooling'] = $false
+    $catalogs = @('master')
+    $catalogs += @($DatabaseCandidates | ForEach-Object { [string]$_.Name })
+    $catalogs = @($catalogs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    $errors = @()
 
-    $connection = New-Object System.Data.SqlClient.SqlConnection $builder.ConnectionString
-    $command = $connection.CreateCommand()
-    $command.CommandText = @'
+    for ($catalogIndex = 0; $catalogIndex -lt $catalogs.Count; $catalogIndex++) {
+        $catalog = [string]$catalogs[$catalogIndex]
+        $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+        $builder['Data Source'] = [string]$Endpoint.DataSource
+        $builder['Initial Catalog'] = $catalog
+        $builder['User ID'] = [string]$Context.Config.sql.user
+        $builder['Password'] = $password
+        $builder['Integrated Security'] = $false
+        $builder['Application Name'] = 'Code9 IDENT SQL Discovery'
+        $builder['Connect Timeout'] = [Math]::Min(4, [int]$Context.Config.sql.connectTimeoutSeconds)
+        $builder['Encrypt'] = [bool]$Context.Config.sql.encrypt
+        $builder['TrustServerCertificate'] = [bool]$Context.Config.sql.trustServerCertificate
+        $builder['Pooling'] = $false
+
+        $connection = New-Object System.Data.SqlClient.SqlConnection $builder.ConnectionString
+        $serverCommand = $connection.CreateCommand()
+        $serverCommand.CommandText = @'
 SELECT
     @@SERVERNAME AS ServerName,
     CAST(SERVERPROPERTY('InstanceName') AS nvarchar(128)) AS InstanceName,
-    CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS ProductVersion;
+    CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS ProductVersion,
+    DB_NAME() AS CurrentDatabase;
+'@
+        $serverCommand.CommandTimeout = 10
+        try {
+            $connection.Open()
+            $reader = $serverCommand.ExecuteReader()
+            $serverInfo = $null
+            $currentDatabase = $catalog
+            if ($reader.Read()) {
+                $serverInfo = [pscustomobject]@{
+                    ServerName = [string]$reader['ServerName']
+                    InstanceName = if ($reader['InstanceName'] -is [DBNull]) { '' } else { [string]$reader['InstanceName'] }
+                    ProductVersion = [string]$reader['ProductVersion']
+                }
+                if ($reader['CurrentDatabase'] -isnot [DBNull]) {
+                    $currentDatabase = [string]$reader['CurrentDatabase']
+                }
+            }
+            $reader.Close()
 
+            $databases = @($currentDatabase)
+            $databaseCommand = $connection.CreateCommand()
+            $databaseCommand.CommandText = @'
 SELECT name AS DatabaseName
 FROM sys.databases
 WHERE HAS_DBACCESS(name) = 1
 ORDER BY name;
 '@
-    $command.CommandTimeout = 10
-    try {
-        $connection.Open()
-        $reader = $command.ExecuteReader()
-        $serverInfo = $null
-        if ($reader.Read()) {
-            $serverInfo = [pscustomobject]@{
-                ServerName = [string]$reader['ServerName']
-                InstanceName = if ($reader['InstanceName'] -is [DBNull]) { '' } else { [string]$reader['InstanceName'] }
-                ProductVersion = [string]$reader['ProductVersion']
+            $databaseCommand.CommandTimeout = 10
+            try {
+                $databaseReader = $databaseCommand.ExecuteReader()
+                while ($databaseReader.Read()) {
+                    $databases += [string]$databaseReader['DatabaseName']
+                }
+                $databaseReader.Close()
+            }
+            catch {}
+            finally {
+                $databaseCommand.Dispose()
+            }
+
+            return [pscustomobject]@{
+                Endpoint = $Endpoint
+                Server = $serverInfo
+                Databases = @($databases | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+                ConnectedCatalog = $currentDatabase
             }
         }
-        $databases = @()
-        if ($reader.NextResult()) {
-            while ($reader.Read()) {
-                $databases += [string]$reader['DatabaseName']
+        catch {
+            $message = [string]$_.Exception.Message
+            $errors += "${catalog}: $message"
+            $isCatalogOrLoginError = (
+                $_.Exception -is [System.Data.SqlClient.SqlException] -and
+                [int]$_.Exception.Number -in @(18456, 4060)
+            ) -or $message -match '(?i)(login failed|cannot open database)'
+            if ($catalogIndex -eq 0 -and -not $isCatalogOrLoginError) {
+                break
             }
         }
-        $reader.Close()
-        return [pscustomobject]@{
-            Endpoint = $Endpoint
-            Server = $serverInfo
-            Databases = $databases
+        finally {
+            $serverCommand.Dispose()
+            $connection.Dispose()
         }
     }
-    finally {
-        $command.Dispose()
-        $connection.Dispose()
+
+    if ($errors.Count -eq 0) {
+        throw 'SQL connection failed without a diagnostic message.'
     }
+    throw (@($errors | Select-Object -Last 4) -join ' | ')
 }
 
 function Get-DatabaseFingerprint {
@@ -833,13 +967,20 @@ function Invoke-AutoConfigureSql {
 
     Write-Step 'Searching for the SQL Server used by IDENT'
     $candidates = @(Get-SqlEndpointCandidates -Context $Context)
+    $databaseCandidates = @(Get-IdentDatabaseCandidates -Context $Context)
     Write-Host "Candidates: $($candidates.Count)"
+    if ($databaseCandidates.Count -gt 0) {
+        Write-Host "Database names from saved/local IDENT configuration: $($databaseCandidates.Count)"
+    }
     $connections = @()
     $attempts = @()
     foreach ($candidate in $candidates) {
         Write-Host "  Trying $($candidate.DataSource) [$($candidate.Source)]..."
         try {
-            $connection = Test-SqlEndpoint -Context $Context -Endpoint $candidate
+            $connection = Test-SqlEndpoint `
+                -Context $Context `
+                -Endpoint $candidate `
+                -DatabaseCandidates $databaseCandidates
             $connections += $connection
             $attempts += [ordered]@{
                 dataSource = [string]$candidate.DataSource
@@ -1381,6 +1522,18 @@ function Invoke-AgentSelfTest {
     })
     if ($explicitSource -ne 'np:\\SERVER\pipe\sql\query') {
         throw 'Self-test failed to preserve an explicit SQL data source.'
+    }
+    $configurationDatabases = @(Get-DatabaseNamesFromConfigurationText -Content @'
+Server=tcp:192.168.0.3,15000;Initial Catalog=IDENT_MAIN;User ID=readonly_user;
+{"databaseName":"IDENT_ARCHIVE"}
+<database>IDENT_REPORTS</database>
+'@ -Source 'self-test')
+    if (
+        @($configurationDatabases | Where-Object { $_.Name -eq 'IDENT_MAIN' }).Count -ne 1 -or
+        @($configurationDatabases | Where-Object { $_.Name -eq 'IDENT_ARCHIVE' }).Count -ne 1 -or
+        @($configurationDatabases | Where-Object { $_.Name -eq 'IDENT_REPORTS' }).Count -ne 1
+    ) {
+        throw 'Self-test failed to extract database names from IDENT configuration text.'
     }
     Write-Host 'SELF-TEST OK' -ForegroundColor Green
 }
