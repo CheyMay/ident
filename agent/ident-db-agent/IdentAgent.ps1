@@ -722,16 +722,20 @@ function Test-SqlEndpoint {
     )
 
     $password = Get-PlainTextSecret -EncryptedValue ([string]$Context.Secrets.sqlPasswordDpapi)
-    $catalogs = @('master')
+    $defaultCatalogMarker = '__LOGIN_DEFAULT__'
+    $catalogs = @($defaultCatalogMarker, 'master')
     $catalogs += @($DatabaseCandidates | ForEach-Object { [string]$_.Name })
     $catalogs = @($catalogs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     $errors = @()
 
     for ($catalogIndex = 0; $catalogIndex -lt $catalogs.Count; $catalogIndex++) {
         $catalog = [string]$catalogs[$catalogIndex]
+        $catalogLabel = if ($catalog -eq $defaultCatalogMarker) { 'login default' } else { $catalog }
         $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
         $builder['Data Source'] = [string]$Endpoint.DataSource
-        $builder['Initial Catalog'] = $catalog
+        if ($catalog -ne $defaultCatalogMarker) {
+            $builder['Initial Catalog'] = $catalog
+        }
         $builder['User ID'] = [string]$Context.Config.sql.user
         $builder['Password'] = $password
         $builder['Integrated Security'] = $false
@@ -755,7 +759,7 @@ SELECT
             $connection.Open()
             $reader = $serverCommand.ExecuteReader()
             $serverInfo = $null
-            $currentDatabase = $catalog
+            $currentDatabase = ''
             if ($reader.Read()) {
                 $serverInfo = [pscustomobject]@{
                     ServerName = [string]$reader['ServerName']
@@ -798,7 +802,7 @@ ORDER BY name;
         }
         catch {
             $message = [string]$_.Exception.Message
-            $errors += "${catalog}: $message"
+            $errors += "${catalogLabel}: $message"
             $sqlErrorNumber = Get-NestedSqlErrorNumber -Exception $_.Exception
             $isCatalogOrLoginError = $sqlErrorNumber -in @(18456, 4060) -or $message -match '(?i)(login failed|cannot open database)'
             if ($catalogIndex -eq 0 -and -not $isCatalogOrLoginError) {
