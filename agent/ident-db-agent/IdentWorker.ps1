@@ -336,22 +336,43 @@ function Save-RemoteSqlConfiguration {
 function Invoke-RemoteSqlDiscovery {
     param([string]$Revision)
 
+    $timeoutSeconds = 120
     $script:State.diagnostics.sqlDiscoveryState = 'running'
     $script:State.diagnostics.sqlDiscoveryLastAttemptAt = (Get-Date).ToString('o')
     $script:State.diagnostics.sqlDiscoveryLastError = ''
+    Set-ControlRevision -Name 'sqlDiscoveryRequestRevision' -Revision $Revision
+    $script:State.diagnostics.sqlDiscoveryRequestRevision = $Revision
     Write-RuntimeState
     $outputText = ''
+    $stdoutPath = Join-Path $env:TEMP ("code9-ident-discovery-$PID-stdout.log")
+    $stderrPath = Join-Path $env:TEMP ("code9-ident-discovery-$PID-stderr.log")
     try {
         $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
-        $output = @(& powershell.exe `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $agentScript `
-            -ConfigPath $script:Context.ConfigPath `
-            -AutoConfigureSql `
-            -NonInteractive 2>&1)
-        $exitCode = $LASTEXITCODE
+        $argumentList = @(
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy Bypass',
+            ('-File "{0}"' -f $agentScript),
+            ('-ConfigPath "{0}"' -f $script:Context.ConfigPath),
+            '-AutoConfigureSql',
+            '-NonInteractive'
+        ) -join ' '
+        $process = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList $argumentList `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -PassThru
+        if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+            try { $process.Kill() } catch {}
+            throw "SQL discovery exceeded $timeoutSeconds seconds and was stopped."
+        }
+        $process.WaitForExit()
+        $output = @()
+        if (Test-Path -LiteralPath $stdoutPath) { $output += @(Get-Content -LiteralPath $stdoutPath) }
+        if (Test-Path -LiteralPath $stderrPath) { $output += @(Get-Content -LiteralPath $stderrPath) }
+        $exitCode = [int]$process.ExitCode
         $outputText = ($output | Select-Object -Last 20 | Out-String).Trim()
         if ($exitCode -ne 0) {
             throw "SQL discovery exited with code $exitCode. $outputText"
@@ -371,8 +392,9 @@ function Invoke-RemoteSqlDiscovery {
         $script:State.diagnostics.sqlDiscoveryLastError = $_.Exception.Message
         Write-WorkerLog -Level 'error' -EventName 'remote_sql_discovery_failed' -Data @{ message = $_.Exception.Message }
     }
-    Set-ControlRevision -Name 'sqlDiscoveryRequestRevision' -Revision $Revision
-    $script:State.diagnostics.sqlDiscoveryRequestRevision = $Revision
+    finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
     Send-AgentDiagnostics
 }
 

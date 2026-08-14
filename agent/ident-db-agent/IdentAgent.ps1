@@ -1020,6 +1020,10 @@ function Invoke-AutoConfigureSql {
                 error = ''
             }
             Write-Host '  Connected.' -ForegroundColor Green
+            if ([string]$candidate.Source -eq 'saved configuration') {
+                Write-Host '  Saved SQL configuration is available; skipping additional endpoints.' -ForegroundColor DarkGray
+                break
+            }
         }
         catch {
             $message = [string]$_.Exception.Message
