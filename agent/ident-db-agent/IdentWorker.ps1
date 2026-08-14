@@ -115,13 +115,34 @@ function Write-WorkerLog {
     Add-Content -LiteralPath $script:Context.LogPath -Value ($entry | ConvertTo-Json -Compress -Depth 8) -Encoding UTF8
 }
 
+function Move-FileWithRetry {
+    param(
+        [string]$Source,
+        [string]$Destination,
+        [int]$Attempts = 12
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        }
+        catch [IO.IOException], [UnauthorizedAccessException] {
+            if ($attempt -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds ([Math]::Min(250, 25 * $attempt))
+        }
+    }
+}
+
 function Write-RuntimeState {
     $script:State.updatedAt = (Get-Date).ToString('o')
     $directory = Split-Path -Parent $script:Context.StatePath
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     $temporaryPath = "$($script:Context.StatePath).tmp-$PID"
     $script:State | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.StatePath -Force
+    Move-FileWithRetry -Source $temporaryPath -Destination $script:Context.StatePath
 }
 
 function Read-ControlState {
@@ -166,7 +187,7 @@ function Set-ControlRevision {
     }
     $temporaryPath = "$($script:Context.ControlStatePath).tmp-$PID"
     $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-    Move-Item -LiteralPath $temporaryPath -Destination $script:Context.ControlStatePath -Force
+    Move-FileWithRetry -Source $temporaryPath -Destination $script:Context.ControlStatePath
     $script:ControlState = [pscustomobject]$payload
 }
 
