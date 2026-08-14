@@ -17,14 +17,43 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 function Read-JsonFile {
     param([string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return $null
+        }
+        try {
+            $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+            $stream = [IO.FileStream]::new(
+                $Path,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                $share
+            )
+            try {
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+                try {
+                    $raw = $reader.ReadToEnd()
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+            finally {
+                $stream.Dispose()
+            }
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                return $null
+            }
+            return $raw | ConvertFrom-Json
+        }
+        catch [IO.IOException] {
+            if ($attempt -eq 5) {
+                return $null
+            }
+            Start-Sleep -Milliseconds 40
+        }
     }
-    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        return $null
-    }
-    return $raw | ConvertFrom-Json
+    return $null
 }
 
 function Resolve-LocalPath {
