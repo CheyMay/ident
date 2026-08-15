@@ -21,16 +21,19 @@ export function normalizeTimeTablePayload(payload) {
   const doctors = normalizeNamedEntities(payload.Doctors, 'Doctors');
   const branches = normalizeNamedEntities(payload.Branches, 'Branches');
   const intervals = normalizeIntervals(payload.Intervals);
+  const services = normalizeServices(payload.Services);
 
   return {
     receivedAt: new Date().toISOString(),
     Doctors: doctors,
     Branches: branches,
     Intervals: intervals,
+    Services: services,
     Summary: {
       doctors: doctors.length,
       branches: branches.length,
       intervals: intervals.length,
+      services: services.length,
       freeIntervals: intervals.filter((item) => !item.IsBusy).length,
       busyIntervals: intervals.filter((item) => item.IsBusy).length
     }
@@ -134,4 +137,56 @@ function normalizeIntervals(items) {
       IsBusy: item?.IsBusy === true || item?.IsBusy === 1 || item?.IsBusy === '1'
     };
   });
+}
+
+function normalizeServices(items) {
+  if (items === undefined || items === null) return [];
+  if (!Array.isArray(items)) throw new BadRequestError('Services must be an array');
+
+  return items.map((item, index) => {
+    const id = Number.parseInt(item?.Id ?? item?.ServiceId, 10);
+    const name = String(item?.Name || item?.ServiceName || '').trim();
+    if (!Number.isFinite(id)) throw new BadRequestError(`Services[${index}].Id must be an integer`);
+    if (!name) throw new BadRequestError(`Services[${index}].Name is required`);
+
+    const price = optionalNumber(item?.Price);
+    if (price !== null && price < 0) throw new BadRequestError(`Services[${index}].Price must not be negative`);
+    const priceId = optionalInteger(item?.PriceId);
+    const priceGroupId = optionalInteger(item?.PriceGroupId);
+    const folderId = optionalInteger(item?.FolderId);
+    const categoryId = optionalInteger(item?.CategoryId);
+    const key = String(item?.Key || [id, priceGroupId ?? 'default', priceId ?? 'default'].join(':'));
+
+    return stripEmpty({
+      Key: key,
+      Id: id,
+      Name: name,
+      Code: optionalText(item?.Code),
+      Price: price,
+      PriceId: priceId,
+      PriceGroupId: priceGroupId,
+      PriceGroupName: optionalText(item?.PriceGroupName),
+      FolderId: folderId,
+      FolderName: optionalText(item?.FolderName),
+      CategoryId: categoryId,
+      CategoryName: optionalText(item?.CategoryName)
+    });
+  });
+}
+
+function optionalInteger(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function optionalText(value) {
+  const text = String(value ?? '').trim();
+  return text || null;
 }

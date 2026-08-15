@@ -2,11 +2,13 @@
   "doctorsSql": "",
   "branchesSql": "",
   "intervalsSql": "",
+  "servicesSql": "",
   "notes": [
     "Fill these queries only after schema-inventory.json is reviewed.",
     "Every query must be a single read-only SELECT or WITH statement.",
     "doctorsSql must return columns Id and Name.",
     "branchesSql must return columns Id and Name.",
-    "intervalsSql must return DoctorId, BranchId, StartDateTime, LengthInMinutes and IsBusy."
+    "intervalsSql must return DoctorId, BranchId, StartDateTime, LengthInMinutes and IsBusy.",
+    "servicesSql is optional and should return Id, Name and optional price/catalog columns."
   ]
 }

@@ -905,11 +905,13 @@ function normalizeDesiredScheduleMapping(value) {
   const doctorsSql = cleanAgentText(value.doctorsSql, 20000);
   const branchesSql = cleanAgentText(value.branchesSql, 20000);
   const intervalsSql = cleanAgentText(value.intervalsSql, 20000);
+  const servicesSql = cleanAgentText(value.servicesSql, 20000);
   if (!doctorsSql || !branchesSql || !intervalsSql) return null;
   return {
     doctorsSql,
     branchesSql,
     intervalsSql,
+    servicesSql,
     notes: Array.isArray(value.notes)
       ? value.notes.slice(0, 20).map((item) => cleanAgentText(item, 500)).filter(Boolean)
       : []

@@ -31,6 +31,13 @@ try {
     if (-not (Test-Path -LiteralPath $PackagePath)) {
         throw "Agent package was not found: $PackagePath"
     }
+    $inspectionDirectory = Join-Path $testRoot 'inspection'
+    New-Item -ItemType Directory -Force -Path $inspectionDirectory | Out-Null
+    Expand-Archive -LiteralPath $PackagePath -DestinationPath $inspectionDirectory -Force
+    $releaseManifest = Get-Content -LiteralPath (Join-Path $inspectionDirectory 'release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $expectedVersion = [string]$releaseManifest.version
+    if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw 'Release version is missing.' }
+
     New-Item -ItemType Directory -Force -Path (Join-Path $installDirectory 'robot') | Out-Null
     $config = [ordered]@{
         version = 2
@@ -46,13 +53,13 @@ try {
     $mappingHash = (Get-FileHash -LiteralPath (Join-Path $installDirectory 'mapping.local.json') -Algorithm SHA256).Hash
     $robotHash = (Get-FileHash -LiteralPath (Join-Path $installDirectory 'robot\config.local.json') -Algorithm SHA256).Hash
     $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
-    $success = Invoke-UpdaterProcess -Archive $PackagePath -Version '2.4.1' -Hash $packageHash
+    $success = Invoke-UpdaterProcess -Archive $PackagePath -Version $expectedVersion -Hash $packageHash
     if ($success.ExitCode -ne 0) {
         throw "Successful update test returned exit code $($success.ExitCode)."
     }
 
     $updatedConfig = Get-Content -LiteralPath (Join-Path $installDirectory 'config.local.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$updatedConfig.agent.version -ne '2.4.1') { throw 'Agent version was not updated.' }
+    if ([string]$updatedConfig.agent.version -ne $expectedVersion) { throw 'Agent version was not updated.' }
     if ((Get-FileHash -LiteralPath (Join-Path $installDirectory 'secrets.local.json') -Algorithm SHA256).Hash -ne $secretHash) { throw 'Secrets changed during update.' }
     if ((Get-FileHash -LiteralPath (Join-Path $installDirectory 'mapping.local.json') -Algorithm SHA256).Hash -ne $mappingHash) { throw 'SQL mapping changed during update.' }
     if ((Get-FileHash -LiteralPath (Join-Path $installDirectory 'robot\config.local.json') -Algorithm SHA256).Hash -ne $robotHash) { throw 'Robot calibration changed during update.' }
@@ -78,7 +85,7 @@ try {
     if ($failure.ExitCode -eq 0) { throw 'Broken update unexpectedly succeeded.' }
     if ((Get-Content -LiteralPath (Join-Path $installDirectory 'IdentWorker.ps1') -Raw) -notmatch 'STABLE-WORKER') { throw 'Runtime rollback did not restore the previous file.' }
     $rolledBackConfig = Get-Content -LiteralPath (Join-Path $installDirectory 'config.local.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$rolledBackConfig.agent.version -ne '2.4.1') { throw 'Configuration rollback did not preserve the installed version.' }
+    if ([string]$rolledBackConfig.agent.version -ne $expectedVersion) { throw 'Configuration rollback did not preserve the installed version.' }
     $failureStatus = Get-Content -LiteralPath (Join-Path $installDirectory 'update-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$failureStatus.status -ne 'failed') { throw 'Failed update status was not recorded.' }
 

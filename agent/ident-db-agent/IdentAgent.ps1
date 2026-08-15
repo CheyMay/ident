@@ -1306,6 +1306,35 @@ function Convert-ToInt {
     return $parsed
 }
 
+function Convert-ToOptionalInt {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+    $parsed = 0
+    if (-not [int]::TryParse([string]$Value, [ref]$parsed)) {
+        return $null
+    }
+    return $parsed
+}
+
+function Convert-ToOptionalDecimal {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+    if ($Value -is [decimal] -or $Value -is [double] -or $Value -is [single] -or $Value -is [int]) {
+        return [decimal]$Value
+    }
+    $parsed = [decimal]0
+    if ([decimal]::TryParse([string]$Value, [ref]$parsed)) {
+        return $parsed
+    }
+    return $null
+}
+
 function Convert-ToBoolean {
     param([object]$Value)
 
@@ -1342,7 +1371,8 @@ function Convert-RowsToTimetable {
     param(
         [object[]]$DoctorRows,
         [object[]]$BranchRows,
-        [object[]]$IntervalRows
+        [object[]]$IntervalRows,
+        [object[]]$ServiceRows = @()
     )
 
     $doctorIds = @{}
@@ -1403,10 +1433,37 @@ function Convert-RowsToTimetable {
         }
     }
 
+    $services = @()
+    for ($index = 0; $index -lt $ServiceRows.Count; $index++) {
+        $row = $ServiceRows[$index]
+        $id = Convert-ToInt `
+            -Value (Get-RowValue -Row $row -Names @('Id', 'ServiceId', 'ID_ServiceItems')) `
+            -Label "Services[$index].Id"
+        $name = [string](Get-RowValue -Row $row -Names @('Name', 'ServiceName'))
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            throw "Services[$index].Name is required."
+        }
+
+        $services += [pscustomobject]@{
+            Id = $id
+            Name = $name.Trim()
+            Code = [string](Get-RowValue -Row $row -Names @('Code', 'ServiceCode'))
+            Price = Convert-ToOptionalDecimal -Value (Get-RowValue -Row $row -Names @('Price', 'ServicePrice'))
+            PriceId = Convert-ToOptionalInt -Value (Get-RowValue -Row $row -Names @('PriceId', 'ID_ServiceItemPrices'))
+            PriceGroupId = Convert-ToOptionalInt -Value (Get-RowValue -Row $row -Names @('PriceGroupId', 'ID_ServicePriceGroups'))
+            PriceGroupName = [string](Get-RowValue -Row $row -Names @('PriceGroupName'))
+            FolderId = Convert-ToOptionalInt -Value (Get-RowValue -Row $row -Names @('FolderId', 'ID_ServiceFolders'))
+            FolderName = [string](Get-RowValue -Row $row -Names @('FolderName'))
+            CategoryId = Convert-ToOptionalInt -Value (Get-RowValue -Row $row -Names @('CategoryId', 'ID_ServiceCategories'))
+            CategoryName = [string](Get-RowValue -Row $row -Names @('CategoryName'))
+        }
+    }
+
     return [pscustomobject]@{
         Doctors = $doctors
         Branches = $branches
         Intervals = $intervals
+        Services = $services
     }
 }
 
@@ -1420,15 +1477,36 @@ function Get-Timetable {
     $doctorsSql = Assert-ReadOnlySql -Sql ([string]$mapping.doctorsSql) -Label 'doctorsSql'
     $branchesSql = Assert-ReadOnlySql -Sql ([string]$mapping.branchesSql) -Label 'branchesSql'
     $intervalsSql = Assert-ReadOnlySql -Sql ([string]$mapping.intervalsSql) -Label 'intervalsSql'
+    $servicesSql = if (
+        $mapping.PSObject.Properties.Name -contains 'servicesSql' -and
+        -not [string]::IsNullOrWhiteSpace([string]$mapping.servicesSql)
+    ) {
+        Assert-ReadOnlySql -Sql ([string]$mapping.servicesSql) -Label 'servicesSql'
+    }
+    else { '' }
 
     $doctorTable = Invoke-SqlQuery -Context $Context -Query $doctorsSql
     $branchTable = Invoke-SqlQuery -Context $Context -Query $branchesSql
     $intervalTable = Invoke-SqlQuery -Context $Context -Query $intervalsSql
+    $serviceRows = @()
+    if (-not [string]::IsNullOrWhiteSpace($servicesSql)) {
+        try {
+            $serviceTable = Invoke-SqlQuery -Context $Context -Query $servicesSql
+            $serviceRows = @($serviceTable.Rows)
+        }
+        catch {
+            Write-Warning "Service catalog was not loaded: $($_.Exception.Message)"
+            Write-AgentLog -Context $Context -Level 'warn' -Event 'services_query_failed' -Data @{
+                message = $_.Exception.Message
+            }
+        }
+    }
 
     return Convert-RowsToTimetable `
         -DoctorRows @($doctorTable.Rows) `
         -BranchRows @($branchTable.Rows) `
-        -IntervalRows @($intervalTable.Rows)
+        -IntervalRows @($intervalTable.Rows) `
+        -ServiceRows $serviceRows
 }
 
 function Show-TimetableSummary {
@@ -1439,6 +1517,7 @@ function Show-TimetableSummary {
     Write-Host "Doctors:  $(@($Timetable.Doctors).Count)"
     Write-Host "Branches: $(@($Timetable.Branches).Count)"
     Write-Host "Intervals: $(@($Timetable.Intervals).Count) (free: $free, busy: $busy)"
+    Write-Host "Services:  $(@($Timetable.Services).Count)"
 }
 
 function Send-Timetable {
@@ -1492,9 +1571,22 @@ function Invoke-AgentSelfTest {
             IsBusy = 0
         }
     )
+    $services = @(
+        [pscustomobject]@{
+            Id = 30
+            Name = 'Initial consultation'
+            Code = 'CONSULT'
+            Price = [decimal]1500
+            PriceId = 31
+            PriceGroupId = 32
+            PriceGroupName = 'Main price'
+            FolderId = 33
+            FolderName = 'Consultations'
+        }
+    )
 
-    $payload = Convert-RowsToTimetable -DoctorRows $doctors -BranchRows $branches -IntervalRows $intervals
-    if ($payload.Doctors.Count -ne 1 -or $payload.Branches.Count -ne 1 -or $payload.Intervals.Count -ne 1) {
+    $payload = Convert-RowsToTimetable -DoctorRows $doctors -BranchRows $branches -IntervalRows $intervals -ServiceRows $services
+    if ($payload.Doctors.Count -ne 1 -or $payload.Branches.Count -ne 1 -or $payload.Intervals.Count -ne 1 -or $payload.Services.Count -ne 1) {
         throw 'Self-test payload count mismatch.'
     }
     if ($payload.Intervals[0].StartDateTime -ne '2026-07-28T10:00:00') {
@@ -1502,6 +1594,9 @@ function Invoke-AgentSelfTest {
     }
     if ($payload.Intervals[0].IsBusy) {
         throw 'Self-test busy flag normalization failed.'
+    }
+    if ($payload.Services[0].Price -ne [decimal]1500 -or $payload.Services[0].FolderName -ne 'Consultations') {
+        throw 'Self-test service normalization failed.'
     }
     [void](Assert-ReadOnlySql -Sql 'SELECT 1 AS Id' -Label 'selfTestSql')
     try {
@@ -1644,6 +1739,7 @@ try {
             doctors = @($previewPayload.Doctors).Count
             branches = @($previewPayload.Branches).Count
             intervals = @($previewPayload.Intervals).Count
+            services = @($previewPayload.Services).Count
         }
         exit 0
     }
@@ -1661,6 +1757,7 @@ try {
             doctors = @($pushPayload.Doctors).Count
             branches = @($pushPayload.Branches).Count
             intervals = @($pushPayload.Intervals).Count
+            services = @($pushPayload.Services).Count
             freeIntervals = @($pushPayload.Intervals | Where-Object { -not $_.IsBusy }).Count
             busyIntervals = @($pushPayload.Intervals | Where-Object { $_.IsBusy }).Count
         }
@@ -1670,6 +1767,7 @@ try {
             doctors = @($pushPayload.Doctors).Count
             branches = @($pushPayload.Branches).Count
             intervals = @($pushPayload.Intervals).Count
+            services = @($pushPayload.Services).Count
             status = $sendResult.StatusCode
         }
         exit 0

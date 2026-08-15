@@ -5,11 +5,13 @@ const DEFAULT_MAPPING = {
   doctorsSql: '',
   branchesSql: '',
   intervalsSql: '',
+  servicesSql: '',
   notes: [
     'Each SQL must be read-only SELECT/WITH and should alias columns to the expected names.',
     'doctorsSql: Id, Name',
     'branchesSql: Id, Name',
-    'intervalsSql: DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy'
+    'intervalsSql: DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy',
+    'servicesSql (optional): Id, Name, Code, Price, PriceId, PriceGroupId, PriceGroupName, FolderId, FolderName, CategoryId, CategoryName'
   ]
 };
 
@@ -30,7 +32,7 @@ export function defaultIdentDbMapping() {
 export function normalizeIdentDbMapping(input = {}) {
   return {
     ...defaultIdentDbMapping(),
-    ...pickStrings(input, ['doctorsSql', 'branchesSql', 'intervalsSql']),
+    ...pickStrings(input, ['doctorsSql', 'branchesSql', 'intervalsSql', 'servicesSql']),
     notes: Array.isArray(input.notes) ? input.notes.map(String) : DEFAULT_MAPPING.notes
   };
 }
@@ -51,7 +53,7 @@ export function validateReadOnlySql(sqlText, label = 'SQL') {
   return raw;
 }
 
-export function normalizeTimetableFromIdentDbRows({ doctors = [], branches = [], intervals = [] }) {
+export function normalizeTimetableFromIdentDbRows({ doctors = [], branches = [], intervals = [], services = [] }) {
   const normalizedDoctors = doctors.map((row, index) => {
     const id = intValue(row, ['Id', 'DoctorId', 'doctorId', 'doctor_id', 'ID']);
     const name = stringValue(row, ['Name', 'DoctorName', 'doctorName', 'FullName', 'Fio', 'FIO', 'title']);
@@ -94,10 +96,25 @@ export function normalizeTimetableFromIdentDbRows({ doctors = [], branches = [],
     };
   });
 
+  const normalizedServices = services.map((row) => ({
+    Id: valueByKeys(row, ['Id', 'ServiceId', 'ID_ServiceItems']),
+    Name: stringValue(row, ['Name', 'ServiceName']),
+    Code: stringValue(row, ['Code', 'ServiceCode']),
+    Price: numberValue(row, ['Price', 'ServicePrice']),
+    PriceId: valueByKeys(row, ['PriceId', 'ID_ServiceItemPrices']),
+    PriceGroupId: valueByKeys(row, ['PriceGroupId', 'ID_ServicePriceGroups']),
+    PriceGroupName: stringValue(row, ['PriceGroupName']),
+    FolderId: valueByKeys(row, ['FolderId', 'ID_ServiceFolders']),
+    FolderName: stringValue(row, ['FolderName']),
+    CategoryId: valueByKeys(row, ['CategoryId', 'ID_ServiceCategories']),
+    CategoryName: stringValue(row, ['CategoryName'])
+  }));
+
   return normalizeTimeTablePayload({
     Doctors: normalizedDoctors,
     Branches: normalizedBranches,
-    Intervals: normalizedIntervals
+    Intervals: normalizedIntervals,
+    Services: normalizedServices
   });
 }
 
@@ -217,17 +234,22 @@ export class IdentDbClient {
     const doctorsSql = validateReadOnlySql(normalized.doctorsSql, 'doctorsSql');
     const branchesSql = validateReadOnlySql(normalized.branchesSql, 'branchesSql');
     const intervalsSql = validateReadOnlySql(normalized.intervalsSql, 'intervalsSql');
+    const servicesSql = normalized.servicesSql
+      ? validateReadOnlySql(normalized.servicesSql, 'servicesSql')
+      : '';
 
     return this.withPool(async (pool) => {
-      const [doctors, branches, intervals] = await Promise.all([
-        pool.request().query(doctorsSql),
-        pool.request().query(branchesSql),
-        pool.request().query(intervalsSql)
-      ]);
+      const doctors = await pool.request().query(doctorsSql);
+      const branches = await pool.request().query(branchesSql);
+      const intervals = await pool.request().query(intervalsSql);
+      const services = servicesSql
+        ? await pool.request().query(servicesSql)
+        : { recordset: [] };
       const timetable = normalizeTimetableFromIdentDbRows({
         doctors: doctors.recordset,
         branches: branches.recordset,
-        intervals: intervals.recordset
+        intervals: intervals.recordset,
+        services: services.recordset
       });
       return {
         mapping: normalized,
@@ -334,6 +356,13 @@ function intValue(row, keys) {
   const value = valueByKeys(row, keys);
   if (value === null) return null;
   const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function numberValue(row, keys) {
+  const value = valueByKeys(row, keys);
+  if (value === null) return null;
+  const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 

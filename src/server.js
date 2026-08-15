@@ -164,6 +164,22 @@ export function buildApp(config, logger, options = {}) {
         });
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/services') {
+        requireServiceApiKey(req, config);
+        const timetable = await storage.readJson('timetable.json', null);
+        if (!timetable) return sendJson(res, 404, { error: 'Timetable has not been received yet' });
+        const services = Array.isArray(timetable.Services) ? timetable.Services : [];
+        return sendJson(res, 200, {
+          receivedAt: timetable.receivedAt,
+          Services: services,
+          Summary: {
+            services: services.length,
+            priceGroups: new Set(services.map((item) => item.PriceGroupId).filter(Boolean)).size,
+            folders: new Set(services.map((item) => item.FolderId).filter(Boolean)).size
+          }
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
         requireServiceApiKey(req, config);
         return sendJson(res, 200, await buildDiagnostics({
@@ -1158,6 +1174,9 @@ function normalizeAgentDesiredInput(input = {}) {
       doctorsSql: validateReadOnlySql(mapping.doctorsSql, 'doctorsSql'),
       branchesSql: validateReadOnlySql(mapping.branchesSql, 'branchesSql'),
       intervalsSql: validateReadOnlySql(mapping.intervalsSql, 'intervalsSql'),
+      servicesSql: mapping.servicesSql
+        ? validateReadOnlySql(mapping.servicesSql, 'servicesSql')
+        : '',
       notes: mapping.notes
     };
   }

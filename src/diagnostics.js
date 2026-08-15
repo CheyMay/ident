@@ -126,7 +126,8 @@ export async function buildDiagnostics({
             summary: timetable.Summary || {
               doctors: timetable.Doctors?.length || 0,
               branches: timetable.Branches?.length || 0,
-              intervals: timetable.Intervals?.length || 0
+              intervals: timetable.Intervals?.length || 0,
+              services: timetable.Services?.length || 0
             }
           }
         : null,

@@ -16,11 +16,33 @@ test('normalizes IDENT timetable payload', () => {
         LengthInMinutes: '60',
         IsBusy: '0'
       }
-    ]
+    ],
+    Services: [{
+      Id: '501',
+      Name: 'Первичная консультация',
+      Price: '1500.00',
+      PriceId: '701',
+      PriceGroupId: '3',
+      PriceGroupName: 'Основной',
+      FolderId: '8',
+      FolderName: 'Консультации'
+    }]
   });
 
   assert.equal(result.Summary.doctors, 1);
   assert.equal(result.Summary.freeIntervals, 1);
+  assert.equal(result.Summary.services, 1);
+  assert.deepEqual(result.Services[0], {
+    Key: '501:3:701',
+    Id: 501,
+    Name: 'Первичная консультация',
+    Price: 1500,
+    PriceId: 701,
+    PriceGroupId: 3,
+    PriceGroupName: 'Основной',
+    FolderId: 8,
+    FolderName: 'Консультации'
+  });
   assert.deepEqual(result.Intervals[0], {
     DoctorId: 2129,
     BranchId: 1,

@@ -376,8 +376,9 @@ function Refresh-Status {
     $backendLabel.Text = 'Сервер Code9: ' + $(if ([bool]$state.worker.backendOnline) { 'на связи' } else { 'нет связи' })
     $scheduleStateLabel.Text = 'Состояние: ' + (Format-StateName -Value ([string]$state.schedule.state))
     $scheduleTimeLabel.Text = 'Последняя отправка: ' + (Format-DateValue -Value $state.schedule.lastSuccessAt)
-    $scheduleCountLabel.Text = 'Врачи: {0}  |  филиалы: {1}  |  окна: {2}  |  свободно: {3}' -f `
-        $state.schedule.doctors, $state.schedule.branches, $state.schedule.intervals, $state.schedule.freeIntervals
+    $serviceCount = if ($state.schedule.PSObject.Properties.Name -contains 'services') { [int]$state.schedule.services } else { 0 }
+    $scheduleCountLabel.Text = 'Врачи: {0}  |  филиалы: {1}  |  окна: {2}  |  свободно: {3}  |  услуги: {4}' -f `
+        $state.schedule.doctors, $state.schedule.branches, $state.schedule.intervals, $state.schedule.freeIntervals, $serviceCount
     $robotStateLabel.Text = 'Робот: ' + (Format-StateName -Value ([string]$state.robot.state)) +
         $(if ([bool]$state.robot.configured) { '' } else { ' (не откалиброван)' })
     $robotTimeLabel.Text = 'Последнее выполнение: ' + (Format-DateValue -Value $state.robot.lastSuccessAt)

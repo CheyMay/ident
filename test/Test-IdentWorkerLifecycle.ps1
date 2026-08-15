@@ -191,6 +191,7 @@ const server = http.createServer((req, res) => {
             doctorsSql: "SELECT Id, Name FROM dbo.Doctors",
             branchesSql: "SELECT Id, Name FROM dbo.Branches",
             intervalsSql: "SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule",
+            servicesSql: "SELECT Id, Name, Price FROM dbo.ServiceItems",
             notes: ["remote test mapping"]
           }
         }
@@ -295,6 +296,7 @@ server.listen(port, "127.0.0.1");
     Assert-Equal -Actual ([string]$state.schedule.mappingRevision) -Expected '2026-07-30T15:30:00.000Z' -Label 'Remote mapping revision'
     Assert-Equal -Actual ([string]$appliedMapping.doctorsSql) -Expected 'SELECT Id, Name FROM dbo.Doctors' -Label 'Remote doctors SQL'
     Assert-Equal -Actual ([string]$appliedMapping.intervalsSql) -Expected 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule' -Label 'Remote intervals SQL'
+    Assert-Equal -Actual ([string]$appliedMapping.servicesSql) -Expected 'SELECT Id, Name, Price FROM dbo.ServiceItems' -Label 'Remote services SQL'
     Assert-Equal -Actual (Test-Path -LiteralPath (Join-Path $tempRoot 'receipts.json')) -Expected $true -Label 'Receipt file'
 
     Write-Host 'IDENT WORKER LIFECYCLE TEST OK' -ForegroundColor Green

@@ -450,6 +450,12 @@ Returns the latest schedule snapshot received from IDENT.
 
 Returns only free intervals from the latest IDENT schedule export.
 
+### `GET /api/services`
+
+Returns the optional read-only IDENT service catalog uploaded by the clinic agent,
+including service names, current prices, price groups, and folders. Official
+`PostTimeTable` payloads without `Services` remain supported.
+
 ### Clinic desktop agent
 
 The unified Windows package is built from `agent/ident-db-agent`:
@@ -459,7 +465,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\agent\ident-db-agent\Build-IdentDesktopPackage.ps1
 ```
 
-It creates `agent/ident-db-agent/dist/ident-desktop-2.3.0.zip`. The installer
+It creates `agent/ident-db-agent/dist/ident-desktop-2.7.0.zip`. The installer
 registers the background worker and status panel at Windows logon. Schedule
 export is enabled by default; the UI booking robot is disabled and cannot
 claim tasks until its local IDENT selectors are configured.

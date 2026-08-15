@@ -630,6 +630,15 @@ function Save-ScheduleMapping {
         doctorsSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.doctorsSql) -Label 'doctorsSql'
         branchesSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.branchesSql) -Label 'branchesSql'
         intervalsSql = Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.intervalsSql) -Label 'intervalsSql'
+        servicesSql = $(
+            if (
+                $Mapping.PSObject.Properties.Name -contains 'servicesSql' -and
+                -not [string]::IsNullOrWhiteSpace([string]$Mapping.servicesSql)
+            ) {
+                Assert-ReadOnlyMappingSql -Sql ([string]$Mapping.servicesSql) -Label 'servicesSql'
+            }
+            else { '' }
+        )
         notes = @(
             if ($Mapping.PSObject.Properties.Name -contains 'notes') {
                 @($Mapping.notes | Select-Object -First 20 | ForEach-Object { ([string]$_).Substring(0, [Math]::Min(([string]$_).Length, 500)) })
@@ -974,6 +983,7 @@ function Invoke-SchedulePush {
         $script:State.schedule.doctors = [int]$result.doctors
         $script:State.schedule.branches = [int]$result.branches
         $script:State.schedule.intervals = [int]$result.intervals
+        $script:State.schedule.services = $(if ($result.PSObject.Properties.Name -contains 'services') { [int]$result.services } else { 0 })
         $script:State.schedule.freeIntervals = [int]$result.freeIntervals
         $script:State.schedule.busyIntervals = [int]$result.busyIntervals
     }
@@ -1207,6 +1217,7 @@ try {
             doctors = 0
             branches = 0
             intervals = 0
+            services = 0
             freeIntervals = 0
             busyIntervals = 0
         }

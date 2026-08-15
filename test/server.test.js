@@ -789,6 +789,14 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
             StartDateTime: '2026-08-01T10:00:00+03:00',
             LengthInMinutes: 30,
             IsBusy: false
+          }],
+          Services: [{
+            Id: 501,
+            Name: 'Consultation',
+            Price: 1500,
+            PriceId: 701,
+            PriceGroupId: 3,
+            PriceGroupName: 'Main'
           }]
         })
       });
@@ -797,9 +805,18 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
         doctors: 1,
         branches: 1,
         intervals: 1,
+        services: 1,
         freeIntervals: 1,
         busyIntervals: 0
       });
+
+      const servicesResponse = await fetch(`${baseUrl}/api/services`, {
+        headers: { 'X-API-Key': 'test-service-key' }
+      });
+      assert.equal(servicesResponse.status, 200);
+      const services = await servicesResponse.json();
+      assert.equal(services.Summary.services, 1);
+      assert.equal(services.Services[0].Name, 'Consultation');
 
       const schemaUploadResponse = await fetch(`${baseUrl}/api/agent/schema`, {
         method: 'POST',
@@ -889,7 +906,8 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       const scheduleMapping = {
         doctorsSql: 'SELECT Id, Name FROM dbo.Doctors',
         branchesSql: 'SELECT Id, Name FROM dbo.Branches',
-        intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule'
+        intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule',
+        servicesSql: 'SELECT Id, Name, Price FROM dbo.ServiceItems'
       };
       const mappingSettingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
         method: 'POST',
@@ -906,6 +924,7 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       assert.equal(mappingSettingsResponse.status, 200);
       const mappingSettings = await mappingSettingsResponse.json();
       assert.deepEqual(mappingSettings.desired.scheduleMapping.doctorsSql, scheduleMapping.doctorsSql);
+      assert.deepEqual(mappingSettings.desired.scheduleMapping.servicesSql, scheduleMapping.servicesSql);
       assert.equal(Number.isNaN(new Date(mappingSettings.desired.mappingRevision).getTime()), false);
 
       const remoteControlResponse = await fetch(`${baseUrl}/api/agent/settings`, {

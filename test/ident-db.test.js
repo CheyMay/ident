@@ -44,13 +44,22 @@ test('normalizes IDENT DB rows into timetable contract', () => {
         EndDateTime: '2026-07-18T10:30:00+03:00',
         IsBusy: 0
       }
-    ]
+    ],
+    services: [{
+      ServiceId: '501',
+      ServiceName: 'Initial consultation',
+      ServicePrice: '1500.00',
+      PriceGroupName: 'Main price',
+      FolderName: 'Consultations'
+    }]
   });
 
   assert.equal(timetable.Doctors[0].Id, 10);
   assert.equal(timetable.Branches[0].Name, 'Main Branch');
   assert.equal(timetable.Intervals[0].LengthInMinutes, 30);
   assert.equal(timetable.Summary.freeIntervals, 1);
+  assert.equal(timetable.Summary.services, 1);
+  assert.equal(timetable.Services[0].Price, 1500);
 });
 
 test('IDENT DB endpoints expose status, mapping preview and timetable sync', async () => {
@@ -93,7 +102,8 @@ test('IDENT DB endpoints expose status, mapping preview and timetable sync', asy
       body: JSON.stringify({
         doctorsSql: 'SELECT Id, Name FROM dbo.Doctors',
         branchesSql: 'SELECT Id, Name FROM dbo.Branches',
-        intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule'
+        intervalsSql: 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule',
+        servicesSql: 'SELECT Id, Name, Price FROM dbo.ServiceItems'
       })
     });
     assert.equal(mappingResponse.status, 200);

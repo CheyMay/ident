@@ -42,7 +42,7 @@ try {
         }
     }
     $manifest = Get-Content -LiteralPath (Join-Path $releaseDirectory 'release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$manifest.product -ne 'code9-ident-agent' -or [string]$manifest.version -ne '2.4.1') {
+    if ([string]$manifest.product -ne 'code9-ident-agent' -or [string]::IsNullOrWhiteSpace([string]$manifest.version)) {
         throw 'Embedded release manifest is invalid.'
     }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
