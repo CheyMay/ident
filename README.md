@@ -12,7 +12,7 @@ Current scope:
 
 - `POST /PostTimeTable` receives the schedule exported by IDENT and stores the latest snapshot.
 - `GET /GetTickets` returns queued appointment requests for IDENT. When configured, it imports eligible amoCRM leads into the queue before returning data.
-- `POST /api/bookings` creates a booking through this service, optionally creates an amoCRM lead, and queues the same booking for IDENT.
+- `POST /api/bookings` creates a booking through this service, optionally creates an amoCRM lead, and queues the same booking for IDENT. Widget calls set `createAmoLead: false` to keep the current lead.
 - `GET /oauth/amocrm/callback` completes amoCRM OAuth installation and stores tokens.
 - `POST /webhooks/amocrm` receives amoCRM lead webhooks and queues changed leads for IDENT.
 - Optional read-only SQL Server access to IDENT DB for pilot schedule/data discovery.
@@ -425,7 +425,7 @@ Do not redirect these endpoints with HTTP 301 or 302. If a redirect is unavoidab
 
 ### `POST /api/bookings`
 
-Creates a local ticket and, when amoCRM is configured, creates an amoCRM lead with a linked contact.
+Creates a local ticket and, by default, creates an amoCRM lead with a linked contact when amoCRM is configured. Pass `createAmoLead: false` when the request comes from an existing amoCRM lead; `requireAmoLead: true` remains available for test flows that must fail unless lead creation succeeds.
 
 If `SERVICE_API_KEY` is set, send it as `X-API-Key`.
 
@@ -438,7 +438,8 @@ If `SERVICE_API_KEY` is set, send it as `X-API-Key`.
   "planEnd": "2026-05-12T11:00:00+03:00",
   "doctorId": 2129,
   "doctorName": "Иванов Виталий Сергеевич",
-  "comment": "Первичная консультация"
+  "comment": "Первичная консультация",
+  "createAmoLead": false
 }
 ```
 

@@ -273,6 +273,51 @@ test('queues booking and returns it through IDENT GetTickets', async () => {
   });
 });
 
+test('queues widget booking without creating a duplicate amoCRM lead', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl, requests }) => {
+    await withTestServer(
+      async ({ baseUrl }) => {
+        const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: 'amo-widget:123:1904:202608160900',
+            dateAndTime: '2026-08-15T18:00:00+03:00',
+            clientFullName: 'Иванов Иван',
+            clientPhone: '+79110001122',
+            planStart: '2026-08-16T09:00:00+03:00',
+            planEnd: '2026-08-16T09:30:00+03:00',
+            doctorId: 1904,
+            doctorName: 'Иванов Иван Иванович',
+            createAmoLead: false
+          })
+        });
+
+        assert.equal(bookingResponse.status, 201);
+        const booking = await bookingResponse.json();
+        assert.equal(booking.ticket.Id, 'amo-widget:123:1904:202608160900');
+        assert.equal(booking.amoLeadId, null);
+        assert.equal(booking.queued, true);
+        assert.equal(booking.status, 'queued');
+        assert.equal(
+          requests.some((request) => request.method === 'POST' && request.url === '/api/v4/leads/complex'),
+          false
+        );
+
+        const queuedResponse = await fetch(`${baseUrl}/api/tickets?status=queued`);
+        const queued = await queuedResponse.json();
+        assert.equal(queued.records.length, 1);
+        assert.equal(queued.records[0].source, 'amo-widget-booking');
+      },
+      {
+        AMOCRM_BASE_URL: amoBaseUrl,
+        AMOCRM_ACCESS_TOKEN: 'token-1',
+        AMOCRM_LONG_LIVED_TOKEN: 'true'
+      }
+    );
+  });
+});
+
 test('does not queue amoCRM test booking before amoCRM authorization', async () => {
   await withTestServer(async ({ baseUrl }) => {
     const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {

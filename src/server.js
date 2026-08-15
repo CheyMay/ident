@@ -420,6 +420,12 @@ export function buildApp(config, logger, options = {}) {
         requireServiceApiKey(req, config);
         const body = await readJson(req);
         const requireAmoLead = body.requireAmoLead === true;
+        const createAmoLead = body.createAmoLead !== false;
+        if (requireAmoLead && !createAmoLead) {
+          return sendJson(res, 400, {
+            error: 'requireAmoLead and createAmoLead=false cannot be used together'
+          });
+        }
         if (requireAmoLead) {
           const token = await tokenStore.get();
           if (!amoClient || !token.accessToken) {
@@ -439,7 +445,7 @@ export function buildApp(config, logger, options = {}) {
         if (!validation.ok) return sendJson(res, 400, { errors: validation.errors });
 
         let amoLead = null;
-        if (amoClient) {
+        if (amoClient && createAmoLead) {
           amoLead = await amoClient.createLeadWithContact(bookingToAmoLead(validation.ticket, config));
           if (amoLead?.id) validation.ticket.Id = `amo:${amoLead.id}`;
         }
@@ -449,14 +455,27 @@ export function buildApp(config, logger, options = {}) {
           });
         }
 
-        await queueTicketWithDedupe({
+        const record = await queueTicketWithDedupe({
           ticketQueue,
           ticket: validation.ticket,
-          meta: { source: amoLead?.id ? 'api-booking-amo' : 'api-booking', amoLeadId: amoLead?.id || null },
+          meta: {
+            source: amoLead?.id ? 'api-booking-amo' : createAmoLead ? 'api-booking' : 'amo-widget-booking',
+            amoLeadId: amoLead?.id || null
+          },
           config
         });
-        logger.info('Booking queued for IDENT', { id: validation.ticket.Id, amoLeadId: amoLead?.id || null });
-        return sendJson(res, 201, { ticket: validation.ticket, amoLeadId: amoLead?.id || null });
+        logger.info('Booking processed for IDENT', {
+          id: validation.ticket.Id,
+          amoLeadId: amoLead?.id || null,
+          status: record.status
+        });
+        return sendJson(res, 201, {
+          ticket: validation.ticket,
+          amoLeadId: amoLead?.id || null,
+          queued: record.status === 'queued',
+          status: record.status,
+          duplicateOf: record.status === 'ignored' ? record.lastError?.replace(/^Duplicate of\s+/, '') || null : null
+        });
       }
 
       if (req.method === 'GET' && url.pathname === '/api/tickets') {
