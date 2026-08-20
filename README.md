@@ -137,6 +137,12 @@ This connector never writes to IDENT DB. It is used to inspect tables, store a
 read-only SQL mapping, and build the same timetable contract that `PostTimeTable`
 uses:
 
+The verified IDENT 2604 mapping is stored in
+`docs/ident-production-mapping.json`. Its doctor query returns every active
+staff member with timetable history, while the interval query remains limited
+to the next 31 days. The optional service query returns the IDENT service ID,
+code, current price, price group, folder, and category used by the booking UI.
+
 ```bash
 curl "https://integration.example.ru/api/ident-db/status" \
   -H "X-API-Key: <SERVICE_API_KEY>"
@@ -488,11 +494,11 @@ Widget/admin endpoints use `X-API-Key: <SERVICE_API_KEY>`:
 - `POST /api/agent/settings`
 
 `POST /api/agent/settings` can include `scheduleMapping` with `doctorsSql`,
-`branchesSql`, and `intervalsSql`. The backend rejects anything except a single
-read-only `SELECT`/`WITH` statement for each query. It stores a mapping revision
-in the desired agent state. On the next heartbeat, the Windows worker validates
-the SQL again, atomically replaces `mapping.local.json`, and requests an
-immediate schedule push.
+`branchesSql`, `intervalsSql`, and optional `servicesSql`. The backend rejects
+anything except a single read-only `SELECT`/`WITH` statement for each query. It
+stores a mapping revision in the desired agent state. On the next heartbeat,
+the Windows worker validates the SQL again, atomically replaces
+`mapping.local.json`, and requests an immediate schedule push.
 
 ### `GET /api/tickets`
 
