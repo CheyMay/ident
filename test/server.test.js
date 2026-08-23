@@ -27,9 +27,13 @@ test('accepts IDENT timetable and exposes free slots', async () => {
     const initialDiagnosticsResponse = await fetch(`${baseUrl}/api/diagnostics`);
     assert.equal(initialDiagnosticsResponse.status, 200);
     const initialDiagnostics = await initialDiagnosticsResponse.json();
-    assert.equal(initialDiagnostics.status, 'warn');
+    assert.equal(initialDiagnostics.status, 'error');
     assert.equal(
       initialDiagnostics.issues.some((issue) => issue.code === 'ident_timetable_missing'),
+      true
+    );
+    assert.equal(
+      initialDiagnostics.issues.some((issue) => issue.code === 'amocrm_oauth_config_incomplete'),
       true
     );
 
@@ -368,6 +372,41 @@ test('accepts trusted amoCRM widget installation callback without OAuth state', 
       }
     );
   });
+});
+
+test('reports missing server OAuth settings before opening authorization', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/oauth/amocrm/url?mode=popup`);
+      assert.equal(response.status, 409);
+      const body = await response.json();
+      assert.equal(body.code, 'AMOCRM_OAUTH_CONFIG_INCOMPLETE');
+      assert.deepEqual(body.missing, ['AMOCRM_CLIENT_ID', 'AMOCRM_CLIENT_SECRET', 'AMOCRM_REDIRECT_URI']);
+      assert.equal(body.expectedRedirectUri, 'https://integration.example/oauth/amocrm/callback');
+    },
+    {
+      PUBLIC_BASE_URL: 'https://integration.example',
+      AMOCRM_BASE_URL: 'https://stomazub.amocrm.ru'
+    }
+  );
+});
+
+test('rejects amoCRM widget callback for another integration client id', async () => {
+  await withTestServer(
+    async ({ baseUrl }) => {
+      const callbackResponse = await fetch(
+        `${baseUrl}/oauth/amocrm/callback?code=widget-code&referer=stomazub.amocrm.ru&client_id=other-client&from_widget=1`
+      );
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /Invalid OAuth state/);
+    },
+    {
+      AMOCRM_BASE_URL: 'https://stomazub.amocrm.ru',
+      AMOCRM_CLIENT_ID: 'client-id',
+      AMOCRM_CLIENT_SECRET: 'client-secret',
+      AMOCRM_REDIRECT_URI: 'https://integration.example/oauth/amocrm/callback'
+    }
+  );
 });
 
 test('rejects amoCRM widget installation callback from another account', async () => {

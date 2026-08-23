@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHmac } from 'node:crypto';
-import { buildAmoAuthorizeUrl, verifyDisconnectSignature } from '../src/amocrm/oauth.js';
+import { buildAmoAuthorizeUrl, getAmoOAuthStatus, verifyDisconnectSignature } from '../src/amocrm/oauth.js';
 import { slotToCatalogElement } from '../src/amocrm/timetable-sync.js';
 import { extractLeadIdsFromWebhook, parseFormEncoded } from '../src/amocrm/webhooks.js';
 import { loadConfig } from '../src/config.js';
@@ -15,6 +15,21 @@ test('builds amoCRM OAuth URL with state', () => {
   assert.equal(url.searchParams.get('client_id'), 'client-1');
   assert.equal(url.searchParams.get('state'), 'state-1');
   assert.equal(url.searchParams.get('mode'), 'post_message');
+});
+
+test('reports incomplete amoCRM OAuth configuration without exposing values', () => {
+  const config = loadConfig({
+    PUBLIC_BASE_URL: 'https://ident.example',
+    AMOCRM_BASE_URL: 'https://clinic.amocrm.ru',
+    AMOCRM_CLIENT_ID: 'client-1'
+  });
+  const status = getAmoOAuthStatus(config);
+
+  assert.equal(status.configured, false);
+  assert.deepEqual(status.missing, ['AMOCRM_CLIENT_SECRET', 'AMOCRM_REDIRECT_URI']);
+  assert.deepEqual(status.missingLabels, ['секрет интеграции', 'Redirect URI']);
+  assert.equal(status.expectedRedirectUri, 'https://ident.example/oauth/amocrm/callback');
+  assert.equal(JSON.stringify(status).includes('client-1'), false);
 });
 
 test('verifies amoCRM disconnect signature', () => {

@@ -3,7 +3,12 @@ import { URL } from 'node:url';
 import { AgentReleaseStore } from './agent-releases.js';
 import { bootstrapAmoDefaults } from './amocrm/bootstrap.js';
 import { AmoClient } from './amocrm/client.js';
-import { buildAmoAuthorizeUrl, OAuthStateStore, verifyDisconnectSignature } from './amocrm/oauth.js';
+import {
+  buildAmoAuthorizeUrl,
+  getAmoOAuthStatus,
+  OAuthStateStore,
+  verifyDisconnectSignature
+} from './amocrm/oauth.js';
 import { buildAmoSchemaReport } from './amocrm/schema.js';
 import { AmoTokenStore } from './amocrm/token-store.js';
 import { syncTimetableToAmoCatalog } from './amocrm/timetable-sync.js';
@@ -562,6 +567,14 @@ export function buildApp(config, logger, options = {}) {
 
       if (req.method === 'GET' && url.pathname === '/oauth/amocrm/url') {
         requireServiceApiKey(req, config);
+        const oauthStatus = getAmoOAuthStatus(config);
+        if (!oauthStatus.configured || !amoClient) {
+          return sendJson(res, 409, {
+            error: formatAmoOAuthConfigError(oauthStatus),
+            code: 'AMOCRM_OAUTH_CONFIG_INCOMPLETE',
+            ...oauthStatus
+          });
+        }
         const state = await oauthStateStore.create();
         return sendJson(res, 200, {
           url: buildAmoAuthorizeUrl(config, state, url.searchParams.get('mode') || 'popup'),
@@ -570,16 +583,36 @@ export function buildApp(config, logger, options = {}) {
         });
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/amocrm/oauth/status') {
+        requireServiceApiKey(req, config);
+        const token = await tokenStore.get();
+        return sendJson(res, 200, {
+          ...getAmoOAuthStatus(config),
+          authorized: Boolean(amoClient && token.accessToken),
+          tokenExpiresAt: token.expiresAt || null,
+          tokenAccountUrl: token.baseUrl || null
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/oauth/amocrm/callback') {
         if (url.searchParams.get('error')) {
           return sendHtml(res, 400, oauthHtml('amoCRM authorization rejected'));
+        }
+        const oauthStatus = getAmoOAuthStatus(config);
+        if (!oauthStatus.configured || !amoClient) {
+          logger.error('amoCRM OAuth callback rejected: server configuration is incomplete', {
+            missing: oauthStatus.missing,
+            referer: normalizeHost(url.searchParams.get('referer')),
+            clientIdPresent: Boolean(url.searchParams.get('client_id'))
+          });
+          return sendHtml(res, 503, oauthHtml(formatAmoOAuthConfigError(oauthStatus)));
         }
         const state = url.searchParams.get('state');
         const stateOk = state
           ? await oauthStateStore.consume(state)
           : isTrustedAmoWidgetCallback(url, config);
         if (!stateOk) return sendHtml(res, 400, oauthHtml('Invalid OAuth state'));
-        if (!amoClient) return sendHtml(res, 500, oauthHtml('amoCRM OAuth is not configured'));
+        if (!url.searchParams.get('code')) return sendHtml(res, 400, oauthHtml('Authorization code is missing'));
 
         const token = await amoClient.exchangeAuthorizationCode({
           code: url.searchParams.get('code'),
@@ -1168,7 +1201,15 @@ function isTrustedAmoWidgetCallback(url, config) {
   if (!url.searchParams.get('from_widget')) return false;
   const expectedHost = normalizeHost(config.amo.baseUrl);
   const refererHost = normalizeHost(url.searchParams.get('referer'));
+  const callbackClientId = url.searchParams.get('client_id');
+  if (callbackClientId && callbackClientId !== config.amo.clientId) return false;
   return Boolean(expectedHost && refererHost && expectedHost === refererHost);
+}
+
+function formatAmoOAuthConfigError(status) {
+  const missing = status.missingLabels?.length ? status.missingLabels.join(', ') : 'параметры OAuth';
+  const callback = status.expectedRedirectUri ? ` Redirect URI: ${status.expectedRedirectUri}.` : '';
+  return `OAuth amoCRM не настроен на сервере. Не заполнены: ${missing}.${callback}`;
 }
 
 function normalizeHost(value) {

@@ -40,6 +40,31 @@ export function buildAmoAuthorizeUrl(config, state, mode = 'popup') {
   return url.toString();
 }
 
+export function getAmoOAuthStatus(config) {
+  const checks = [
+    ['AMOCRM_BASE_URL', 'URL аккаунта amoCRM', config.amo.baseUrl],
+    ['AMOCRM_CLIENT_ID', 'ID интеграции', config.amo.clientId],
+    ['AMOCRM_CLIENT_SECRET', 'секрет интеграции', config.amo.clientSecret],
+    ['AMOCRM_REDIRECT_URI', 'Redirect URI', config.amo.redirectUri]
+  ];
+  const missingChecks = checks.filter(([, , value]) => !String(value || '').trim());
+  const expectedRedirectUri = config.publicBaseUrl
+    ? `${String(config.publicBaseUrl).replace(/\/+$/, '')}/oauth/amocrm/callback`
+    : '';
+
+  return {
+    configured: missingChecks.length === 0,
+    missing: missingChecks.map(([key]) => key),
+    missingLabels: missingChecks.map(([, label]) => label),
+    accountUrl: config.amo.baseUrl || null,
+    redirectUri: config.amo.redirectUri || null,
+    expectedRedirectUri: expectedRedirectUri || null,
+    redirectUriMatchesExpected: Boolean(
+      config.amo.redirectUri && expectedRedirectUri && config.amo.redirectUri === expectedRedirectUri
+    )
+  };
+}
+
 export function verifyDisconnectSignature(query, config) {
   const clientId = query.get('client_id');
   const accountId = query.get('account_id');

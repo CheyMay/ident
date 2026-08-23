@@ -1,3 +1,5 @@
+import { getAmoOAuthStatus } from './amocrm/oauth.js';
+
 export async function buildDiagnostics({
   config,
   storage,
@@ -21,6 +23,7 @@ export async function buildDiagnostics({
 
   const issues = [];
   const amoTokenPresent = Boolean(token.accessToken);
+  const amoOAuthStatus = getAmoOAuthStatus(config);
   const timetableAgeMs = timetable?.receivedAt ? Date.now() - new Date(timetable.receivedAt).getTime() : null;
   const webhookEvents = Array.isArray(webhooks.events) ? webhooks.events : [];
 
@@ -44,6 +47,13 @@ export async function buildDiagnostics({
   );
   addIssue(issues, tickets.statuses.failed > 0, 'error', 'tickets_failed', 'There are failed IDENT tickets');
   addIssue(issues, jobs.statuses.failed > 0, 'error', 'jobs_failed', 'There are failed integration jobs');
+  addIssue(
+    issues,
+    !amoOAuthStatus.configured,
+    'error',
+    'amocrm_oauth_config_incomplete',
+    `amoCRM OAuth settings are incomplete: ${amoOAuthStatus.missing.join(', ')}`
+  );
   addIssue(
     issues,
     Boolean(amoClient) && !amoTokenPresent,
@@ -144,7 +154,12 @@ export async function buildDiagnostics({
     },
     amoCRM: {
       clientConfigured: Boolean(amoClient),
-      oauthConfigured: Boolean(config.amo.clientId && config.amo.clientSecret && config.amo.redirectUri),
+      oauthConfigured: amoOAuthStatus.configured,
+      oauthMissing: amoOAuthStatus.missingLabels,
+      oauthMissingKeys: amoOAuthStatus.missing,
+      oauthRedirectUri: amoOAuthStatus.redirectUri,
+      oauthExpectedRedirectUri: amoOAuthStatus.expectedRedirectUri,
+      oauthRedirectUriMatchesExpected: amoOAuthStatus.redirectUriMatchesExpected,
       tokenPresent: amoTokenPresent,
       tokenExpiresAt: token.expiresAt || null,
       baseUrl: token.baseUrl || config.amo.baseUrl || null,
