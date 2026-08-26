@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.7.0'
+$releaseVersion = '2.7.1'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -31,6 +31,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $releaseStagingDirectory 'r
 $payloadFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
+    'IdentSupervisor.ps1',
     'IdentDesktop.ps1',
     'Apply-IdentAgentUpdate.ps1',
     'Setup-IdentAgent.ps1',
@@ -51,10 +52,11 @@ Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destinati
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.7.0: read-only service catalog export for amoCRM booking preparation'
+    notes = 'Code9 IDENT Desktop 2.7.1: watchdog recovery, bounded child operations and responsive status UI'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
+        @{ source = 'IdentSupervisor.ps1'; destination = 'IdentSupervisor.ps1' },
         @{ source = 'IdentDesktop.ps1'; destination = 'IdentDesktop.ps1' },
         @{ source = 'Apply-IdentAgentUpdate.ps1'; destination = 'Apply-IdentAgentUpdate.ps1' },
         @{ source = 'Setup-IdentAgent.ps1'; destination = 'Setup-IdentAgent.ps1' },

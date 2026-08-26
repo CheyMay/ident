@@ -62,8 +62,8 @@ function Install-StartupShortcuts {
     New-Item -ItemType Directory -Force -Path $startupDirectory | Out-Null
     New-PowerShellShortcut `
         -ShortcutPath (Join-Path $startupDirectory 'Code9 IDENT Agent.lnk') `
-        -ScriptPath (Join-Path $Directory 'IdentWorker.ps1') `
-        -Arguments "-ConfigPath `"$ConfigFile`"" `
+        -ScriptPath (Join-Path $Directory 'IdentSupervisor.ps1') `
+        -Arguments "-ConfigPath `"$ConfigFile`" -WorkerScriptPath `"$(Join-Path $Directory 'IdentWorker.ps1')`"" `
         -WindowStyle 7
     New-PowerShellShortcut `
         -ShortcutPath (Join-Path $startupDirectory 'Code9 IDENT Agent Status.lnk') `
@@ -86,6 +86,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDirectory 'robot') 
 $runtimeFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
+    'IdentSupervisor.ps1',
     'IdentDesktop.ps1',
     'Apply-IdentAgentUpdate.ps1',
     'Install-IdentAgentTask.ps1',
@@ -154,7 +155,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.7.0'
+        version = '2.7.1'
     }
     features = [ordered]@{
         scheduleEnabled = $true
@@ -249,7 +250,7 @@ if (-not $SkipAutostart) {
         Start-Process `
             -FilePath 'powershell.exe' `
             -WindowStyle Hidden `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentWorker.ps1')`" -ConfigPath `"$configPath`""
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentSupervisor.ps1')`" -ConfigPath `"$configPath`" -WorkerScriptPath `"$(Join-Path $InstallDirectory 'IdentWorker.ps1')`""
         $autostartMode = 'startup folder'
     }
 }

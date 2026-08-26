@@ -179,6 +179,8 @@ $script:AgentKey = if ($null -ne $secrets -and $secrets.PSObject.Properties.Name
 }
 $script:StatePath = Resolve-LocalPath -BaseDirectory $script:BaseDirectory -Value ([string]$script:Config.paths.runtimeState)
 $script:CommandDirectory = Resolve-LocalPath -BaseDirectory $script:BaseDirectory -Value ([string]$script:Config.paths.commandDirectory)
+$script:SupervisorStatePath = Join-Path $script:BaseDirectory 'supervisor-state.json'
+$script:RestartRequestPath = Join-Path $script:CommandDirectory 'restart-worker'
 $script:RobotConfigPath = Resolve-LocalPath -BaseDirectory $script:BaseDirectory -Value ([string]$script:Config.paths.robotConfig)
 $script:Refreshing = $false
 $script:AllowClose = $false
@@ -318,21 +320,27 @@ function Request-SchedulePush {
 function Refresh-Status {
     $state = Read-JsonFile -Path $script:StatePath
     $currentConfig = Read-JsonFile -Path $ConfigPath
+    $supervisorState = Read-JsonFile -Path $script:SupervisorStatePath
     $workerOnline = $false
+    $supervisorOnline = $false
     if ($null -ne $state) {
         $updated = [DateTimeOffset]::MinValue
         if ([DateTimeOffset]::TryParse([string]$state.updatedAt, [ref]$updated)) {
             $workerOnline = (([DateTimeOffset]::Now - $updated).TotalSeconds -le 15)
         }
     }
+    if ($null -ne $supervisorState) {
+        $supervisorUpdated = [DateTimeOffset]::MinValue
+        if ([DateTimeOffset]::TryParse([string]$supervisorState.updatedAt, [ref]$supervisorUpdated)) {
+            $supervisorOnline = (([DateTimeOffset]::Now - $supervisorUpdated).TotalSeconds -le 20)
+        }
+    }
 
     $workerLabel.Text = 'Фоновая служба: ' + $(if ($workerOnline) { 'работает' } else { 'не отвечает' })
     $workerLabel.ForeColor = $(if ($workerOnline) { [Drawing.Color]::FromArgb(31, 106, 51) } else { [Drawing.Color]::FromArgb(157, 35, 32) })
 
-    $workerTask = Get-ScheduledTask -TaskName 'Code9 IDENT Agent' -ErrorAction SilentlyContinue
-    $desktopTask = Get-ScheduledTask -TaskName 'Code9 IDENT Agent Status' -ErrorAction SilentlyContinue
-    $autostartOk = ($null -ne $workerTask -and $null -ne $desktopTask)
-    $autostartLabel.Text = 'Автозапуск при входе в Windows: ' + $(if ($autostartOk) { 'включен' } else { 'не установлен' })
+    $autostartLabel.Text = 'Самовосстановление и автозапуск: ' + $(if ($supervisorOnline) { 'работает' } else { 'не отвечает' })
+    $autostartLabel.ForeColor = $(if ($supervisorOnline) { [Drawing.Color]::FromArgb(31, 106, 51) } else { [Drawing.Color]::FromArgb(157, 35, 32) })
     if ($null -ne $currentConfig) {
         $sqlAddress = [string]$currentConfig.sql.server
         if ([int]$currentConfig.sql.port -gt 0) {
@@ -453,8 +461,9 @@ $sqlButton.Add_Click({
 })
 $restartButton.Add_Click({
     try {
-        Stop-ScheduledTask -TaskName 'Code9 IDENT Agent' -ErrorAction SilentlyContinue
-        Start-ScheduledTask -TaskName 'Code9 IDENT Agent'
+        New-Item -ItemType Directory -Force -Path $script:CommandDirectory | Out-Null
+        New-Item -ItemType File -Force -Path $script:RestartRequestPath | Out-Null
+        $workerLabel.Text = 'Фоновая служба: перезапускается...'
         $errorLabel.Text = ''
     }
     catch {
@@ -484,9 +493,16 @@ $form.Add_FormClosing({
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 3000
-$timer.Add_Tick({ Refresh-Status })
+$timer.Add_Tick({
+    try {
+        Refresh-Status
+    }
+    catch {
+        $errorLabel.Text = $_.Exception.Message
+    }
+})
 $timer.Start()
-Refresh-Status
+try { Refresh-Status } catch { $errorLabel.Text = $_.Exception.Message }
 
 if ($StartMinimized) {
     $form.Add_Shown({ $form.Hide() })

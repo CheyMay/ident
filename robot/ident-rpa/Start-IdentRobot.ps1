@@ -180,6 +180,18 @@ function Get-IdentWindow {
 
 function Format-Bounds {
   param([System.Windows.Rect]$Rect)
+
+  $values = @($Rect.X, $Rect.Y, $Rect.Width, $Rect.Height)
+  $invalid = $Rect.IsEmpty -or @($values | Where-Object {
+      [double]::IsNaN([double]$_) -or
+      [double]::IsInfinity([double]$_) -or
+      [double]$_ -gt [int]::MaxValue -or
+      [double]$_ -lt [int]::MinValue
+    }).Count -gt 0
+  if ($invalid) {
+    return ''
+  }
+
   return ('{0},{1},{2},{3}' -f [int]$Rect.X, [int]$Rect.Y, [int]$Rect.Width, [int]$Rect.Height)
 }
 

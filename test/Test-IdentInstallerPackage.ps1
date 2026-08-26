@@ -36,7 +36,7 @@ try {
     $releaseDirectory = Join-Path $testRoot 'release'
     [IO.Compression.ZipFile]::ExtractToDirectory($releasePath, $releaseDirectory)
 
-    foreach ($required in @('release.json', 'Setup-IdentAgent.ps1', 'IdentWorker.ps1', 'Apply-IdentAgentUpdate.ps1')) {
+    foreach ($required in @('release.json', 'Setup-IdentAgent.ps1', 'IdentWorker.ps1', 'IdentSupervisor.ps1', 'Apply-IdentAgentUpdate.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $releaseDirectory $required) -PathType Leaf)) {
             throw "Embedded payload is missing $required"
         }

@@ -7,18 +7,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workerPath = Join-Path $InstallDirectory 'IdentWorker.ps1'
+$supervisorPath = Join-Path $InstallDirectory 'IdentSupervisor.ps1'
 $desktopPath = Join-Path $InstallDirectory 'IdentDesktop.ps1'
 $configPath = Join-Path $InstallDirectory 'config.local.json'
 
 if (
     -not (Test-Path -LiteralPath $workerPath) -or
+    -not (Test-Path -LiteralPath $supervisorPath) -or
     -not (Test-Path -LiteralPath $desktopPath) -or
     -not (Test-Path -LiteralPath $configPath)
 ) {
     throw 'Agent is not installed. Run 1-Setup.cmd first.'
 }
 
-$workerArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$workerPath`" -ConfigPath `"$configPath`""
+$workerArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$supervisorPath`" -ConfigPath `"$configPath`" -WorkerScriptPath `"$workerPath`""
 $workerAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArguments
 $desktopArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$desktopPath`" -ConfigPath `"$configPath`" -StartMinimized"
 $desktopAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $desktopArguments
@@ -31,8 +33,9 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -RestartCount 20 `
+    -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew
 
 Register-ScheduledTask `

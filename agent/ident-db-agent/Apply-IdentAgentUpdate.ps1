@@ -180,18 +180,9 @@ try {
     Write-UpdateStatus -Status 'succeeded' -Message 'Update installed successfully.' -CurrentVersion $ExpectedVersion
 
     if (-not $TestMode) {
-        $workerTask = Get-ScheduledTask -TaskName $WorkerTaskName -ErrorAction SilentlyContinue
-        if ($null -eq $workerTask) {
-            & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') -InstallDirectory $InstallDirectory
-        }
-        else {
-            $workerScript = Join-Path $InstallDirectory 'IdentWorker.ps1'
-            $workerArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$workerScript`" -ConfigPath `"$configPath`""
-            Start-Process `
-                -FilePath 'powershell.exe' `
-                -ArgumentList $workerArguments `
-                -WindowStyle Hidden
-        }
+        & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') `
+            -InstallDirectory $InstallDirectory `
+            -WorkerTaskName $WorkerTaskName
     }
 }
 catch {

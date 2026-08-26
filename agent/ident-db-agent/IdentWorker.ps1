@@ -136,6 +136,62 @@ function Move-FileWithRetry {
     }
 }
 
+function Invoke-PowerShellChildProcess {
+    param(
+        [string]$Arguments,
+        [int]$TimeoutSeconds,
+        [string]$Label
+    )
+
+    $processInfo = New-Object Diagnostics.ProcessStartInfo
+    $processInfo.FileName = 'powershell.exe'
+    $processInfo.Arguments = $Arguments
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $processInfo
+    try {
+        if (-not $process.Start()) {
+            throw "$Label could not be started."
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+        while (-not $process.WaitForExit(2000) -and (Get-Date) -lt $deadline) {
+            if ($null -ne $script:State -and $null -ne $script:Context) {
+                Write-RuntimeState
+            }
+        }
+        if (-not $process.HasExited) {
+            try {
+                $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+                [void](Start-Process `
+                    -FilePath $taskkill `
+                    -ArgumentList @('/PID', [string]$process.Id, '/T', '/F') `
+                    -WindowStyle Hidden `
+                    -Wait `
+                    -PassThru)
+            }
+            catch {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            throw "$Label exceeded $TimeoutSeconds seconds and was stopped."
+        }
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Output = (@($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Write-RuntimeState {
     $script:State.updatedAt = (Get-Date).ToString('o')
     $directory = Split-Path -Parent $script:Context.StatePath
@@ -419,6 +475,27 @@ function Invoke-RemoteSqlDiscovery {
     Send-AgentDiagnostics
 }
 
+function Test-SupervisorActive {
+    $statePath = Join-Path $script:Context.BaseDirectory 'supervisor-state.json'
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        return $false
+    }
+    try {
+        $state = Read-JsonFile -Path $statePath
+        $updatedAt = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string]$state.updatedAt, [ref]$updatedAt)) {
+            return $false
+        }
+        if (([DateTimeOffset]::Now - $updatedAt).TotalSeconds -gt 30) {
+            return $false
+        }
+        return $null -ne (Get-Process -Id ([int]$state.processId) -ErrorAction SilentlyContinue)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Request-RemoteRestart {
     param([string]$Revision)
 
@@ -430,14 +507,16 @@ function Request-RemoteRestart {
     $script:State.diagnostics.state = 'restarting'
     Write-RuntimeState
 
-    $workerPath = (Join-Path $script:Context.BaseDirectory 'IdentWorker.ps1').Replace("'", "''")
-    $workerConfigPath = $script:Context.ConfigPath.Replace("'", "''")
-    $launcher = "Start-Sleep -Seconds 5; Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','$workerPath','-ConfigPath','$workerConfigPath')"
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcher))
-    Start-Process `
-        -FilePath 'powershell.exe' `
-        -WindowStyle Hidden `
-        -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded"
+    if (-not (Test-SupervisorActive)) {
+        $workerPath = (Join-Path $script:Context.BaseDirectory 'IdentWorker.ps1').Replace("'", "''")
+        $workerConfigPath = $script:Context.ConfigPath.Replace("'", "''")
+        $launcher = "Start-Sleep -Seconds 5; Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','$workerPath','-ConfigPath','$workerConfigPath')"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcher))
+        Start-Process `
+            -FilePath 'powershell.exe' `
+            -WindowStyle Hidden `
+            -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded"
+    }
     $script:StopRequested = $true
 }
 
@@ -879,18 +958,15 @@ function Invoke-SchemaUpload {
         Write-RuntimeState
         try {
             $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
-            $output = @(& powershell.exe `
-                -NoProfile `
-                -NonInteractive `
-                -ExecutionPolicy Bypass `
-                -File $agentScript `
-                -ConfigPath $script:Context.ConfigPath `
-                -ExportSchema `
-                -NonInteractive 2>&1)
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-                $outputText = ($output | Select-Object -Last 12 | Out-String).Trim()
-                throw "Schema export exited with code $exitCode. $outputText"
+            $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$agentScript`" " +
+                "-ConfigPath `"$($script:Context.ConfigPath)`" -ExportSchema -NonInteractive"
+            $processResult = Invoke-PowerShellChildProcess `
+                -Arguments $arguments `
+                -TimeoutSeconds 120 `
+                -Label 'Schema export'
+            if ($processResult.ExitCode -ne 0) {
+                $outputText = (($processResult.Output.Trim() -split '\r?\n') | Select-Object -Last 12 | Out-String).Trim()
+                throw "Schema export exited with code $($processResult.ExitCode). $outputText"
             }
         }
         catch {
@@ -950,14 +1026,23 @@ function Invoke-SchedulePush {
     Write-RuntimeState
 
     $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
-    $output = & powershell.exe `
-        -NoProfile `
-        -WindowStyle Hidden `
-        -ExecutionPolicy Bypass `
-        -File $agentScript `
-        -ConfigPath $script:Context.ConfigPath `
-        -Push 2>&1 | Out-String
-    $exitCode = $LASTEXITCODE
+    try {
+        $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$agentScript`" " +
+            "-ConfigPath `"$($script:Context.ConfigPath)`" -Push"
+        $processResult = Invoke-PowerShellChildProcess `
+            -Arguments $arguments `
+            -TimeoutSeconds 120 `
+            -Label 'Schedule export'
+        $output = [string]$processResult.Output
+        $exitCode = [int]$processResult.ExitCode
+    }
+    catch {
+        $script:State.schedule.state = 'error'
+        $script:State.schedule.lastError = $_.Exception.Message
+        Write-WorkerLog -Level 'error' -EventName 'schedule_failed' -Data @{ message = $_.Exception.Message; timedOut = $true }
+        Write-RuntimeState
+        return
+    }
 
     if ($exitCode -ne 0) {
         $message = ($output.Trim() -split '\r?\n' | Select-Object -Last 1)
@@ -1106,16 +1191,15 @@ function Invoke-RobotPoll {
         $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $taskPath -Encoding UTF8
         $robotScript = Join-Path $script:Context.BaseDirectory 'robot\Start-IdentRobot.ps1'
         try {
-            $output = & powershell.exe `
-                -NoProfile `
-                -ExecutionPolicy Bypass `
-                -File $robotScript `
-                -Mode RunOnce `
-                -ConfigPath $script:Context.RobotConfigPath `
-                -TaskFile $taskPath `
-                -MaxTasks 1 `
-                -Execute 2>&1 | Out-String
-            $exitCode = $LASTEXITCODE
+            $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$robotScript`" " +
+                "-Mode RunOnce -ConfigPath `"$($script:Context.RobotConfigPath)`" " +
+                "-TaskFile `"$taskPath`" -MaxTasks 1 -Execute"
+            $processResult = Invoke-PowerShellChildProcess `
+                -Arguments $arguments `
+                -TimeoutSeconds 120 `
+                -Label 'Robot execution'
+            $output = [string]$processResult.Output
+            $exitCode = [int]$processResult.ExitCode
         }
         finally {
             if (Test-Path -LiteralPath $taskPath) {
