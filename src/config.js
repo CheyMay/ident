@@ -44,7 +44,10 @@ export function loadConfig(env = loadEnv()) {
       windowMinutes: intFromEnv(env.IDENT_DEDUPE_WINDOW_MINUTES, 43_200)
     },
     ident: {
-      requireDoctorMapping: parseBool(env.IDENT_REQUIRE_DOCTOR_MAPPING, false)
+      requireDoctorMapping: parseBool(env.IDENT_REQUIRE_DOCTOR_MAPPING, false),
+      timetableMaxAgeMinutes: intFromEnv(env.IDENT_TIMETABLE_MAX_AGE_MINUTES, 30),
+      reservationMinutes: intFromEnv(env.IDENT_RESERVATION_MINUTES, 720),
+      robotFailureHoldMinutes: intFromEnv(env.IDENT_ROBOT_FAILURE_HOLD_MINUTES, 60)
     },
     identDb: {
       enabled: parseBool(env.IDENT_DB_ENABLED, false),

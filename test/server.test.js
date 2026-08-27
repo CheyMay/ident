@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test, { after, before } from 'node:test';
 import { loadConfig } from '../src/config.js';
@@ -375,6 +375,44 @@ test('atomically rejects a second booking for the same reserved slot', async () 
     const schedule = await (await fetch(`${baseUrl}/api/timetable`)).json();
     assert.equal(schedule.Intervals.filter((item) => item.IsReserved).length, 1);
     assert.equal(schedule.Intervals.find((item) => item.IsReserved).IsBusy, true);
+  });
+});
+
+test('rejects a booking based on a stale IDENT timetable', async () => {
+  await withTestServer(async ({ baseUrl, dataDir }) => {
+    await postTestTimetable(baseUrl, {
+      doctorId: 1904,
+      doctorName: 'Иванов Иван Иванович',
+      start: '2026-09-01T10:00:00+03:00',
+      length: 60
+    });
+    const timetablePath = path.join(dataDir, 'timetable.json');
+    const timetable = JSON.parse(await readFile(timetablePath, 'utf8'));
+    timetable.receivedAt = '2020-01-01T00:00:00.000Z';
+    await writeFile(timetablePath, JSON.stringify(timetable), 'utf8');
+
+    const response = await fetch(`${baseUrl}/api/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'stale-booking',
+        clientFullName: 'Иванов Иван',
+        clientPhone: '+79110001123',
+        planStart: '2026-09-01T10:00:00+03:00',
+        durationMinutes: 30,
+        doctorId: 1904,
+        doctorName: 'Иванов Иван Иванович',
+        branchId: 1,
+        createAmoLead: false
+      })
+    });
+
+    assert.equal(response.status, 409);
+    assert.match(await response.text(), /давно не обновлялось/);
+    assert.equal((await (await fetch(`${baseUrl}/api/tickets/summary`)).json()).total, 0);
+    const diagnostics = await (await fetch(`${baseUrl}/api/diagnostics`)).json();
+    assert.equal(diagnostics.status, 'error');
+    assert.equal(diagnostics.issues.some((issue) => issue.code === 'ident_timetable_stale'), true);
   });
 });
 

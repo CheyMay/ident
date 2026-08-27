@@ -5,7 +5,8 @@ import {
   createReservation,
   overlayReservations,
   reconcileReservations,
-  SlotUnavailableError
+  SlotUnavailableError,
+  TimetableStaleError
 } from '../src/ident/slot-reservations.js';
 
 function timetable(intervals = null) {
@@ -86,4 +87,17 @@ test('reconciles reservation after refreshed IDENT timetable confirms busy segme
   assert.equal(reconcileReservations([record], timetable(busy), new Date('2026-08-27T10:02:00Z')), true);
   assert.equal(record.reservation.status, 'confirmed');
   assert.equal(record.reservation.releaseReason, 'confirmed_by_timetable');
+});
+
+test('rejects a booking when the IDENT timetable is stale', () => {
+  assert.throws(
+    () => assertBookableWindow({
+      timetable: timetable(),
+      ticket: ticket(),
+      branchId: 20,
+      maxTimetableAgeMinutes: 30,
+      now: new Date('2026-08-27T11:00:01Z')
+    }),
+    TimetableStaleError
+  );
 });

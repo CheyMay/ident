@@ -39,12 +39,33 @@ namespace Code9IdentRobot {
     [DllImport("user32.dll")]
     private static extern bool GetLastInputInfo(ref LASTINPUTINFO input);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+    [DllImport("user32.dll")]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
+    [DllImport("user32.dll")]
+    private static extern bool SwitchDesktop(IntPtr desktop);
+
     public static int IdleSeconds() {
       var input = new LASTINPUTINFO();
       input.cbSize = (uint)Marshal.SizeOf(input);
       if (!GetLastInputInfo(ref input)) return 0;
       var elapsed = unchecked((uint)Environment.TickCount - input.dwTime);
       return (int)(elapsed / 1000);
+    }
+
+    public static bool InteractiveDesktopAvailable() {
+      const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+      var desktop = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+      if (desktop == IntPtr.Zero) return false;
+      try {
+        return SwitchDesktop(desktop);
+      }
+      finally {
+        CloseDesktop(desktop);
+      }
     }
   }
 }
@@ -103,6 +124,18 @@ function Assert-UserIdle {
     Write-Host "ROBOT_DEFER_USER_ACTIVE idle=$idleSeconds required=$MinimumSeconds"
     throw 'ROBOT_DEFER_USER_ACTIVE'
   }
+}
+
+function Assert-InteractiveDesktop {
+  try {
+    if ([Code9IdentRobot.NativeInput]::InteractiveDesktopAvailable()) {
+      return
+    }
+  }
+  catch {
+  }
+  Write-Host 'ROBOT_DEFER_SESSION_LOCKED'
+  throw 'ROBOT_DEFER_SESSION_LOCKED'
 }
 
 function Write-RobotLog {
@@ -539,10 +572,12 @@ function Invoke-Workflow {
     throw 'Real UI execution is disabled. Set workflow.allowUnsafeExecution=true in a local config and pass -Execute.'
   }
 
+  Assert-InteractiveDesktop
   Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
   $saveInvoked = $false
   foreach ($step in @($Config.workflow.steps)) {
     if (-not $saveInvoked) {
+      Assert-InteractiveDesktop
       Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
     }
     $selector = $Config.selectors.($step.selector)
@@ -584,8 +619,22 @@ function Invoke-Workflow {
   Write-RobotLog $Config 'info' 'IDENT save operation verified' @{ id = $Task.id }
 }
 
-$config = Read-JsonFile $ConfigPath
-$windowInfo = Get-IdentWindow $config
+$robotMutex = New-Object Threading.Mutex($false, 'Local\Code9IdentRobotExecution')
+$ownsRobotMutex = $false
+try {
+  try {
+    $ownsRobotMutex = $robotMutex.WaitOne(0)
+  }
+  catch [Threading.AbandonedMutexException] {
+    $ownsRobotMutex = $true
+  }
+  if (-not $ownsRobotMutex) {
+    Write-Host 'ROBOT_DEFER_BUSY'
+    exit 75
+  }
+
+  $config = Read-JsonFile $ConfigPath
+  $windowInfo = Get-IdentWindow $config
 
 if ($Mode -eq 'Inspect') {
   if (-not $windowInfo) {
@@ -623,16 +672,23 @@ if (-not $windowInfo) {
   throw 'IDENT window was not found. Start IDENT and check ident.processName/windowTitleRegex in config.'
 }
 
-do {
-  foreach ($task in $tasks) {
-    Invoke-Workflow $windowInfo $task $config ([bool]($Execute -and ($Mode -in @('RunOnce', 'Loop'))))
-  }
+  do {
+    foreach ($task in $tasks) {
+      Invoke-Workflow $windowInfo $task $config ([bool]($Execute -and ($Mode -in @('RunOnce', 'Loop'))))
+    }
 
-  if ($Mode -ne 'Loop') {
-    break
-  }
+    if ($Mode -ne 'Loop') {
+      break
+    }
 
-  $pollInterval = if ($config.pollIntervalSeconds) { [int]$config.pollIntervalSeconds } else { 30 }
-  Start-Sleep -Seconds $pollInterval
-  $tasks = @(Get-RobotTasks $config $TaskFile $MaxTasks)
-} while ($true)
+    $pollInterval = if ($config.pollIntervalSeconds) { [int]$config.pollIntervalSeconds } else { 30 }
+    Start-Sleep -Seconds $pollInterval
+    $tasks = @(Get-RobotTasks $config $TaskFile $MaxTasks)
+  } while ($true)
+}
+finally {
+  if ($ownsRobotMutex) {
+    $robotMutex.ReleaseMutex()
+  }
+  $robotMutex.Dispose()
+}

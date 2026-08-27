@@ -121,7 +121,7 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.8.0-test' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.9.0-test' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
         robot = @{ minUserIdleSeconds = 60 }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }
@@ -255,7 +255,9 @@ server.listen(port, "127.0.0.1");
     }
 
     $previousTestIdle = $env:CODE9_IDENT_TEST_IDLE_SECONDS
+    $previousTestDesktop = $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP
     $env:CODE9_IDENT_TEST_IDLE_SECONDS = '600'
+    $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP = '1'
     $worker = Start-Process powershell.exe -ArgumentList @(
         '-NoProfile',
         '-ExecutionPolicy',
@@ -266,6 +268,7 @@ server.listen(port, "127.0.0.1");
         (Join-Path $tempRoot 'config.json')
     ) -WindowStyle Hidden -PassThru
     $env:CODE9_IDENT_TEST_IDLE_SECONDS = $previousTestIdle
+    $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP = $previousTestDesktop
 
     $status = $null
     for ($attempt = 0; $attempt -lt 28; $attempt++) {

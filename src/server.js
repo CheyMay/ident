@@ -50,7 +50,11 @@ import {
 export function buildApp(config, logger, options = {}) {
   const baseConfig = structuredClone(config);
   const storage = createStorage(config, logger);
-  const ticketQueue = new TicketQueue(storage);
+  const ticketQueue = new TicketQueue(storage, {
+    timetableMaxAgeMinutes: config.ident.timetableMaxAgeMinutes,
+    reservationMinutes: config.ident.reservationMinutes,
+    robotFailureHoldMinutes: config.ident.robotFailureHoldMinutes
+  });
   const jobQueue = new IntegrationJobQueue(storage);
   const mappingStore = new MappingStore(storage);
   const slotStore = new AmoSlotStore(storage);
@@ -910,7 +914,8 @@ async function queueTicketWithDedupe({
       branchId,
       dedupeEnabled: Boolean(config.dedupe?.enabled),
       dedupeWindowMinutes: config.dedupe?.windowMinutes,
-      holdMinutes: 30
+      holdMinutes: config.ident.reservationMinutes,
+      maxTimetableAgeMinutes: config.ident.timetableMaxAgeMinutes
     });
   }
   if (!config.dedupe?.enabled) return ticketQueue.upsert(ticket, meta);

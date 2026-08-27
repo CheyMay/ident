@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
   assertBookableWindow,
+  assertTimetableFresh,
   blockingReservation,
   createReservation,
   extendReservation,
@@ -120,10 +121,13 @@ export class SqliteStorage {
 }
 
 export class TicketQueue {
-  constructor(storage) {
+  constructor(storage, options = {}) {
     this.storage = storage;
     this.fileName = 'tickets.json';
     this.mutationChain = Promise.resolve();
+    this.reservationMinutes = positiveNumber(options.reservationMinutes, 720);
+    this.robotFailureHoldMinutes = positiveNumber(options.robotFailureHoldMinutes, 60);
+    this.timetableMaxAgeMinutes = nonNegativeNumber(options.timetableMaxAgeMinutes, 30);
   }
 
   async records() {
@@ -228,13 +232,14 @@ export class TicketQueue {
         ticket,
         branchId,
         records,
-        excludeId: ticket.Id
+        excludeId: ticket.Id,
+        maxTimetableAgeMinutes: options.maxTimetableAgeMinutes ?? this.timetableMaxAgeMinutes
       });
       const result = this.upsertIntoRecords(records, ticket, meta);
       const storedRecord = records.find((record) => record.id === ticket.Id);
       storedRecord.branchId = branchId;
       storedRecord.reservation = createReservation(ticket, branchId, {
-        holdMinutes: options.holdMinutes
+        holdMinutes: options.holdMinutes ?? this.reservationMinutes
       });
       result.reservation = storedRecord.reservation;
       await this.writeRecords(records);
@@ -371,7 +376,7 @@ export class TicketQueue {
     record.robotCompletedAt = null;
     record.robotResult = null;
     if (record.reservation) {
-      extendReservation(record.reservation, new Date(Date.now() + 30 * 60_000), 'active');
+      extendReservation(record.reservation, this.reservationDeadline(), 'active');
     }
     await this.writeRecords(records);
     return record;
@@ -390,7 +395,7 @@ export class TicketQueue {
       record.robotClaimedAt = null;
       record.robotLeaseUntil = null;
       record.updatedAt = now.toISOString();
-      if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+      if (record.reservation) extendReservation(record.reservation, this.reservationDeadline(now), 'active');
       released += 1;
     }
     if (released) await this.writeRecords(records);
@@ -413,14 +418,20 @@ export class TicketQueue {
           record.robotClaimedAt = null;
           record.robotLeaseUntil = null;
           record.updatedAt = now.toISOString();
-          if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+          if (record.reservation) extendReservation(record.reservation, this.reservationDeadline(now), 'active');
         }
       }
 
-      reconcileSlotReservations(records, timetable, now);
       const candidates = records
         .filter((item) => item.status === 'queued')
         .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt));
+      if (!candidates.length) {
+        await this.writeRecords(records);
+        return null;
+      }
+
+      assertTimetableFresh(timetable, this.timetableMaxAgeMinutes, now);
+      reconcileSlotReservations(records, timetable, now);
       let record = null;
       if (timetable && Array.isArray(timetable.Intervals)) {
         for (const candidate of candidates) {
@@ -430,14 +441,16 @@ export class TicketQueue {
               ticket: candidate.ticket,
               branchId: candidate.branchId,
               records,
-              excludeId: candidate.id
+              excludeId: candidate.id,
+              maxTimetableAgeMinutes: this.timetableMaxAgeMinutes,
+              now
             });
             if (blockingReservation(candidate, now)) {
-              extendReservation(candidate.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+              extendReservation(candidate.reservation, this.reservationDeadline(now), 'active');
             } else {
               candidate.reservation = createReservation(candidate.ticket, candidate.branchId, {
                 now,
-                holdMinutes: 30
+                holdMinutes: this.reservationMinutes
               });
             }
             record = candidate;
@@ -500,7 +513,13 @@ export class TicketQueue {
       record.robotLeaseUntil = null;
       record.updatedAt = now;
       record.lastError = String(errorMessage || 'Robot failed');
-      if (record.reservation) releaseReservation(record.reservation, new Date(), 'robot_failed');
+      if (record.reservation) {
+        extendReservation(
+          record.reservation,
+          new Date(Date.now() + this.robotFailureHoldMinutes * 60_000),
+          'awaiting_review'
+        );
+      }
       await this.writeRecords(records);
       return record;
     });
@@ -519,7 +538,7 @@ export class TicketQueue {
       record.robotClaimedAt = null;
       record.robotLeaseUntil = null;
       record.lastError = String(reason || 'Robot execution deferred');
-      if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+      if (record.reservation) extendReservation(record.reservation, this.reservationDeadline(now), 'active');
       await this.writeRecords(records);
       return record;
     });
@@ -528,6 +547,20 @@ export class TicketQueue {
   async writeRecords(records) {
     await this.storage.writeJson(this.fileName, { updatedAt: new Date().toISOString(), records });
   }
+
+  reservationDeadline(now = new Date()) {
+    return new Date(now.getTime() + this.reservationMinutes * 60_000);
+  }
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 export class AgentStatusStore {

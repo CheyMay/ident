@@ -143,6 +143,49 @@ test('job queue retries failed jobs with backoff and manual retry', async () => 
   }
 });
 
+test('robot failure keeps the slot quarantined for operator review', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const queue = new TicketQueue(storage, {
+    timetableMaxAgeMinutes: 30,
+    reservationMinutes: 720,
+    robotFailureHoldMinutes: 60
+  });
+  const timetable = {
+    receivedAt: new Date().toISOString(),
+    Doctors: [{ Id: 10, Name: 'Doctor' }],
+    Branches: [{ Id: 20, Name: 'Clinic' }],
+    Intervals: [0, 15, 30].map((minute) => ({
+      DoctorId: 10,
+      BranchId: 20,
+      StartDateTime: `2026-09-01T10:${String(minute).padStart(2, '0')}:00+03:00`,
+      LengthInMinutes: 15,
+      IsBusy: false
+    }))
+  };
+  const ticket = {
+    Id: 'robot-review-1',
+    DoctorId: 10,
+    PlanStart: '2026-09-01T10:00:00+03:00',
+    PlanEnd: '2026-09-01T10:45:00+03:00'
+  };
+
+  try {
+    await queue.reserveAndUpsert(ticket, { status: 'queued' }, { timetable, branchId: 20 });
+    const claimed = await queue.claimForRobot('clinic-agent', 300, timetable);
+    assert.equal(claimed.status, 'robot_processing');
+    await queue.failRobot(ticket.Id, 'clinic-agent', 'selector not found');
+
+    const [record] = await queue.listRecords({ status: 'robot_failed' });
+    assert.equal(record.reservation.status, 'awaiting_review');
+    assert.equal((await queue.timetableWithReservations(timetable)).Intervals.filter((item) => item.IsReserved).length, 3);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('robot delivery mode requires an online calibrated agent', async () => {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });

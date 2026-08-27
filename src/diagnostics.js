@@ -33,10 +33,12 @@ export async function buildDiagnostics({
   addIssue(issues, !timetable, 'warn', 'ident_timetable_missing', 'IDENT timetable has not been received yet');
   addIssue(
     issues,
-    timetableAgeMs !== null && timetableAgeMs > 6 * 60 * 60 * 1000,
-    'warn',
+    config.ident.timetableMaxAgeMinutes > 0 &&
+      timetableAgeMs !== null &&
+      timetableAgeMs > config.ident.timetableMaxAgeMinutes * 60 * 1000,
+    'error',
     'ident_timetable_stale',
-    'IDENT timetable is older than 6 hours'
+    `IDENT timetable is older than ${config.ident.timetableMaxAgeMinutes} minutes; new bookings are blocked`
   );
   addIssue(
     issues,
@@ -129,6 +131,8 @@ export async function buildDiagnostics({
     ident: {
       integrationKeyConfigured: Boolean(config.identIntegrationKey),
       requireDoctorMapping: config.ident.requireDoctorMapping,
+      timetableMaxAgeMinutes: config.ident.timetableMaxAgeMinutes,
+      reservationMinutes: config.ident.reservationMinutes,
       timetable: timetable
         ? {
             receivedAt: timetable.receivedAt,

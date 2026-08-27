@@ -1,10 +1,10 @@
 import { parseDateParam } from '../date.js';
 
 export const SLOT_STEP_MINUTES = 15;
-export const DEFAULT_RESERVATION_MINUTES = 30;
+export const DEFAULT_RESERVATION_MINUTES = 720;
 
-const BLOCKING_RESERVATION_STATUSES = new Set(['active', 'awaiting_timetable']);
-const RELEASED_RECORD_STATUSES = new Set(['failed', 'ignored', 'robot_failed']);
+const BLOCKING_RESERVATION_STATUSES = new Set(['active', 'awaiting_timetable', 'awaiting_review']);
+const RELEASED_RECORD_STATUSES = new Set(['failed', 'ignored']);
 
 export class SlotUnavailableError extends Error {
   constructor(message = 'Выбранное время уже занято или зарезервировано. Обновите расписание.') {
@@ -12,6 +12,14 @@ export class SlotUnavailableError extends Error {
     this.name = 'SlotUnavailableError';
     this.status = 409;
     this.code = 'slot_unavailable';
+  }
+}
+
+export class TimetableStaleError extends SlotUnavailableError {
+  constructor(message = 'Расписание IDENT давно не обновлялось. Дождитесь свежей выгрузки и повторите запись.') {
+    super(message);
+    this.name = 'TimetableStaleError';
+    this.code = 'timetable_stale';
   }
 }
 
@@ -45,7 +53,24 @@ export function bookingWindow(ticket, branchId = null) {
   };
 }
 
-export function assertBookableWindow({ timetable, ticket, branchId = null, records = [], excludeId = '' }) {
+export function assertTimetableFresh(timetable, maxAgeMinutes = 0, now = new Date()) {
+  const allowedAge = Number(maxAgeMinutes || 0);
+  if (!Number.isFinite(allowedAge) || allowedAge <= 0) return;
+  const receivedAt = parseDateParam(timetable?.receivedAt);
+  if (!receivedAt || now.getTime() - receivedAt.getTime() > allowedAge * 60_000) {
+    throw new TimetableStaleError();
+  }
+}
+
+export function assertBookableWindow({
+  timetable,
+  ticket,
+  branchId = null,
+  records = [],
+  excludeId = '',
+  maxTimetableAgeMinutes = 0,
+  now = new Date()
+}) {
   const window = bookingWindow(ticket, branchId);
   if (!window) {
     const error = new Error('Время записи должно быть задано положительным интервалом, кратным 15 минутам.');
@@ -55,10 +80,11 @@ export function assertBookableWindow({ timetable, ticket, branchId = null, recor
   if (!timetable || !Array.isArray(timetable.Intervals)) {
     throw new SlotUnavailableError('Расписание IDENT ещё не загружено. Обновите расписание и повторите запись.');
   }
+  assertTimetableFresh(timetable, maxTimetableAgeMinutes, now);
 
   const conflict = records.find((record) => {
     if (excludeId && String(record.id) === String(excludeId)) return false;
-    const reservation = blockingReservation(record);
+    const reservation = blockingReservation(record, now);
     return reservation && windowsOverlap(window, reservation);
   });
   if (conflict) throw new SlotUnavailableError();

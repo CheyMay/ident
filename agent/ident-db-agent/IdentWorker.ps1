@@ -23,12 +23,35 @@ namespace Code9IdentAgent {
         [DllImport("user32.dll")]
         private static extern bool GetLastInputInfo(ref LASTINPUTINFO input);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+        [DllImport("user32.dll")]
+        private static extern bool CloseDesktop(IntPtr desktop);
+
+        [DllImport("user32.dll")]
+        private static extern bool SwitchDesktop(IntPtr desktop);
+
         public static int IdleSeconds() {
             var input = new LASTINPUTINFO();
             input.cbSize = (uint)Marshal.SizeOf(input);
             if (!GetLastInputInfo(ref input)) return 0;
             var elapsed = unchecked((uint)Environment.TickCount - input.dwTime);
             return (int)(elapsed / 1000);
+        }
+
+        public static bool InteractiveDesktopAvailable() {
+            const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+            var desktop = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+            if (desktop == IntPtr.Zero) return false;
+            try
+            {
+                return SwitchDesktop(desktop);
+            }
+            finally
+            {
+                CloseDesktop(desktop);
+            }
         }
     }
 }
@@ -151,6 +174,21 @@ function Get-UserIdleSeconds {
     }
 }
 
+function Test-InteractiveDesktopAvailable {
+    if (
+        [string]$script:Context.Config.agent.version -like '*-test' -and
+        -not [string]::IsNullOrWhiteSpace([string]$env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP)
+    ) {
+        return [string]$env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP -eq '1'
+    }
+    try {
+        return [Code9IdentAgent.NativeInput]::InteractiveDesktopAvailable()
+    }
+    catch {
+        return $false
+    }
+}
+
 function Write-WorkerLog {
     param(
         [string]$Level,
@@ -244,6 +282,12 @@ function Invoke-PowerShellChildProcess {
     finally {
         $process.Dispose()
     }
+}
+
+function Test-TransientScheduleFailure {
+    param([string]$Message)
+
+    return [string]$Message -match '(?i)(timed?\s*out|network-related|server\s+was\s+not\s+found|not\s+accessible|tcp\s+provider|connection\s+(failed|closed|refused)|transport-level|wait\s+operation\s+timed\s+out)'
 }
 
 function Write-RuntimeState {
@@ -1080,22 +1124,50 @@ function Invoke-SchedulePush {
     Write-RuntimeState
 
     $agentScript = Join-Path $script:Context.BaseDirectory 'IdentAgent.ps1'
-    try {
-        $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$agentScript`" " +
-            "-ConfigPath `"$($script:Context.ConfigPath)`" -Push"
-        $processResult = Invoke-PowerShellChildProcess `
-            -Arguments $arguments `
-            -TimeoutSeconds 120 `
-            -Label 'Schedule export'
-        $output = [string]$processResult.Output
-        $exitCode = [int]$processResult.ExitCode
-    }
-    catch {
-        $script:State.schedule.state = 'error'
-        $script:State.schedule.lastError = $_.Exception.Message
-        Write-WorkerLog -Level 'error' -EventName 'schedule_failed' -Data @{ message = $_.Exception.Message; timedOut = $true }
+    $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$agentScript`" " +
+        "-ConfigPath `"$($script:Context.ConfigPath)`" -Push"
+    $output = ''
+    $exitCode = -1
+    $attemptLimit = 3
+    for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+        try {
+            $processResult = Invoke-PowerShellChildProcess `
+                -Arguments $arguments `
+                -TimeoutSeconds 120 `
+                -Label 'Schedule export'
+            $output = [string]$processResult.Output
+            $exitCode = [int]$processResult.ExitCode
+        }
+        catch {
+            $output = $_.Exception.Message
+            $exitCode = -1
+        }
+
+        if ($exitCode -eq 0) {
+            break
+        }
+
+        $attemptMessage = ($output.Trim() -split '\r?\n' | Select-Object -Last 1)
+        if ([string]::IsNullOrWhiteSpace($attemptMessage)) {
+            $attemptMessage = "Schedule process exited with code $exitCode."
+        }
+        if ($attempt -ge $attemptLimit -or -not (Test-TransientScheduleFailure -Message $output)) {
+            break
+        }
+
+        $delaySeconds = 5 * $attempt
+        $script:State.schedule.state = 'retrying'
+        $script:State.schedule.lastError = "Temporary SQL failure. Retry $($attempt + 1) of $attemptLimit in $delaySeconds seconds."
+        Write-WorkerLog -Level 'warn' -EventName 'schedule_retry' -Data @{
+            attempt = $attempt
+            nextAttempt = $attempt + 1
+            delaySeconds = $delaySeconds
+            message = $attemptMessage
+        }
         Write-RuntimeState
-        return
+        Start-Sleep -Seconds $delaySeconds
+        $script:State.schedule.state = 'sending'
+        Write-RuntimeState
     }
 
     if ($exitCode -ne 0) {
@@ -1200,6 +1272,12 @@ function Invoke-RobotPoll {
     }
 
     $minimumIdleSeconds = Get-MinimumUserIdleSeconds
+    if (-not (Test-InteractiveDesktopAvailable)) {
+        $script:State.robot.state = 'waiting_for_session'
+        $script:State.robot.lastError = ''
+        Write-RuntimeState
+        return
+    }
     $userIdleSeconds = Get-UserIdleSeconds
     $script:State.robot.userIdleSeconds = $userIdleSeconds
     $script:State.robot.minUserIdleSeconds = $minimumIdleSeconds
@@ -1276,6 +1354,12 @@ function Invoke-RobotPoll {
             if ($output -match 'ROBOT_DEFER_USER_ACTIVE') {
                 throw 'ROBOT_DEFER_USER_ACTIVE'
             }
+            if ($output -match 'ROBOT_DEFER_SESSION_LOCKED') {
+                throw 'ROBOT_DEFER_SESSION_LOCKED'
+            }
+            if ($output -match 'ROBOT_DEFER_BUSY') {
+                throw 'ROBOT_DEFER_BUSY'
+            }
             $message = ($output.Trim() -split '\r?\n' | Select-Object -Last 1)
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = "Robot process exited with code $exitCode."
@@ -1305,15 +1389,27 @@ function Invoke-RobotPoll {
     }
     catch {
         $message = $_.Exception.Message
-        $deferredForUser = $message -eq 'ROBOT_DEFER_USER_ACTIVE'
-        $script:State.robot.state = if ($deferredForUser) { 'waiting_for_idle' } elseif ($localExecutionSucceeded) { 'awaiting_confirmation' } else { 'error' }
-        $script:State.robot.lastError = if ($deferredForUser) { '' } else { $message }
-        if ($null -ne $record -and $deferredForUser) {
+        $deferredForSafety = $message -in @('ROBOT_DEFER_USER_ACTIVE', 'ROBOT_DEFER_SESSION_LOCKED', 'ROBOT_DEFER_BUSY')
+        $script:State.robot.state = if ($message -eq 'ROBOT_DEFER_SESSION_LOCKED') {
+            'waiting_for_session'
+        } elseif ($deferredForSafety) {
+            'waiting_for_idle'
+        } elseif ($localExecutionSucceeded) {
+            'awaiting_confirmation'
+        } else {
+            'error'
+        }
+        $script:State.robot.lastError = if ($deferredForSafety) { '' } else { $message }
+        if ($null -ne $record -and $deferredForSafety) {
             try {
                 [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/defer' -Body @{
                     id = [string]$record.id
                     agentId = [string]$script:Context.Config.agent.id
-                    reason = 'User activity detected; waiting for 60 seconds of idle time.'
+                    reason = $(switch ($message) {
+                        'ROBOT_DEFER_SESSION_LOCKED' { 'Windows session is locked; waiting for an unlocked desktop.' }
+                        'ROBOT_DEFER_BUSY' { 'Another robot instance is running.' }
+                        default { 'User activity detected; waiting for 60 seconds of idle time.' }
+                    })
                 })
             }
             catch {

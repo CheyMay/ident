@@ -110,6 +110,8 @@ function Format-StateName {
         processing = 'обработка заявки'
         idle = 'ожидание'
         waiting_for_idle = 'ждет 1 минуту бездействия'
+        waiting_for_session = 'ждет разблокировки Windows'
+        retrying = 'повторяет подключение к SQL'
         needs_configuration = 'нужна настройка'
         needs_mapping = 'нужна настройка расписания'
         not_available = 'структура еще не найдена'
