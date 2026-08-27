@@ -7,6 +7,34 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+if (-not ('Code9IdentAgent.NativeInput' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Code9IdentAgent {
+    public static class NativeInput {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LASTINPUTINFO {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO input);
+
+        public static int IdleSeconds() {
+            var input = new LASTINPUTINFO();
+            input.cbSize = (uint)Marshal.SizeOf(input);
+            if (!GetLastInputInfo(ref input)) return 0;
+            var elapsed = unchecked((uint)Environment.TickCount - input.dwTime);
+            return (int)(elapsed / 1000);
+        }
+    }
+}
+'@
+}
+
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'config.local.json'
 }
@@ -94,6 +122,32 @@ function Get-ConfigContext {
             Join-Path $baseDirectory 'update-status.json'
         }
         UpdaterPath = Join-Path $baseDirectory 'Apply-IdentAgentUpdate.ps1'
+    }
+}
+
+function Get-MinimumUserIdleSeconds {
+    if (
+        $script:Context.Config.PSObject.Properties.Name -contains 'robot' -and
+        $null -ne $script:Context.Config.robot -and
+        $script:Context.Config.robot.PSObject.Properties.Name -contains 'minUserIdleSeconds'
+    ) {
+        return [Math]::Max(60, [int]$script:Context.Config.robot.minUserIdleSeconds)
+    }
+    return 60
+}
+
+function Get-UserIdleSeconds {
+    if (
+        [string]$script:Context.Config.agent.version -like '*-test' -and
+        -not [string]::IsNullOrWhiteSpace([string]$env:CODE9_IDENT_TEST_IDLE_SECONDS)
+    ) {
+        return [Math]::Max(0, [int]$env:CODE9_IDENT_TEST_IDLE_SECONDS)
+    }
+    try {
+        return [Math]::Max(0, [Code9IdentAgent.NativeInput]::IdleSeconds())
+    }
+    catch {
+        return 0
     }
 }
 
@@ -1145,6 +1199,17 @@ function Invoke-RobotPoll {
         return
     }
 
+    $minimumIdleSeconds = Get-MinimumUserIdleSeconds
+    $userIdleSeconds = Get-UserIdleSeconds
+    $script:State.robot.userIdleSeconds = $userIdleSeconds
+    $script:State.robot.minUserIdleSeconds = $minimumIdleSeconds
+    if ($userIdleSeconds -lt $minimumIdleSeconds) {
+        $script:State.robot.state = 'waiting_for_idle'
+        $script:State.robot.lastError = ''
+        Write-RuntimeState
+        return
+    }
+
     $script:State.robot.state = 'checking'
     $script:State.robot.lastError = ''
     Write-RuntimeState
@@ -1193,7 +1258,7 @@ function Invoke-RobotPoll {
         try {
             $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$robotScript`" " +
                 "-Mode RunOnce -ConfigPath `"$($script:Context.RobotConfigPath)`" " +
-                "-TaskFile `"$taskPath`" -MaxTasks 1 -Execute"
+                "-TaskFile `"$taskPath`" -MaxTasks 1 -MinUserIdleSeconds $minimumIdleSeconds -Execute"
             $processResult = Invoke-PowerShellChildProcess `
                 -Arguments $arguments `
                 -TimeoutSeconds 120 `
@@ -1208,6 +1273,9 @@ function Invoke-RobotPoll {
         }
 
         if ($exitCode -ne 0) {
+            if ($output -match 'ROBOT_DEFER_USER_ACTIVE') {
+                throw 'ROBOT_DEFER_USER_ACTIVE'
+            }
             $message = ($output.Trim() -split '\r?\n' | Select-Object -Last 1)
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = "Robot process exited with code $exitCode."
@@ -1221,6 +1289,7 @@ function Invoke-RobotPoll {
             -Fingerprint $fingerprint `
             -CompletedAt $completedAt
         $localExecutionSucceeded = $true
+        New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
         [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
             id = [string]$record.id
             agentId = [string]$script:Context.Config.agent.id
@@ -1236,9 +1305,22 @@ function Invoke-RobotPoll {
     }
     catch {
         $message = $_.Exception.Message
-        $script:State.robot.state = if ($localExecutionSucceeded) { 'awaiting_confirmation' } else { 'error' }
-        $script:State.robot.lastError = $message
-        if ($null -ne $record -and -not $localExecutionSucceeded) {
+        $deferredForUser = $message -eq 'ROBOT_DEFER_USER_ACTIVE'
+        $script:State.robot.state = if ($deferredForUser) { 'waiting_for_idle' } elseif ($localExecutionSucceeded) { 'awaiting_confirmation' } else { 'error' }
+        $script:State.robot.lastError = if ($deferredForUser) { '' } else { $message }
+        if ($null -ne $record -and $deferredForUser) {
+            try {
+                [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/defer' -Body @{
+                    id = [string]$record.id
+                    agentId = [string]$script:Context.Config.agent.id
+                    reason = 'User activity detected; waiting for 60 seconds of idle time.'
+                })
+            }
+            catch {
+                Write-WorkerLog -Level 'error' -EventName 'robot_defer_report_failed' -Data @{ message = $_.Exception.Message }
+            }
+        }
+        elseif ($null -ne $record -and -not $localExecutionSucceeded) {
             try {
                 [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/fail' -Body @{
                     id = [string]$record.id
@@ -1321,6 +1403,8 @@ try {
             lastSuccessAt = $null
             lastTaskId = ''
             lastError = ''
+            userIdleSeconds = 0
+            minUserIdleSeconds = 60
         }
         update = [ordered]@{
             targetVersion = $(if ($null -ne $previousUpdate) { [string]$previousUpdate.targetVersion } else { '' })

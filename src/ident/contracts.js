@@ -52,9 +52,16 @@ export function filterTickets(tickets, { from, to, limit, offset }) {
 export function normalizeBookingTicket(input, options = {}) {
   const now = new Date().toISOString();
   const planStart = normalizeIdentDate(input.planStart ?? input.PlanStart ?? input.start);
+  const requestedDuration = input.durationMinutes ?? input.DurationMinutes ?? null;
+  const durationMinutes = requestedDuration === null || requestedDuration === ''
+    ? Number(options.defaultAppointmentMinutes || 60)
+    : Number(requestedDuration);
+  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes % 15 !== 0) {
+    throw new BadRequestError('durationMinutes must be a positive integer divisible by 15');
+  }
   const planEnd =
     normalizeIdentDate(input.planEnd ?? input.PlanEnd ?? input.end) ||
-    (planStart ? addMinutes(planStart, options.defaultAppointmentMinutes || 60) : null);
+    (planStart ? addMinutes(planStart, durationMinutes) : null);
 
   const ticket = stripEmpty({
     Id: String(input.id ?? input.Id ?? `local:${Date.now()}`),

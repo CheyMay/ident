@@ -109,6 +109,7 @@ function Format-StateName {
         checking = 'проверка заявок'
         processing = 'обработка заявки'
         idle = 'ожидание'
+        waiting_for_idle = 'ждет 1 минуту бездействия'
         needs_configuration = 'нужна настройка'
         needs_mapping = 'нужна настройка расписания'
         not_available = 'структура еще не найдена'

@@ -137,7 +137,13 @@ test('syncs doctor mappings from timetable and resolves booking aliases', async 
       body: JSON.stringify({
         Doctors: [{ Id: 2129, Name: 'Doctor Official' }],
         Branches: [{ Id: 1, Name: 'Main Branch' }],
-        Intervals: []
+        Intervals: [{
+          DoctorId: 2129,
+          BranchId: 1,
+          StartDateTime: '2026-05-12T10:00:00+03:00',
+          LengthInMinutes: 60,
+          IsBusy: false
+        }]
       })
     });
     assert.equal(timetableResponse.status, 200);
@@ -209,6 +215,12 @@ test('rejects booking when required doctor mapping is missing', async () => {
 
 test('queues booking and returns it through IDENT GetTickets', async () => {
   await withTestServer(async ({ baseUrl }) => {
+    await postTestTimetable(baseUrl, {
+      doctorId: 2129,
+      doctorName: 'Иванов Иван Иванович',
+      start: '2026-05-12T10:00:00+03:00',
+      length: 60
+    });
     const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -218,7 +230,9 @@ test('queues booking and returns it through IDENT GetTickets', async () => {
         clientFullName: 'Иванов Иван',
         clientPhone: '+79110001122',
         planStart: '2026-05-12T10:00:00+03:00',
-        planEnd: '2026-05-12T11:00:00+03:00'
+        planEnd: '2026-05-12T11:00:00+03:00',
+        doctorId: 2129,
+        doctorName: 'Иванов Иван Иванович'
       })
     });
 
@@ -281,6 +295,12 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
   await withMockAmoServer(async ({ baseUrl: amoBaseUrl, requests }) => {
     await withTestServer(
       async ({ baseUrl }) => {
+        await postTestTimetable(baseUrl, {
+          doctorId: 1904,
+          doctorName: 'Иванов Иван Иванович',
+          start: '2026-08-16T09:00:00+03:00',
+          length: 30
+        });
         const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -319,6 +339,42 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         AMOCRM_LONG_LIVED_TOKEN: 'true'
       }
     );
+  });
+});
+
+test('atomically rejects a second booking for the same reserved slot', async () => {
+  await withTestServer(async ({ baseUrl }) => {
+    await postTestTimetable(baseUrl, {
+      doctorId: 1904,
+      doctorName: 'Иванов Иван Иванович',
+      start: '2026-09-01T10:00:00+03:00',
+      length: 60
+    });
+    const booking = (id, phone) => fetch(`${baseUrl}/api/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        clientFullName: 'Иванов Иван',
+        clientPhone: phone,
+        planStart: '2026-09-01T10:00:00+03:00',
+        durationMinutes: 45,
+        doctorId: 1904,
+        doctorName: 'Иванов Иван Иванович',
+        branchId: 1,
+        createAmoLead: false
+      })
+    });
+
+    const responses = await Promise.all([
+      booking('concurrent-1', '+79110001121'),
+      booking('concurrent-2', '+79110001122')
+    ]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [201, 409]);
+
+    const schedule = await (await fetch(`${baseUrl}/api/timetable`)).json();
+    assert.equal(schedule.Intervals.filter((item) => item.IsReserved).length, 1);
+    assert.equal(schedule.Intervals.find((item) => item.IsReserved).IsBusy, true);
   });
 });
 
@@ -1109,7 +1165,8 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
           clientPhone: '+79990000000',
           clientFullName: 'Robot Test',
           planStart: '2026-08-01T10:00:00+03:00',
-          doctorName: 'Doctor Test'
+          doctorName: 'Doctor Test',
+          durationMinutes: 30
         })
       });
       assert.equal(bookingResponse.status, 201);
@@ -1286,6 +1343,31 @@ test('publishes immutable agent releases and assigns a verified update to one cl
     }
   );
 });
+
+async function postTestTimetable(baseUrl, options = {}) {
+  const doctorId = options.doctorId || 1;
+  const doctorName = options.doctorName || 'Doctor Test';
+  const branchId = options.branchId || 1;
+  const response = await fetch(`${baseUrl}/PostTimeTable`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'IDENT-Integration-Key': 'test-ident-key'
+    },
+    body: JSON.stringify({
+      Doctors: [{ Id: doctorId, Name: doctorName }],
+      Branches: [{ Id: branchId, Name: 'Test Branch' }],
+      Intervals: [{
+        DoctorId: doctorId,
+        BranchId: branchId,
+        StartDateTime: options.start,
+        LengthInMinutes: options.length || 60,
+        IsBusy: false
+      }]
+    })
+  });
+  assert.equal(response.status, 200);
+}
 
 async function withTestServer(callback, env = {}) {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));

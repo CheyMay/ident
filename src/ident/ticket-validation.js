@@ -130,8 +130,12 @@ function validateTicket(ticket) {
   if (ticket.PlanStart && !planStart) errors.push('PlanStart must be a valid date');
   if (ticket.PlanEnd && !planEnd) errors.push('PlanEnd must be a valid date');
   if (planStart && planEnd) {
-    if (planStart > planEnd) errors.push('PlanStart must not be later than PlanEnd');
-    if (planEnd.getTime() - planStart.getTime() > MAX_APPOINTMENT_MS) {
+    const durationMs = planEnd.getTime() - planStart.getTime();
+    if (durationMs <= 0) errors.push('PlanEnd must be later than PlanStart');
+    if (durationMs > 0 && durationMs % (15 * 60 * 1000) !== 0) {
+      errors.push('Plan duration must be divisible by 15 minutes');
+    }
+    if (durationMs > MAX_APPOINTMENT_MS) {
       errors.push('Plan duration must not exceed 12 hours');
     }
   }

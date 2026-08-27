@@ -8,6 +8,8 @@ param(
 
   [int]$MaxTasks = 1,
 
+  [int]$MinUserIdleSeconds = 0,
+
   [switch]$Execute
 )
 
@@ -20,6 +22,34 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+
+if (-not ('Code9IdentRobot.NativeInput' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Code9IdentRobot {
+  public static class NativeInput {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO {
+      public uint cbSize;
+      public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO input);
+
+    public static int IdleSeconds() {
+      var input = new LASTINPUTINFO();
+      input.cbSize = (uint)Marshal.SizeOf(input);
+      if (!GetLastInputInfo(ref input)) return 0;
+      var elapsed = unchecked((uint)Environment.TickCount - input.dwTime);
+      return (int)(elapsed / 1000);
+    }
+  }
+}
+'@
+}
 
 function Read-JsonFile {
   param([string]$Path)
@@ -51,6 +81,28 @@ function Get-ObjectProperty {
 function Join-Url {
   param([string]$BaseUrl, [string]$Path)
   return ($BaseUrl.TrimEnd('/') + '/' + $Path.TrimStart('/'))
+}
+
+function Get-UserIdleSeconds {
+  try {
+    return [Math]::Max(0, [Code9IdentRobot.NativeInput]::IdleSeconds())
+  }
+  catch {
+    return 0
+  }
+}
+
+function Assert-UserIdle {
+  param([int]$MinimumSeconds)
+
+  if ($MinimumSeconds -le 0) {
+    return
+  }
+  $idleSeconds = Get-UserIdleSeconds
+  if ($idleSeconds -lt $MinimumSeconds) {
+    Write-Host "ROBOT_DEFER_USER_ACTIVE idle=$idleSeconds required=$MinimumSeconds"
+    throw 'ROBOT_DEFER_USER_ACTIVE'
+  }
 }
 
 function Write-RobotLog {
@@ -487,7 +539,12 @@ function Invoke-Workflow {
     throw 'Real UI execution is disabled. Set workflow.allowUnsafeExecution=true in a local config and pass -Execute.'
   }
 
+  Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
+  $saveInvoked = $false
   foreach ($step in @($Config.workflow.steps)) {
+    if (-not $saveInvoked) {
+      Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
+    }
     $selector = $Config.selectors.($step.selector)
     $element = Find-RobotElementInIdent $WindowInfo $selector
     if (-not $element) {
@@ -512,6 +569,10 @@ function Invoke-Workflow {
       default {
         throw "Unsupported workflow action: $($step.action)"
       }
+    }
+
+    if ([string]$step.selector -eq 'saveButton' -or [string]$step.name -eq 'save') {
+      $saveInvoked = $true
     }
 
     $delayMs = if ($Config.workflow.stepDelayMs) { [int]$Config.workflow.stepDelayMs } else { 500 }

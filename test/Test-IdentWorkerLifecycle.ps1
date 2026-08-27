@@ -44,6 +44,7 @@ param(
     [string]$ConfigPath,
     [string]$TaskFile,
     [int]$MaxTasks,
+    [int]$MinUserIdleSeconds,
     [switch]$Execute
 )
 Add-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'robot-executions.txt') -Value 'run'
@@ -120,8 +121,9 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.3.0' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.8.0-test' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
+        robot = @{ minUserIdleSeconds = 60 }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }
         sql = @{
             server = '127.0.0.1'
@@ -252,6 +254,8 @@ server.listen(port, "127.0.0.1");
         throw "Fake backend did not start. State=$($backendJob.State). Reason=$backendReason Errors=$backendErrors Output=$($backendOutput.Trim())"
     }
 
+    $previousTestIdle = $env:CODE9_IDENT_TEST_IDLE_SECONDS
+    $env:CODE9_IDENT_TEST_IDLE_SECONDS = '600'
     $worker = Start-Process powershell.exe -ArgumentList @(
         '-NoProfile',
         '-ExecutionPolicy',
@@ -261,6 +265,7 @@ server.listen(port, "127.0.0.1");
         '-ConfigPath',
         (Join-Path $tempRoot 'config.json')
     ) -WindowStyle Hidden -PassThru
+    $env:CODE9_IDENT_TEST_IDLE_SECONDS = $previousTestIdle
 
     $status = $null
     for ($attempt = 0; $attempt -lt 28; $attempt++) {

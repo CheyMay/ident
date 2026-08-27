@@ -95,6 +95,7 @@ export function buildApp(config, logger, options = {}) {
   async function storeTimetable(body) {
     const timetable = normalizeTimeTablePayload(body);
     await storage.writeJson('timetable.json', timetable);
+    await ticketQueue.reconcileReservations(timetable);
     await mappingStore.syncFromTimetable(timetable);
     logger.info('IDENT timetable received', timetable.Summary);
 
@@ -154,18 +155,19 @@ export function buildApp(config, logger, options = {}) {
         requireServiceApiKey(req, config);
         const timetable = await storage.readJson('timetable.json', null);
         if (!timetable) return sendJson(res, 404, { error: 'Timetable has not been received yet' });
-        return sendJson(res, 200, timetable);
+        return sendJson(res, 200, await ticketQueue.timetableWithReservations(timetable));
       }
 
       if (req.method === 'GET' && url.pathname === '/api/free-slots') {
         requireServiceApiKey(req, config);
         const timetable = await storage.readJson('timetable.json', null);
         if (!timetable) return sendJson(res, 404, { error: 'Timetable has not been received yet' });
+        const availableTimetable = await ticketQueue.timetableWithReservations(timetable);
         return sendJson(res, 200, {
-          receivedAt: timetable.receivedAt,
-          Doctors: timetable.Doctors,
-          Branches: timetable.Branches,
-          Intervals: timetable.Intervals.filter((item) => !item.IsBusy)
+          receivedAt: availableTimetable.receivedAt,
+          Doctors: availableTimetable.Doctors,
+          Branches: availableTimetable.Branches,
+          Intervals: availableTimetable.Intervals.filter((item) => !item.IsBusy)
         });
       }
 
@@ -339,7 +341,8 @@ export function buildApp(config, logger, options = {}) {
         if (!(await agentStore.isRobotModeEnabled(body.agentId))) {
           return sendJson(res, 409, { error: 'Robot mode is not enabled for this agent' });
         }
-        const record = await ticketQueue.claimForRobot(body.agentId, config.agent.robotLeaseSeconds);
+        const timetable = await storage.readJson('timetable.json', null);
+        const record = await ticketQueue.claimForRobot(body.agentId, config.agent.robotLeaseSeconds, timetable);
         return sendJson(res, 200, { record });
       }
 
@@ -349,6 +352,15 @@ export function buildApp(config, logger, options = {}) {
         if (!body.id || !body.agentId) return sendJson(res, 400, { error: 'id and agentId are required' });
         const record = await ticketQueue.completeRobot(body.id, body.agentId, body.result);
         if (!record) return sendJson(res, 409, { error: 'Robot task is not claimed by this agent' });
+        return sendJson(res, 200, { record });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/robot/tasks/defer') {
+        requireAgentApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.id || !body.agentId) return sendJson(res, 400, { error: 'id and agentId are required' });
+        const record = await ticketQueue.deferRobot(body.id, body.agentId, body.reason);
+        if (!record) return sendJson(res, 409, { error: 'Robot task is not owned by this agent' });
         return sendJson(res, 200, { record });
       }
 
@@ -407,6 +419,7 @@ export function buildApp(config, logger, options = {}) {
           source: 'ident-db',
           syncedAt: new Date().toISOString()
         });
+        await ticketQueue.reconcileReservations(preview.timetable);
         await mappingStore.syncFromTimetable(preview.timetable);
         if (config.amo.syncTimetableToCatalog) {
           await jobQueue.enqueue('amocrm.timetable_sync', {}, {
@@ -460,14 +473,19 @@ export function buildApp(config, logger, options = {}) {
           });
         }
 
+        const timetable = await storage.readJson('timetable.json', null);
         const record = await queueTicketWithDedupe({
           ticketQueue,
           ticket: validation.ticket,
           meta: {
             source: amoLead?.id ? 'api-booking-amo' : createAmoLead ? 'api-booking' : 'amo-widget-booking',
-            amoLeadId: amoLead?.id || null
+            amoLeadId: amoLead?.id || null,
+            branchId: body.branchId ?? body.BranchId ?? null
           },
-          config
+          config,
+          reserveSlot: true,
+          timetable,
+          branchId: body.branchId ?? body.BranchId ?? null
         });
         logger.info('Booking processed for IDENT', {
           id: validation.ticket.Id,
@@ -479,6 +497,7 @@ export function buildApp(config, logger, options = {}) {
           amoLeadId: amoLead?.id || null,
           queued: record.status === 'queued',
           status: record.status,
+          reservation: record.reservation || null,
           duplicateOf: record.status === 'ignored' ? record.lastError?.replace(/^Duplicate of\s+/, '') || null : null
         });
       }
@@ -876,7 +895,24 @@ async function syncAmoLeadIntoTicketQueue({ leadId, amoClient, ticketQueue, mapp
   return { ticket: preview.validation.ticket, record, preview };
 }
 
-async function queueTicketWithDedupe({ ticketQueue, ticket, meta = {}, config }) {
+async function queueTicketWithDedupe({
+  ticketQueue,
+  ticket,
+  meta = {},
+  config,
+  reserveSlot = false,
+  timetable = null,
+  branchId = null
+}) {
+  if (reserveSlot) {
+    return ticketQueue.reserveAndUpsert(ticket, meta, {
+      timetable,
+      branchId,
+      dedupeEnabled: Boolean(config.dedupe?.enabled),
+      dedupeWindowMinutes: config.dedupe?.windowMinutes,
+      holdMinutes: 30
+    });
+  }
   if (!config.dedupe?.enabled) return ticketQueue.upsert(ticket, meta);
   const duplicate = await ticketQueue.findDuplicate(ticket, {
     excludeId: ticket.Id,

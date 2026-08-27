@@ -2,11 +2,14 @@
   "version": 2,
   "agent": {
     "id": "stomazub-COMPUTERNAME",
-    "version": "2.7.1"
+    "version": "2.8.0"
   },
   "features": {
     "scheduleEnabled": true,
     "robotEnabled": false
+  },
+  "robot": {
+    "minUserIdleSeconds": 60
   },
   "intervals": {
     "heartbeatSeconds": 60,

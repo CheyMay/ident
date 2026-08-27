@@ -3,6 +3,15 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import {
+  assertBookableWindow,
+  blockingReservation,
+  createReservation,
+  extendReservation,
+  overlayReservations,
+  reconcileReservations as reconcileSlotReservations,
+  releaseReservation
+} from './ident/slot-reservations.js';
 
 const require = createRequire(import.meta.url);
 
@@ -114,6 +123,7 @@ export class TicketQueue {
   constructor(storage) {
     this.storage = storage;
     this.fileName = 'tickets.json';
+    this.mutationChain = Promise.resolve();
   }
 
   async records() {
@@ -179,6 +189,60 @@ export class TicketQueue {
 
   async upsert(ticket, meta = {}) {
     const records = await this.records();
+    const result = this.upsertIntoRecords(records, ticket, meta);
+    await this.writeRecords(records);
+    return result;
+  }
+
+  async reserveAndUpsert(ticket, meta = {}, options = {}) {
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const duplicateKey = ticketDuplicateKey(ticket);
+      const windowMs = Number(options.dedupeWindowMinutes || 0) * 60 * 1000;
+      const threshold = windowMs ? Date.now() - windowMs : 0;
+      const duplicate = options.dedupeEnabled && duplicateKey
+        ? records.find((record) => {
+            if (record.id === ticket.Id) return false;
+            if (!['queued', 'sent_to_ident', 'robot_processing', 'robot_completed'].includes(record.status)) return false;
+            if (record.duplicateKey !== duplicateKey) return false;
+            if (!threshold) return true;
+            const updatedAt = new Date(record.updatedAt || record.createdAt || 0).getTime();
+            return Number.isFinite(updatedAt) && updatedAt >= threshold;
+          })
+        : null;
+
+      if (duplicate) {
+        const ignored = this.upsertIntoRecords(records, ticket, {
+          ...meta,
+          status: 'ignored',
+          lastError: `Duplicate of ${duplicate.id}`
+        });
+        if (ignored.reservation) releaseReservation(ignored.reservation, new Date(), 'duplicate');
+        await this.writeRecords(records);
+        return ignored;
+      }
+
+      const branchId = options.branchId ?? null;
+      assertBookableWindow({
+        timetable: options.timetable,
+        ticket,
+        branchId,
+        records,
+        excludeId: ticket.Id
+      });
+      const result = this.upsertIntoRecords(records, ticket, meta);
+      const storedRecord = records.find((record) => record.id === ticket.Id);
+      storedRecord.branchId = branchId;
+      storedRecord.reservation = createReservation(ticket, branchId, {
+        holdMinutes: options.holdMinutes
+      });
+      result.reservation = storedRecord.reservation;
+      await this.writeRecords(records);
+      return result;
+    });
+  }
+
+  upsertIntoRecords(records, ticket, meta = {}) {
     const now = new Date().toISOString();
     const fingerprint = ticketFingerprint(ticket);
     const duplicateKey = ticketDuplicateKey(ticket);
@@ -192,6 +256,7 @@ export class TicketQueue {
       source: meta.source || existing?.source || sourceFromTicketId(ticket.Id),
       externalId: meta.externalId || existing?.externalId || externalIdFromTicketId(ticket.Id),
       amoLeadId: meta.amoLeadId || existing?.amoLeadId || amoLeadIdFromTicketId(ticket.Id),
+      branchId: meta.branchId ?? existing?.branchId ?? null,
       status,
       ticket,
       fingerprint,
@@ -207,14 +272,39 @@ export class TicketQueue {
       robotClaimedAt: changed ? null : existing?.robotClaimedAt || null,
       robotLeaseUntil: changed ? null : existing?.robotLeaseUntil || null,
       robotCompletedAt: changed ? null : existing?.robotCompletedAt || null,
-      robotResult: changed ? null : existing?.robotResult || null
+      robotResult: changed ? null : existing?.robotResult || null,
+      reservation: changed ? null : existing?.reservation || null
     };
 
     if (index === -1) records.unshift(record);
     else records[index] = record;
 
-    await this.writeRecords(records);
     return { ...record, changed };
+  }
+
+  async timetableWithReservations(timetable) {
+    return overlayReservations(timetable, await this.records());
+  }
+
+  async reconcileReservations(timetable) {
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const changed = reconcileSlotReservations(records, timetable);
+      if (changed) await this.writeRecords(records);
+      return changed;
+    });
+  }
+
+  async runExclusive(operation) {
+    const previous = this.mutationChain;
+    let release;
+    this.mutationChain = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   async findDuplicate(ticket, options = {}) {
@@ -262,6 +352,7 @@ export class TicketQueue {
     record.status = 'failed';
     record.lastError = errorMessage;
     record.updatedAt = new Date().toISOString();
+    if (record.reservation) releaseReservation(record.reservation, new Date(), 'failed');
     await this.writeRecords(records);
     return record;
   }
@@ -279,6 +370,9 @@ export class TicketQueue {
     record.robotLeaseUntil = null;
     record.robotCompletedAt = null;
     record.robotResult = null;
+    if (record.reservation) {
+      extendReservation(record.reservation, new Date(Date.now() + 30 * 60_000), 'active');
+    }
     await this.writeRecords(records);
     return record;
   }
@@ -296,74 +390,139 @@ export class TicketQueue {
       record.robotClaimedAt = null;
       record.robotLeaseUntil = null;
       record.updatedAt = now.toISOString();
+      if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
       released += 1;
     }
     if (released) await this.writeRecords(records);
     return released;
   }
 
-  async claimForRobot(agentId, leaseSeconds = 300) {
+  async claimForRobot(agentId, leaseSeconds = 300, timetable = null) {
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return null;
 
-    const records = await this.records();
-    const now = new Date();
-    for (const record of records) {
-      if (record.status !== 'robot_processing') continue;
-      const leaseUntil = new Date(record.robotLeaseUntil || 0);
-      if (Number.isNaN(leaseUntil.getTime()) || leaseUntil <= now) {
-        record.status = 'queued';
-        record.robotAgentId = null;
-        record.robotClaimedAt = null;
-        record.robotLeaseUntil = null;
-        record.updatedAt = now.toISOString();
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const now = new Date();
+      for (const record of records) {
+        if (record.status !== 'robot_processing') continue;
+        const leaseUntil = new Date(record.robotLeaseUntil || 0);
+        if (Number.isNaN(leaseUntil.getTime()) || leaseUntil <= now) {
+          record.status = 'queued';
+          record.robotAgentId = null;
+          record.robotClaimedAt = null;
+          record.robotLeaseUntil = null;
+          record.updatedAt = now.toISOString();
+          if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+        }
       }
-    }
 
-    const record = records
-      .filter((item) => item.status === 'queued')
-      .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt))[0];
-    if (!record) {
+      reconcileSlotReservations(records, timetable, now);
+      const candidates = records
+        .filter((item) => item.status === 'queued')
+        .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt));
+      let record = null;
+      if (timetable && Array.isArray(timetable.Intervals)) {
+        for (const candidate of candidates) {
+          try {
+            assertBookableWindow({
+              timetable,
+              ticket: candidate.ticket,
+              branchId: candidate.branchId,
+              records,
+              excludeId: candidate.id
+            });
+            if (blockingReservation(candidate, now)) {
+              extendReservation(candidate.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+            } else {
+              candidate.reservation = createReservation(candidate.ticket, candidate.branchId, {
+                now,
+                holdMinutes: 30
+              });
+            }
+            record = candidate;
+            break;
+          } catch (error) {
+            candidate.status = 'robot_failed';
+            candidate.updatedAt = now.toISOString();
+            candidate.lastError = error.message;
+            if (candidate.reservation) releaseReservation(candidate.reservation, now, 'slot_unavailable_before_robot');
+          }
+        }
+      }
+
+      if (!record) {
+        await this.writeRecords(records);
+        return null;
+      }
+
+      record.status = 'robot_processing';
+      record.robotAgentId = normalizedAgentId;
+      record.robotClaimedAt = now.toISOString();
+      record.robotLeaseUntil = new Date(now.getTime() + Math.max(30, Number(leaseSeconds || 300)) * 1000).toISOString();
+      if (record.reservation) {
+        extendReservation(record.reservation, new Date(new Date(record.robotLeaseUntil).getTime() + 60_000), 'active');
+      }
+      record.updatedAt = record.robotClaimedAt;
+      record.lastError = null;
       await this.writeRecords(records);
-      return null;
-    }
-
-    record.status = 'robot_processing';
-    record.robotAgentId = normalizedAgentId;
-    record.robotClaimedAt = now.toISOString();
-    record.robotLeaseUntil = new Date(now.getTime() + Math.max(30, Number(leaseSeconds || 300)) * 1000).toISOString();
-    record.updatedAt = record.robotClaimedAt;
-    record.lastError = null;
-    await this.writeRecords(records);
-    return record;
+      return record;
+    });
   }
 
   async completeRobot(id, agentId, result = null) {
-    const records = await this.records();
-    const record = records.find((item) => item.id === String(id));
-    if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
-    const now = new Date().toISOString();
-    record.status = 'robot_completed';
-    record.robotCompletedAt = now;
-    record.robotLeaseUntil = null;
-    record.robotResult = result && typeof result === 'object' ? result : null;
-    record.updatedAt = now;
-    record.lastError = null;
-    await this.writeRecords(records);
-    return record;
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const record = records.find((item) => item.id === String(id));
+      if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+      const now = new Date().toISOString();
+      record.status = 'robot_completed';
+      record.robotCompletedAt = now;
+      record.robotLeaseUntil = null;
+      record.robotResult = result && typeof result === 'object' ? result : null;
+      if (record.reservation && record.reservation.status !== 'confirmed') {
+        extendReservation(record.reservation, new Date(Date.now() + 30 * 60_000), 'awaiting_timetable');
+      }
+      record.updatedAt = now;
+      record.lastError = null;
+      await this.writeRecords(records);
+      return record;
+    });
   }
 
   async failRobot(id, agentId, errorMessage) {
-    const records = await this.records();
-    const record = records.find((item) => item.id === String(id));
-    if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
-    const now = new Date().toISOString();
-    record.status = 'robot_failed';
-    record.robotLeaseUntil = null;
-    record.updatedAt = now;
-    record.lastError = String(errorMessage || 'Robot failed');
-    await this.writeRecords(records);
-    return record;
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const record = records.find((item) => item.id === String(id));
+      if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+      const now = new Date().toISOString();
+      record.status = 'robot_failed';
+      record.robotLeaseUntil = null;
+      record.updatedAt = now;
+      record.lastError = String(errorMessage || 'Robot failed');
+      if (record.reservation) releaseReservation(record.reservation, new Date(), 'robot_failed');
+      await this.writeRecords(records);
+      return record;
+    });
+  }
+
+  async deferRobot(id, agentId, reason = 'User activity detected') {
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const record = records.find((item) => item.id === String(id));
+      if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+      const now = new Date();
+      record.status = 'queued';
+      record.queuedAt = now.toISOString();
+      record.updatedAt = record.queuedAt;
+      record.robotAgentId = null;
+      record.robotClaimedAt = null;
+      record.robotLeaseUntil = null;
+      record.lastError = String(reason || 'Robot execution deferred');
+      if (record.reservation) extendReservation(record.reservation, new Date(now.getTime() + 30 * 60_000), 'active');
+      await this.writeRecords(records);
+      return record;
+    });
   }
 
   async writeRecords(records) {
@@ -790,6 +949,7 @@ function normalizeRecord(record) {
     source: record.source || sourceFromTicketId(ticket.Id),
     externalId: record.externalId || externalIdFromTicketId(ticket.Id),
     amoLeadId: record.amoLeadId || amoLeadIdFromTicketId(ticket.Id),
+    branchId: record.branchId ?? record.reservation?.branchId ?? null,
     status: normalizeStatus(record.status),
     ticket,
     fingerprint,
@@ -805,7 +965,8 @@ function normalizeRecord(record) {
     robotClaimedAt: record.robotClaimedAt || null,
     robotLeaseUntil: record.robotLeaseUntil || null,
     robotCompletedAt: record.robotCompletedAt || null,
-    robotResult: record.robotResult && typeof record.robotResult === 'object' ? record.robotResult : null
+    robotResult: record.robotResult && typeof record.robotResult === 'object' ? record.robotResult : null,
+    reservation: record.reservation && typeof record.reservation === 'object' ? record.reservation : null
   };
 }
 

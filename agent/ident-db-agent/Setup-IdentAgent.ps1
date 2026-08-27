@@ -155,11 +155,14 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.7.1'
+        version = '2.8.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true
         robotEnabled = $false
+    }
+    robot = [ordered]@{
+        minUserIdleSeconds = 60
     }
     intervals = [ordered]@{
         heartbeatSeconds = 60
