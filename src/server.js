@@ -588,6 +588,18 @@ export function buildApp(config, logger, options = {}) {
         return sendJson(res, 200, { record });
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/tickets/cancel') {
+        requireServiceApiKey(req, config);
+        const body = await readJson(req);
+        if (!body.id) return sendJson(res, 400, { error: 'id is required' });
+        const record = await ticketQueue.cancel(String(body.id), body.reason);
+        if (!record) return sendJson(res, 404, { error: 'Ticket not found' });
+        if (!record.canceled) {
+          return sendJson(res, 409, { error: `Ticket with status ${record.status} cannot be canceled` });
+        }
+        return sendJson(res, 200, { record });
+      }
+
       if (req.method === 'GET' && url.pathname === '/oauth/amocrm/url') {
         requireServiceApiKey(req, config);
         const oauthStatus = getAmoOAuthStatus(config);

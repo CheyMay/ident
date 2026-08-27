@@ -398,6 +398,32 @@ export class TicketQueue {
     return record;
   }
 
+  async cancel(id, reason = 'Cancelled by operator') {
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const record = records.find((item) => item.id === id);
+      if (!record) return null;
+      if (record.status === 'ignored' && String(record.lastError || '').startsWith('Cancelled:')) {
+        return { ...record, canceled: true, changed: false };
+      }
+      if (!['queued', 'failed', 'robot_failed'].includes(record.status)) {
+        return { ...record, canceled: false, changed: false };
+      }
+
+      const now = new Date();
+      const cleanReason = String(reason || 'Cancelled by operator').trim().slice(0, 1000) || 'Cancelled by operator';
+      record.status = 'ignored';
+      record.lastError = `Cancelled: ${cleanReason}`;
+      record.updatedAt = now.toISOString();
+      record.robotAgentId = null;
+      record.robotClaimedAt = null;
+      record.robotLeaseUntil = null;
+      if (record.reservation) releaseReservation(record.reservation, now, 'cancelled');
+      await this.writeRecords(records);
+      return { ...record, canceled: true, changed: true };
+    });
+  }
+
   async releaseExpiredRobotClaims() {
     const records = await this.records();
     const now = new Date();

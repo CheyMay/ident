@@ -278,16 +278,30 @@ test('queues booking and returns it through IDENT GetTickets', async () => {
     });
     assert.equal(requeueResponse.status, 200);
 
-    const requeuedTicketsResponse = await fetch(
+    const requeuedTicketsResponse = await fetch(`${baseUrl}/api/tickets?status=queued`);
+    assert.equal(requeuedTicketsResponse.status, 200);
+    const requeuedTickets = await requeuedTicketsResponse.json();
+    assert.equal(requeuedTickets.records.length, 1);
+    assert.equal(requeuedTickets.records[0].id, 'booking-1');
+
+    const cancelResponse = await fetch(`${baseUrl}/api/tickets/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'booking-1', reason: 'test cleanup' })
+    });
+    assert.equal(cancelResponse.status, 200);
+    const canceled = await cancelResponse.json();
+    assert.equal(canceled.record.status, 'ignored');
+    assert.equal(canceled.record.canceled, true);
+
+    const canceledTicketsResponse = await fetch(
       `${baseUrl}/GetTickets?dateTimeFrom=2026-05-01T00%3A00%3A00%2B03%3A00&dateTimeTo=2026-05-31T23%3A59%3A59%2B03%3A00`,
       {
         headers: { 'IDENT-Integration-Key': 'test-ident-key' }
       }
     );
-    assert.equal(requeuedTicketsResponse.status, 200);
-    const requeuedTickets = await requeuedTicketsResponse.json();
-    assert.equal(requeuedTickets.length, 1);
-    assert.equal(requeuedTickets[0].Id, 'booking-1');
+    assert.equal(canceledTicketsResponse.status, 200);
+    assert.equal((await canceledTicketsResponse.json()).length, 0);
   });
 });
 

@@ -143,6 +143,50 @@ test('job queue retries failed jobs with backoff and manual retry', async () => 
   }
 });
 
+test('ticket cancellation is idempotent and releases its reservation', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const queue = new TicketQueue(storage, { timetableMaxAgeMinutes: 30, reservationMinutes: 720 });
+  const timetable = {
+    receivedAt: new Date().toISOString(),
+    Doctors: [{ Id: 10, Name: 'Doctor' }],
+    Branches: [{ Id: 20, Name: 'Clinic' }],
+    Intervals: [{
+      DoctorId: 10,
+      BranchId: 20,
+      StartDateTime: '2026-09-01T10:00:00+03:00',
+      LengthInMinutes: 15,
+      IsBusy: false
+    }]
+  };
+  const ticket = {
+    Id: 'cancel-1',
+    DoctorId: 10,
+    PlanStart: '2026-09-01T10:00:00+03:00',
+    PlanEnd: '2026-09-01T10:15:00+03:00'
+  };
+
+  try {
+    await queue.reserveAndUpsert(ticket, { status: 'queued' }, { timetable, branchId: 20 });
+    const canceled = await queue.cancel(ticket.Id, 'operator cleanup');
+    assert.equal(canceled.status, 'ignored');
+    assert.equal(canceled.canceled, true);
+    assert.equal(canceled.changed, true);
+    assert.equal(canceled.reservation.status, 'released');
+    assert.equal(canceled.reservation.releaseReason, 'cancelled');
+    assert.equal(await queue.claimForRobot('clinic-agent', 300, timetable), null);
+
+    const repeated = await queue.cancel(ticket.Id, 'second request');
+    assert.equal(repeated.canceled, true);
+    assert.equal(repeated.changed, false);
+  } finally {
+    storage.close?.();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('robot failure keeps the slot quarantined for operator review', async () => {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });
