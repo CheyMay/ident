@@ -314,9 +314,15 @@ function Invoke-PowerShellChildProcess {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+        $nextHeartbeatAt = (Get-Date).AddSeconds(25)
         while (-not $process.WaitForExit(2000) -and (Get-Date) -lt $deadline) {
             if ($null -ne $script:State -and $null -ne $script:Context) {
                 Write-RuntimeState
+                $now = Get-Date
+                if ($now -ge $nextHeartbeatAt) {
+                    Send-Heartbeat -HeartbeatOnly
+                    $nextHeartbeatAt = $now.AddSeconds(25)
+                }
             }
         }
         if (-not $process.HasExited) {
@@ -1118,6 +1124,8 @@ function Apply-DesiredState {
 }
 
 function Send-Heartbeat {
+    param([switch]$HeartbeatOnly)
+
     $payload = [ordered]@{
         agentId = [string]$script:Context.Config.agent.id
         deviceName = $env:COMPUTERNAME
@@ -1139,7 +1147,9 @@ function Send-Heartbeat {
         $script:State.worker.backendOnline = $true
         $script:State.worker.lastHeartbeatAt = (Get-Date).ToString('o')
         $script:State.worker.lastError = ''
-        Apply-DesiredState -Desired $response.desired
+        if (-not $HeartbeatOnly) {
+            Apply-DesiredState -Desired $response.desired
+        }
     }
     catch {
         $script:State.worker.backendOnline = $false

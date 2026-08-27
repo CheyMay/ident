@@ -1,4 +1,4 @@
-Code9 IDENT Desktop 2.9.3
+Code9 IDENT Desktop 2.9.4
 =======================
 
 Что это
