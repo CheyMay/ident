@@ -11,6 +11,7 @@ if ([string]::IsNullOrWhiteSpace($PackagePath)) {
 }
 $PackagePath = [IO.Path]::GetFullPath($PackagePath)
 $updaterPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\agent\ident-db-agent\Apply-IdentAgentUpdate.ps1'))
+$workerPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\agent\ident-db-agent\IdentWorker.ps1'))
 $testRoot = Join-Path $PSScriptRoot ('.tmp-update-' + [Guid]::NewGuid().ToString('N'))
 $installDirectory = Join-Path $testRoot 'install'
 
@@ -99,6 +100,22 @@ try {
     if ([string]$rolledBackConfig.agent.version -ne $expectedVersion) { throw 'Configuration rollback did not preserve the installed version.' }
     $failureStatus = Get-Content -LiteralPath (Join-Path $installDirectory 'update-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$failureStatus.status -ne 'failed') { throw 'Failed update status was not recorded.' }
+
+    $tokens = $null
+    $parseErrors = $null
+    $workerAst = [Management.Automation.Language.Parser]::ParseFile($workerPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) { throw 'Worker retry policy could not be parsed.' }
+    $retryFunction = $workerAst.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Test-UpdateAttemptRecent'
+    }, $true)
+    if ($null -eq $retryFunction) { throw 'Worker update retry policy is missing.' }
+    Invoke-Expression $retryFunction.Extent.Text
+    if (-not (Test-UpdateAttemptRecent -Status 'failed' -UpdatedAt (Get-Date).ToString('o'))) { throw 'A recent failed update must wait before retry.' }
+    if (Test-UpdateAttemptRecent -Status 'failed' -UpdatedAt (Get-Date).AddMinutes(-6).ToString('o')) { throw 'A stale failed update must be retried.' }
+    if (-not (Test-UpdateAttemptRecent -Status 'applying' -UpdatedAt (Get-Date).AddMinutes(-9).ToString('o'))) { throw 'A recent applying update must not overlap.' }
+    if (Test-UpdateAttemptRecent -Status 'applying' -UpdatedAt (Get-Date).AddMinutes(-11).ToString('o')) { throw 'A stale applying update must be retried.' }
 
     Write-Host 'Agent update lifecycle OK' -ForegroundColor Green
 }

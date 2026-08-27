@@ -155,7 +155,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.9.1'
+        version = '2.9.2'
     }
     features = [ordered]@{
         scheduleEnabled = $true

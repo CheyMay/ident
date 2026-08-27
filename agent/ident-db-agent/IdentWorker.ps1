@@ -736,6 +736,25 @@ function Write-UpdateStatus {
     $script:State.update.updatedAt = $payload.updatedAt
 }
 
+function Test-UpdateAttemptRecent {
+    param(
+        [string]$Status,
+        [object]$UpdatedAt
+    )
+
+    $retryAfterMinutes = switch ($Status) {
+        'failed' { 5 }
+        'downloading' { 10 }
+        'applying' { 10 }
+        default { return $false }
+    }
+    $attemptedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$UpdatedAt, [ref]$attemptedAt)) {
+        return $false
+    }
+    return (([DateTimeOffset]::Now - $attemptedAt).TotalMinutes -lt $retryAfterMinutes)
+}
+
 function Request-AgentUpdate {
     param([object]$Update)
 
@@ -760,7 +779,9 @@ function Request-AgentUpdate {
     }
     if (
         [string]$script:State.update.targetVersion -eq $targetVersion -and
-        @('downloading', 'applying', 'failed') -contains [string]$script:State.update.status
+        (Test-UpdateAttemptRecent `
+            -Status ([string]$script:State.update.status) `
+            -UpdatedAt $script:State.update.updatedAt)
     ) {
         return
     }
