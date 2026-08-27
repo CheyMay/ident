@@ -49,12 +49,35 @@ function Write-SupervisorLog {
     param([string]$EventName, [hashtable]$Data = @{})
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+    Invoke-LogRotation -Path $logPath
     $entry = [ordered]@{
         timestamp = (Get-Date).ToString('o')
         event = $EventName
         data = $Data
     }
     Add-Content -LiteralPath $logPath -Value ($entry | ConvertTo-Json -Compress -Depth 6) -Encoding UTF8
+}
+
+function Invoke-LogRotation {
+    param(
+        [string]$Path,
+        [long]$MaxBytes = 5MB,
+        [int]$Backups = 3
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -lt $MaxBytes) {
+            return
+        }
+        for ($index = $Backups; $index -ge 1; $index--) {
+            $source = if ($index -eq 1) { $Path } else { "$Path.$($index - 1)" }
+            if (Test-Path -LiteralPath $source) {
+                Move-Item -LiteralPath $source -Destination "$Path.$index" -Force
+            }
+        }
+    }
+    catch {
+    }
 }
 
 function Write-SupervisorState {

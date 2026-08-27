@@ -121,7 +121,7 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.9.0-test' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.9.1-test' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
         robot = @{ minUserIdleSeconds = 60 }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }
@@ -256,8 +256,16 @@ server.listen(port, "127.0.0.1");
 
     $previousTestIdle = $env:CODE9_IDENT_TEST_IDLE_SECONDS
     $previousTestDesktop = $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP
+    $previousModulePath = $env:PSModulePath
     $env:CODE9_IDENT_TEST_IDLE_SECONDS = '600'
     $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP = '1'
+    $env:PSModulePath = @(
+        (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules')
+        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules')
+        (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules')
+    ) -join ';'
+    $workerOutputPath = Join-Path $tempRoot 'worker.stdout.log'
+    $workerErrorPath = Join-Path $tempRoot 'worker.stderr.log'
     $worker = Start-Process powershell.exe -ArgumentList @(
         '-NoProfile',
         '-ExecutionPolicy',
@@ -266,9 +274,10 @@ server.listen(port, "127.0.0.1");
         $workerPath,
         '-ConfigPath',
         (Join-Path $tempRoot 'config.json')
-    ) -WindowStyle Hidden -PassThru
+    ) -WindowStyle Hidden -RedirectStandardOutput $workerOutputPath -RedirectStandardError $workerErrorPath -PassThru
     $env:CODE9_IDENT_TEST_IDLE_SECONDS = $previousTestIdle
     $env:CODE9_IDENT_TEST_INTERACTIVE_DESKTOP = $previousTestDesktop
+    $env:PSModulePath = $previousModulePath
 
     $status = $null
     for ($attempt = 0; $attempt -lt 28; $attempt++) {
@@ -285,7 +294,23 @@ server.listen(port, "127.0.0.1");
     } else {
         0
     }
-    $state = Get-Content -LiteralPath (Join-Path $tempRoot 'state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $statePath = Join-Path $tempRoot 'state.json'
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        $worker.Refresh()
+        $workerOutput = if (Test-Path -LiteralPath $workerOutputPath) {
+            @(Get-Content -LiteralPath $workerOutputPath -Encoding UTF8) -join [Environment]::NewLine
+        } else { '' }
+        $workerError = if (Test-Path -LiteralPath $workerErrorPath) {
+            @(Get-Content -LiteralPath $workerErrorPath -Encoding UTF8) -join [Environment]::NewLine
+        } else { '' }
+        $workerLogPath = Join-Path $tempRoot 'logs\agent.log'
+        $workerLog = if (Test-Path -LiteralPath $workerLogPath) {
+            @(Get-Content -LiteralPath $workerLogPath -Encoding UTF8) -join [Environment]::NewLine
+        } else { '' }
+        $exitCode = if ($worker.HasExited) { [string]$worker.ExitCode } else { 'running' }
+        throw "Worker did not create runtime state. Exit=$exitCode Stdout=$workerOutput Stderr=$workerError Log=$workerLog"
+    }
+    $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
     $appliedMapping = Get-Content -LiteralPath (Join-Path $tempRoot 'mapping.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
     Write-Host "Robot executions: $executionCount"
@@ -301,7 +326,15 @@ server.listen(port, "127.0.0.1");
     Assert-Equal -Actual ([string]$state.robot.state) -Expected 'idle' -Label 'Final robot state'
     Assert-Equal -Actual ([string]$state.schema.state) -Expected 'ok' -Label 'Schema upload state'
     Assert-Equal -Actual ([int]$state.schema.tables) -Expected 1 -Label 'Uploaded schema table count'
-    Assert-Equal -Actual ([string]$state.schedule.mappingRevision) -Expected '2026-07-30T15:30:00.000Z' -Label 'Remote mapping revision'
+    $actualMappingRevision = if ($state.schedule.mappingRevision -is [DateTime]) {
+        ([DateTime]$state.schedule.mappingRevision).ToUniversalTime().ToString(
+            'yyyy-MM-ddTHH:mm:ss.fffZ',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    } else {
+        [string]$state.schedule.mappingRevision
+    }
+    Assert-Equal -Actual $actualMappingRevision -Expected '2026-07-30T15:30:00.000Z' -Label 'Remote mapping revision'
     Assert-Equal -Actual ([string]$appliedMapping.doctorsSql) -Expected 'SELECT Id, Name FROM dbo.Doctors' -Label 'Remote doctors SQL'
     Assert-Equal -Actual ([string]$appliedMapping.intervalsSql) -Expected 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule' -Label 'Remote intervals SQL'
     Assert-Equal -Actual ([string]$appliedMapping.servicesSql) -Expected 'SELECT Id, Name, Price FROM dbo.ServiceItems' -Label 'Remote services SQL'

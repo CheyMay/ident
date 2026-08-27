@@ -574,6 +574,42 @@ test('diagnostics reports failed tickets and jobs as errors', async () => {
   });
 });
 
+test('diagnostics reports a pending queue without an online robot', async () => {
+  await withTestServer(async ({ baseUrl, dataDir }) => {
+    await writeFile(
+      path.join(dataDir, 'tickets.json'),
+      JSON.stringify({
+        records: [{
+          id: 'queued-without-robot',
+          status: 'queued',
+          queuedAt: '2026-08-27T10:00:00.000Z',
+          ticket: { Id: 'queued-without-robot' }
+        }]
+      }),
+      'utf8'
+    );
+    await writeFile(
+      path.join(dataDir, 'agents.json'),
+      JSON.stringify({
+        agents: {
+          'clinic-offline': {
+            agentId: 'clinic-offline',
+            lastSeenAt: '2020-01-01T00:00:00.000Z',
+            robot: { enabled: true, configured: true }
+          }
+        },
+        desired: { 'clinic-offline': { robotEnabled: true } }
+      }),
+      'utf8'
+    );
+
+    const diagnostics = await (await fetch(`${baseUrl}/api/diagnostics`)).json();
+    assert.equal(diagnostics.issues.some((issue) => issue.code === 'agent_offline'), true);
+    assert.equal(diagnostics.issues.some((issue) => issue.code === 'robot_unavailable_with_queue'), true);
+    assert.equal(diagnostics.tickets.oldestQueuedAt, '2026-08-27T10:00:00.000Z');
+  });
+});
+
 test('imports amoCRM leads into queue and sends feedback after GetTickets', async () => {
   await withMockAmoServer(async ({ baseUrl: amoBaseUrl, requests }) => {
     await withTestServer(

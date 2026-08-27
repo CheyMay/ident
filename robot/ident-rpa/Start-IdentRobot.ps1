@@ -669,7 +669,8 @@ if (-not $windowInfo) {
     }
     return
   }
-  throw 'IDENT window was not found. Start IDENT and check ident.processName/windowTitleRegex in config.'
+  Write-Host 'ROBOT_DEFER_IDENT_UNAVAILABLE'
+  throw 'ROBOT_DEFER_IDENT_UNAVAILABLE'
 }
 
   do {

@@ -24,7 +24,18 @@ function Invoke-UpdaterProcess {
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" " +
         "-ArchivePath `"$Archive`" -InstallDirectory `"$installDirectory`" " +
         "-ExpectedVersion `"$Version`" -ExpectedSha256 `"$Hash`" -TestMode"
-    return Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+    $previousModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = @(
+            (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules')
+            (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules')
+            (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules')
+        ) -join ';'
+        return Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+    }
+    finally {
+        $env:PSModulePath = $previousModulePath
+    }
 }
 
 try {

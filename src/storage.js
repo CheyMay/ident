@@ -157,6 +157,7 @@ export class TicketQueue {
 
   async summary() {
     const records = await this.records();
+    const now = new Date();
     const statuses = {
       queued: 0,
       sent_to_ident: 0,
@@ -169,12 +170,27 @@ export class TicketQueue {
     for (const record of records) {
       statuses[record.status] = (statuses[record.status] || 0) + 1;
     }
+    const queued = records
+      .filter((record) => record.status === 'queued')
+      .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt));
+    const oldestQueuedAt = queued[0]?.queuedAt || queued[0]?.createdAt || null;
+    const oldestQueuedAgeSeconds = oldestQueuedAt
+      ? Math.max(0, Math.round((now.getTime() - new Date(oldestQueuedAt).getTime()) / 1000))
+      : null;
+    const staleRobotClaims = records.filter((record) => {
+      if (record.status !== 'robot_processing') return false;
+      const leaseUntil = new Date(record.robotLeaseUntil || 0);
+      return Number.isNaN(leaseUntil.getTime()) || leaseUntil <= now;
+    }).length;
 
     return {
       total: records.length,
       statuses,
+      oldestQueuedAt,
+      oldestQueuedAgeSeconds,
+      staleRobotClaims,
       failed: records
-        .filter((record) => record.status === 'failed')
+        .filter((record) => ['failed', 'robot_failed'].includes(record.status))
         .slice(0, 20)
         .map((record) => ({
           id: record.id,

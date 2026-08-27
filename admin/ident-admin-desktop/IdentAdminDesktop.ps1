@@ -609,7 +609,10 @@ function Refresh-All {
         $connectionLabel.Text = 'Сервер: на связи'
         $connectionLabel.ForeColor = [Drawing.Color]::FromArgb(111, 203, 144)
         $failedJobs = if ($null -ne $jobs.statuses) { [int]$jobs.statuses.failed } else { 0 }
-        $summaryLabel.Text = "Сервер: $($diagnostics.status)  |  Агенты: $(@($script:AgentStatus.agents).Count)  |  Заявки: $($tickets.total)  |  Ошибки очереди: $failedJobs  |  amoCRM: $(if ([bool]$health.amoConfigured) { 'подключена' } else { 'не подключена' })"
+        $failedTickets = if ($null -ne $tickets.statuses) {
+            [int]$tickets.statuses.failed + [int]$tickets.statuses.robot_failed + [int]$tickets.staleRobotClaims
+        } else { 0 }
+        $summaryLabel.Text = "Сервер: $($diagnostics.status)  |  Агенты: $(@($script:AgentStatus.agents).Count)  |  Заявки: $($tickets.total)  |  Ошибки очереди: $($failedJobs + $failedTickets)  |  amoCRM: $(if ([bool]$health.amoConfigured) { 'подключена' } else { 'не подключена' })"
         $script:Refreshing = $false
         Render-Agents
         Render-Timetable

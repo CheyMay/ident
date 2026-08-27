@@ -120,6 +120,7 @@ function Write-AgentLog {
 
     $directory = Split-Path -Parent $Context.LogPath
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    Invoke-LogRotation -Path $Context.LogPath
     $entry = [ordered]@{
         timestamp = (Get-Date).ToString('o')
         level = $Level
@@ -127,6 +128,28 @@ function Write-AgentLog {
         data = $Data
     }
     Add-Content -LiteralPath $Context.LogPath -Value ($entry | ConvertTo-Json -Compress -Depth 8) -Encoding UTF8
+}
+
+function Invoke-LogRotation {
+    param(
+        [string]$Path,
+        [long]$MaxBytes = 5MB,
+        [int]$Backups = 3
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -lt $MaxBytes) {
+            return
+        }
+        for ($index = $Backups; $index -ge 1; $index--) {
+            $source = if ($index -eq 1) { $Path } else { "$Path.$($index - 1)" }
+            if (Test-Path -LiteralPath $source) {
+                Move-Item -LiteralPath $source -Destination "$Path.$index" -Force
+            }
+        }
+    }
+    catch {
+    }
 }
 
 function Get-SqlDataSource {

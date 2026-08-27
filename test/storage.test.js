@@ -181,6 +181,31 @@ test('robot failure keeps the slot quarantined for operator review', async () =>
     const [record] = await queue.listRecords({ status: 'robot_failed' });
     assert.equal(record.reservation.status, 'awaiting_review');
     assert.equal((await queue.timetableWithReservations(timetable)).Intervals.filter((item) => item.IsReserved).length, 3);
+    const summary = await queue.summary();
+    assert.equal(summary.statuses.robot_failed, 1);
+    assert.equal(summary.failed[0].id, ticket.Id);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('queue summary reports expired robot leases', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const queue = new TicketQueue(storage);
+
+  try {
+    await storage.writeJson('tickets.json', {
+      records: [{
+        id: 'expired-lease',
+        status: 'robot_processing',
+        robotLeaseUntil: '2020-01-01T00:00:00.000Z',
+        ticket: { Id: 'expired-lease' }
+      }]
+    });
+    assert.equal((await queue.summary()).staleRobotClaims, 1);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

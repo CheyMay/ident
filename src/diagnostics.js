@@ -26,6 +26,10 @@ export async function buildDiagnostics({
   const amoOAuthStatus = getAmoOAuthStatus(config);
   const timetableAgeMs = timetable?.receivedAt ? Date.now() - new Date(timetable.receivedAt).getTime() : null;
   const webhookEvents = Array.isArray(webhooks.events) ? webhooks.events : [];
+  const onlineAgents = agents.agents.filter((agent) => agent.online);
+  const onlineRobotAgents = onlineAgents.filter((agent) => {
+    return agent.robot?.enabled === true && agent.robot?.configured === true;
+  });
 
   addIssue(issues, !config.identIntegrationKey, 'error', 'ident_key_missing', 'IDENT_INTEGRATION_KEY is not configured');
   addIssue(issues, !config.serviceApiKey, 'warn', 'service_api_key_missing', 'SERVICE_API_KEY is not configured; internal API endpoints are unprotected');
@@ -48,6 +52,22 @@ export async function buildDiagnostics({
     'IDENT_REQUIRE_DOCTOR_MAPPING is enabled, but no doctors are available in mappings'
   );
   addIssue(issues, tickets.statuses.failed > 0, 'error', 'tickets_failed', 'There are failed IDENT tickets');
+  addIssue(issues, tickets.statuses.robot_failed > 0, 'error', 'robot_tickets_failed', 'There are IDENT tickets requiring robot review');
+  addIssue(issues, tickets.staleRobotClaims > 0, 'error', 'robot_claims_stale', 'There are expired robot task leases');
+  addIssue(
+    issues,
+    agents.agents.length > 0 && onlineAgents.length === 0,
+    'error',
+    'agent_offline',
+    'All configured clinic agents are offline'
+  );
+  addIssue(
+    issues,
+    tickets.statuses.queued > 0 && onlineRobotAgents.length === 0,
+    'error',
+    'robot_unavailable_with_queue',
+    'IDENT queue has pending tickets, but no online calibrated robot is enabled'
+  );
   addIssue(issues, jobs.statuses.failed > 0, 'error', 'jobs_failed', 'There are failed integration jobs');
   addIssue(
     issues,

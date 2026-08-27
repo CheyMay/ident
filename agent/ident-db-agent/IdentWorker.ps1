@@ -83,6 +83,46 @@ function Resolve-LocalPath {
     return [IO.Path]::GetFullPath((Join-Path $BaseDirectory $Value))
 }
 
+function ConvertTo-RevisionString {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime().ToString(
+            'yyyy-MM-ddTHH:mm:ss.fffZ',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime().ToString(
+            'yyyy-MM-ddTHH:mm:ss.fffZ',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return ''
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (
+        [DateTimeOffset]::TryParse(
+            $text,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,
+            [ref]$parsed
+        )
+    ) {
+        return $parsed.ToUniversalTime().ToString(
+            'yyyy-MM-ddTHH:mm:ss.fffZ',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    return $text
+}
+
 function Get-PlainTextSecret {
     param([string]$EncryptedValue)
 
@@ -198,6 +238,7 @@ function Write-WorkerLog {
 
     $directory = Split-Path -Parent $script:Context.LogPath
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    Invoke-LogRotation -Path $script:Context.LogPath
     $entry = [ordered]@{
         timestamp = (Get-Date).ToString('o')
         level = $Level
@@ -205,6 +246,28 @@ function Write-WorkerLog {
         data = $Data
     }
     Add-Content -LiteralPath $script:Context.LogPath -Value ($entry | ConvertTo-Json -Compress -Depth 8) -Encoding UTF8
+}
+
+function Invoke-LogRotation {
+    param(
+        [string]$Path,
+        [long]$MaxBytes = 5MB,
+        [int]$Backups = 3
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -lt $MaxBytes) {
+            return
+        }
+        for ($index = $Backups; $index -ge 1; $index--) {
+            $source = if ($index -eq 1) { $Path } else { "$Path.$($index - 1)" }
+            if (Test-Path -LiteralPath $source) {
+                Move-Item -LiteralPath $source -Destination "$Path.$index" -Force
+            }
+        }
+    }
+    catch {
+    }
 }
 
 function Move-FileWithRetry {
@@ -935,12 +998,31 @@ function Apply-DesiredState {
     $script:State.schedule.enabled = $scheduleEnabled
     $script:State.robot.enabled = $robotEnabled
 
+    $scheduleRequestRevision = if ($Desired.PSObject.Properties.Name -contains 'scheduleRequestRevision') {
+        ConvertTo-RevisionString -Value $Desired.scheduleRequestRevision
+    } else { '' }
+    $mappingRevision = if ($Desired.PSObject.Properties.Name -contains 'mappingRevision') {
+        ConvertTo-RevisionString -Value $Desired.mappingRevision
+    } else { '' }
+    $sqlConfigurationRevision = if ($Desired.PSObject.Properties.Name -contains 'sqlConfigurationRevision') {
+        ConvertTo-RevisionString -Value $Desired.sqlConfigurationRevision
+    } else { '' }
+    $sqlDiscoveryRequestRevision = if ($Desired.PSObject.Properties.Name -contains 'sqlDiscoveryRequestRevision') {
+        ConvertTo-RevisionString -Value $Desired.sqlDiscoveryRequestRevision
+    } else { '' }
+    $diagnosticsRequestRevision = if ($Desired.PSObject.Properties.Name -contains 'diagnosticsRequestRevision') {
+        ConvertTo-RevisionString -Value $Desired.diagnosticsRequestRevision
+    } else { '' }
+    $restartRequestRevision = if ($Desired.PSObject.Properties.Name -contains 'restartRequestRevision') {
+        ConvertTo-RevisionString -Value $Desired.restartRequestRevision
+    } else { '' }
+
     if (
         $Desired.PSObject.Properties.Name -contains 'scheduleRequestRevision' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.scheduleRequestRevision) -and
-        [string]$Desired.scheduleRequestRevision -ne [string]$script:State.schedule.requestRevision
+        -not [string]::IsNullOrWhiteSpace($scheduleRequestRevision) -and
+        $scheduleRequestRevision -ne [string]$script:State.schedule.requestRevision
     ) {
-        $script:State.schedule.requestRevision = [string]$Desired.scheduleRequestRevision
+        $script:State.schedule.requestRevision = $scheduleRequestRevision
         New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
     }
 
@@ -948,11 +1030,11 @@ function Apply-DesiredState {
         $Desired.PSObject.Properties.Name -contains 'scheduleMapping' -and
         $Desired.PSObject.Properties.Name -contains 'mappingRevision' -and
         $null -ne $Desired.scheduleMapping -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.mappingRevision) -and
-        [string]$Desired.mappingRevision -ne [string]$script:State.schedule.mappingRevision
+        -not [string]::IsNullOrWhiteSpace($mappingRevision) -and
+        $mappingRevision -ne [string]$script:State.schedule.mappingRevision
     ) {
         try {
-            Save-ScheduleMapping -Mapping $Desired.scheduleMapping -Revision ([string]$Desired.mappingRevision)
+            Save-ScheduleMapping -Mapping $Desired.scheduleMapping -Revision $mappingRevision
         }
         catch {
             $script:State.schedule.state = 'mapping_error'
@@ -965,17 +1047,17 @@ function Apply-DesiredState {
         $Desired.PSObject.Properties.Name -contains 'sqlConfiguration' -and
         $Desired.PSObject.Properties.Name -contains 'sqlConfigurationRevision' -and
         $null -ne $Desired.sqlConfiguration -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.sqlConfigurationRevision) -and
-        [string]$Desired.sqlConfigurationRevision -ne [string]$script:ControlState.sqlConfigurationRevision
+        -not [string]::IsNullOrWhiteSpace($sqlConfigurationRevision) -and
+        $sqlConfigurationRevision -ne [string]$script:ControlState.sqlConfigurationRevision
     ) {
         try {
             Save-RemoteSqlConfiguration `
                 -SqlConfiguration $Desired.sqlConfiguration `
-                -Revision ([string]$Desired.sqlConfigurationRevision)
+                -Revision $sqlConfigurationRevision
         }
         catch {
-            Set-ControlRevision -Name 'sqlConfigurationRevision' -Revision ([string]$Desired.sqlConfigurationRevision)
-            $script:State.diagnostics.sqlConfigurationRevision = [string]$Desired.sqlConfigurationRevision
+            Set-ControlRevision -Name 'sqlConfigurationRevision' -Revision $sqlConfigurationRevision
+            $script:State.diagnostics.sqlConfigurationRevision = $sqlConfigurationRevision
             $script:State.diagnostics.state = 'error'
             $script:State.diagnostics.lastError = $_.Exception.Message
             Write-WorkerLog -Level 'error' -EventName 'remote_sql_configuration_rejected' -Data @{ message = $_.Exception.Message }
@@ -984,20 +1066,20 @@ function Apply-DesiredState {
 
     if (
         $Desired.PSObject.Properties.Name -contains 'sqlDiscoveryRequestRevision' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.sqlDiscoveryRequestRevision) -and
-        [string]$Desired.sqlDiscoveryRequestRevision -ne [string]$script:ControlState.sqlDiscoveryRequestRevision
+        -not [string]::IsNullOrWhiteSpace($sqlDiscoveryRequestRevision) -and
+        $sqlDiscoveryRequestRevision -ne [string]$script:ControlState.sqlDiscoveryRequestRevision
     ) {
-        Invoke-RemoteSqlDiscovery -Revision ([string]$Desired.sqlDiscoveryRequestRevision)
+        Invoke-RemoteSqlDiscovery -Revision $sqlDiscoveryRequestRevision
     }
 
     if (
         $Desired.PSObject.Properties.Name -contains 'diagnosticsRequestRevision' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.diagnosticsRequestRevision) -and
-        [string]$Desired.diagnosticsRequestRevision -ne [string]$script:ControlState.diagnosticsRequestRevision
+        -not [string]::IsNullOrWhiteSpace($diagnosticsRequestRevision) -and
+        $diagnosticsRequestRevision -ne [string]$script:ControlState.diagnosticsRequestRevision
     ) {
         Send-AgentDiagnostics
-        Set-ControlRevision -Name 'diagnosticsRequestRevision' -Revision ([string]$Desired.diagnosticsRequestRevision)
-        $script:State.diagnostics.requestRevision = [string]$Desired.diagnosticsRequestRevision
+        Set-ControlRevision -Name 'diagnosticsRequestRevision' -Revision $diagnosticsRequestRevision
+        $script:State.diagnostics.requestRevision = $diagnosticsRequestRevision
     }
 
     if ($Desired.PSObject.Properties.Name -contains 'update') {
@@ -1007,10 +1089,10 @@ function Apply-DesiredState {
     if (
         -not $script:StopRequested -and
         $Desired.PSObject.Properties.Name -contains 'restartRequestRevision' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Desired.restartRequestRevision) -and
-        [string]$Desired.restartRequestRevision -ne [string]$script:ControlState.restartRequestRevision
+        -not [string]::IsNullOrWhiteSpace($restartRequestRevision) -and
+        $restartRequestRevision -ne [string]$script:ControlState.restartRequestRevision
     ) {
-        Request-RemoteRestart -Revision ([string]$Desired.restartRequestRevision)
+        Request-RemoteRestart -Revision $restartRequestRevision
     }
 }
 
@@ -1360,6 +1442,9 @@ function Invoke-RobotPoll {
             if ($output -match 'ROBOT_DEFER_BUSY') {
                 throw 'ROBOT_DEFER_BUSY'
             }
+            if ($output -match 'ROBOT_DEFER_IDENT_UNAVAILABLE') {
+                throw 'ROBOT_DEFER_IDENT_UNAVAILABLE'
+            }
             $message = ($output.Trim() -split '\r?\n' | Select-Object -Last 1)
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = "Robot process exited with code $exitCode."
@@ -1389,9 +1474,16 @@ function Invoke-RobotPoll {
     }
     catch {
         $message = $_.Exception.Message
-        $deferredForSafety = $message -in @('ROBOT_DEFER_USER_ACTIVE', 'ROBOT_DEFER_SESSION_LOCKED', 'ROBOT_DEFER_BUSY')
+        $deferredForSafety = $message -in @(
+            'ROBOT_DEFER_USER_ACTIVE',
+            'ROBOT_DEFER_SESSION_LOCKED',
+            'ROBOT_DEFER_BUSY',
+            'ROBOT_DEFER_IDENT_UNAVAILABLE'
+        )
         $script:State.robot.state = if ($message -eq 'ROBOT_DEFER_SESSION_LOCKED') {
             'waiting_for_session'
+        } elseif ($message -eq 'ROBOT_DEFER_IDENT_UNAVAILABLE') {
+            'waiting_for_ident'
         } elseif ($deferredForSafety) {
             'waiting_for_idle'
         } elseif ($localExecutionSucceeded) {
@@ -1408,6 +1500,7 @@ function Invoke-RobotPoll {
                     reason = $(switch ($message) {
                         'ROBOT_DEFER_SESSION_LOCKED' { 'Windows session is locked; waiting for an unlocked desktop.' }
                         'ROBOT_DEFER_BUSY' { 'Another robot instance is running.' }
+                        'ROBOT_DEFER_IDENT_UNAVAILABLE' { 'IDENT is not open; waiting for the application window.' }
                         default { 'User activity detected; waiting for 60 seconds of idle time.' }
                     })
                 })
@@ -1428,7 +1521,12 @@ function Invoke-RobotPoll {
                 Write-WorkerLog -Level 'error' -EventName 'robot_fail_report_failed' -Data @{ message = $_.Exception.Message }
             }
         }
-        Write-WorkerLog -Level 'error' -EventName 'robot_task_failed' -Data @{ message = $message }
+        if ($deferredForSafety) {
+            Write-WorkerLog -Level 'info' -EventName 'robot_task_deferred' -Data @{ reason = $message }
+        }
+        else {
+            Write-WorkerLog -Level 'error' -EventName 'robot_task_failed' -Data @{ message = $message }
+        }
     }
     Write-RuntimeState
 }
@@ -1595,9 +1693,29 @@ try {
     }
 }
 catch {
+    $fatalMessage = $_.Exception.Message
     if ($null -ne $script:Context) {
-        Write-WorkerLog -Level 'error' -EventName 'worker_stopped' -Data @{ message = $_.Exception.Message }
+        Write-WorkerLog -Level 'error' -EventName 'worker_stopped' -Data @{ message = $fatalMessage }
     }
+    else {
+        try {
+            $fallbackDirectory = Split-Path -Parent $ConfigPath
+            if ([string]::IsNullOrWhiteSpace($fallbackDirectory)) {
+                $fallbackDirectory = $PSScriptRoot
+            }
+            $fallbackLogPath = Join-Path $fallbackDirectory 'logs\agent.log'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fallbackLogPath) | Out-Null
+            [ordered]@{
+                timestamp = (Get-Date).ToString('o')
+                level = 'error'
+                event = 'worker_bootstrap_failed'
+                message = $fatalMessage
+            } | ConvertTo-Json -Compress | Add-Content -LiteralPath $fallbackLogPath -Encoding UTF8
+        }
+        catch {
+        }
+    }
+    [Console]::Error.WriteLine("IDENT worker stopped: $fatalMessage")
     exit 1
 }
 finally {

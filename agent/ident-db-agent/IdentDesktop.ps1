@@ -111,6 +111,7 @@ function Format-StateName {
         idle = 'ожидание'
         waiting_for_idle = 'ждет 1 минуту бездействия'
         waiting_for_session = 'ждет разблокировки Windows'
+        waiting_for_ident = 'ждет запуска IDENT'
         retrying = 'повторяет подключение к SQL'
         needs_configuration = 'нужна настройка'
         needs_mapping = 'нужна настройка расписания'
