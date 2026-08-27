@@ -121,7 +121,7 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.9.2-test' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.9.3-test' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
         robot = @{ minUserIdleSeconds = 60 }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }

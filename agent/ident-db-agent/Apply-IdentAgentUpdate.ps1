@@ -36,6 +36,22 @@ function Write-UpdateStatus {
     Move-Item -LiteralPath $temporaryPath -Destination $statusPath -Force
 }
 
+function Resume-AgentTask {
+    if ($TestMode) {
+        return
+    }
+    $workerTask = Get-ScheduledTask -TaskName $WorkerTaskName -ErrorAction SilentlyContinue
+    if ($null -eq $workerTask) {
+        & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') `
+            -InstallDirectory $InstallDirectory `
+            -WorkerTaskName $WorkerTaskName
+        return
+    }
+    if ([string]$workerTask.State -ne 'Running') {
+        Start-ScheduledTask -TaskName $WorkerTaskName
+    }
+}
+
 function Resolve-SafeChildPath {
     param(
         [string]$Root,
@@ -179,11 +195,7 @@ try {
     Move-Item -LiteralPath $temporaryConfig -Destination $configPath -Force
     Write-UpdateStatus -Status 'succeeded' -Message 'Update installed successfully.' -CurrentVersion $ExpectedVersion
 
-    if (-not $TestMode) {
-        & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') `
-            -InstallDirectory $InstallDirectory `
-            -WorkerTaskName $WorkerTaskName
-    }
+    Resume-AgentTask
 }
 catch {
     $failure = $_.Exception.Message
