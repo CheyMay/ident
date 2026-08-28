@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Code9\IdentAgent'),
     [switch]$SkipAutostart,
@@ -119,6 +119,8 @@ if (-not (Test-Path -LiteralPath $robotConfigTarget)) {
     $robotConfig.backend.baseUrl = ''
     $robotConfig.backend.serviceApiKey = ''
     $robotConfig.inspect.outputPath = Join-Path $InstallDirectory 'robot\ui-tree.json'
+    $robotConfig.inspect.maxDepth = 12
+    $robotConfig.calibration.reportPath = Join-Path $InstallDirectory 'robot\calibration-report.json'
     $robotConfig.logDir = Join-Path $InstallDirectory 'logs\robot'
     $robotConfig.workflow.allowUnsafeExecution = $false
     $robotConfig.workflow.confirmBeforeEachStep = $false
@@ -126,14 +128,22 @@ if (-not (Test-Path -LiteralPath $robotConfigTarget)) {
 }
 else {
     $robotConfig = Get-Content -LiteralPath $robotConfigTarget -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($robotConfig.PSObject.Properties.Name -notcontains 'calibration') {
+        $robotConfig | Add-Member -NotePropertyName calibration -NotePropertyValue ([pscustomobject]@{
+            status = 'not_configured'
+            profileVersion = 1
+            calibratedAt = ''
+            reportPath = (Join-Path $InstallDirectory 'robot\calibration-report.json')
+        })
+    }
     if ($robotConfig.workflow.PSObject.Properties.Name -notcontains 'successCondition') {
         $robotConfig.workflow | Add-Member -NotePropertyName successCondition -NotePropertyValue ([pscustomobject]@{
             type = 'elementMissing'
             selector = 'saveButton'
             timeoutSeconds = 15
         })
-        $robotConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $robotConfigTarget -Encoding UTF8
     }
+    $robotConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $robotConfigTarget -Encoding UTF8
 }
 
 $defaultAgentId = ('stomazub-' + $env:COMPUTERNAME).ToLowerInvariant() -replace '[^a-z0-9_-]', '-'
@@ -155,7 +165,7 @@ $config = [ordered]@{
     version = 2
     agent = [ordered]@{
         id = $agentId
-        version = '2.9.4'
+        version = '2.10.0'
     }
     features = [ordered]@{
         scheduleEnabled = $true

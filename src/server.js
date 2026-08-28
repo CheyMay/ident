@@ -279,6 +279,12 @@ export function buildApp(config, logger, options = {}) {
         if (body.robotEnabled === true && !(await agentStore.isRobotConfigured(body.agentId))) {
           return sendJson(res, 409, { error: 'Robot must be calibrated and online before it can be enabled' });
         }
+        if (body.robotEnabled === true) {
+          const currentDesired = await agentStore.desiredFor(body.agentId);
+          if (currentDesired.robotEnabled !== true) {
+            body.robotActivationCutoff = new Date().toISOString();
+          }
+        }
         return sendJson(res, 200, {
           agentId: String(body.agentId),
           desired: await agentStore.setDesired(body.agentId, body)
@@ -346,7 +352,13 @@ export function buildApp(config, logger, options = {}) {
           return sendJson(res, 409, { error: 'Robot mode is not enabled for this agent' });
         }
         const timetable = await storage.readJson('timetable.json', null);
-        const record = await ticketQueue.claimForRobot(body.agentId, config.agent.robotLeaseSeconds, timetable);
+        const desired = await agentStore.desiredFor(body.agentId);
+        const record = await ticketQueue.claimForRobot(
+          body.agentId,
+          config.agent.robotLeaseSeconds,
+          timetable,
+          desired.robotActivationCutoff
+        );
         return sendJson(res, 200, { record });
       }
 

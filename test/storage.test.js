@@ -187,6 +187,47 @@ test('ticket cancellation is idempotent and releases its reservation', async () 
   }
 });
 
+test('robot activation cutoff leaves pre-activation tickets untouched', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const config = loadConfig({ DATA_DIR: dataDir });
+  const storage = createStorage(config, { info() {}, warn() {}, error() {} });
+  const queue = new TicketQueue(storage, { timetableMaxAgeMinutes: 30, reservationMinutes: 720 });
+  const timetable = {
+    receivedAt: new Date().toISOString(),
+    Doctors: [{ Id: 10, Name: 'Doctor' }],
+    Branches: [{ Id: 20, Name: 'Clinic' }],
+    Intervals: ['10:00', '11:00'].map((time) => ({
+      DoctorId: 10,
+      BranchId: 20,
+      StartDateTime: `2026-09-01T${time}:00+03:00`,
+      LengthInMinutes: 15,
+      IsBusy: false
+    }))
+  };
+
+  try {
+    await queue.reserveAndUpsert({
+      Id: 'before-activation', DoctorId: 10,
+      PlanStart: '2026-09-01T10:00:00+03:00', PlanEnd: '2026-09-01T10:15:00+03:00'
+    }, { status: 'queued' }, { timetable, branchId: 20 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const cutoff = new Date().toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await queue.reserveAndUpsert({
+      Id: 'after-activation', DoctorId: 10,
+      PlanStart: '2026-09-01T11:00:00+03:00', PlanEnd: '2026-09-01T11:15:00+03:00'
+    }, { status: 'queued' }, { timetable, branchId: 20 });
+
+    const claimed = await queue.claimForRobot('clinic-agent', 300, timetable, cutoff);
+    assert.equal(claimed.id, 'after-activation');
+    assert.equal((await queue.listRecords({ status: 'queued' }))[0].id, 'before-activation');
+  } finally {
+    storage.close?.();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('robot failure keeps the slot quarantined for operator review', async () => {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });

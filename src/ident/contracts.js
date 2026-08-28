@@ -52,6 +52,7 @@ export function filterTickets(tickets, { from, to, limit, offset }) {
 export function normalizeBookingTicket(input, options = {}) {
   const now = new Date().toISOString();
   const planStart = normalizeIdentDate(input.planStart ?? input.PlanStart ?? input.start);
+  const service = input.service ?? input.Service ?? {};
   const requestedDuration = input.durationMinutes ?? input.DurationMinutes ?? null;
   const durationMinutes = requestedDuration === null || requestedDuration === ''
     ? Number(options.defaultAppointmentMinutes || 60)
@@ -62,6 +63,9 @@ export function normalizeBookingTicket(input, options = {}) {
   const planEnd =
     normalizeIdentDate(input.planEnd ?? input.PlanEnd ?? input.end) ||
     (planStart ? addMinutes(planStart, durationMinutes) : null);
+  const normalizedDurationMinutes = planStart && planEnd
+    ? Math.round((new Date(planEnd).getTime() - new Date(planStart).getTime()) / 60_000)
+    : durationMinutes;
 
   const ticket = stripEmpty({
     Id: String(input.id ?? input.Id ?? `local:${Date.now()}`),
@@ -75,6 +79,12 @@ export function normalizeBookingTicket(input, options = {}) {
     Comment: input.comment ?? input.Comment,
     DoctorId: input.doctorId ?? input.DoctorId,
     DoctorName: input.doctorName ?? input.DoctorName,
+    BranchId: input.branchId ?? input.BranchId,
+    BranchName: input.branchName ?? input.BranchName,
+    ServiceId: input.serviceId ?? input.ServiceId ?? service.Id ?? service.id,
+    ServiceName: input.serviceName ?? input.ServiceName ?? service.Name ?? service.name,
+    ServiceCode: input.serviceCode ?? input.ServiceCode ?? service.Code ?? service.code,
+    DurationMinutes: normalizedDurationMinutes,
     UtmSource: input.utmSource ?? input.UtmSource,
     UtmMedium: input.utmMedium ?? input.UtmMedium,
     UtmCampaign: input.utmCampaign ?? input.UtmCampaign,

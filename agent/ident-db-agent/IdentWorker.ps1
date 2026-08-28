@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ConfigPath = ''
 )
@@ -1002,6 +1002,57 @@ function Save-RobotReceipt {
     Move-Item -LiteralPath $temporaryPath -Destination $script:Context.RobotReceiptsPath -Force
 }
 
+function Get-RobotSuccessMarkerPath {
+    return (Join-Path $script:Context.CommandDirectory 'robot-success-marker.json')
+}
+
+function Get-RobotSuccessMarker {
+    param(
+        [string]$Id,
+        [string]$Fingerprint
+    )
+
+    $path = Get-RobotSuccessMarkerPath
+    if (-not (Test-Path -LiteralPath $path)) {
+        return $null
+    }
+    try {
+        $marker = Read-JsonFile -Path $path
+        $actualId = ([string]$marker.id).Trim()
+        $expectedId = ([string]$Id).Trim()
+        $actualFingerprint = ([string]$marker.fingerprint).Trim()
+        $expectedFingerprint = ([string]$Fingerprint).Trim()
+        $completedAt = ([string]$marker.completedAt).Trim()
+        $idMatches = [string]::Equals($actualId, $expectedId, [StringComparison]::Ordinal)
+        $fingerprintMatches = [string]::Equals($actualFingerprint, $expectedFingerprint, [StringComparison]::Ordinal)
+        $completionPresent = -not [string]::IsNullOrWhiteSpace($completedAt)
+        if (
+            $idMatches -and
+            $fingerprintMatches -and
+            $completionPresent
+        ) {
+            return ,$marker
+        }
+        Write-WorkerLog -Level 'warn' -EventName 'robot_success_marker_rejected' -Data @{
+            idMatches = $idMatches
+            fingerprintMatches = $fingerprintMatches
+            completionPresent = $completionPresent
+            expectedIdLength = $expectedId.Length
+            actualIdLength = $actualId.Length
+            expectedFingerprintLength = $expectedFingerprint.Length
+            actualFingerprintLength = $actualFingerprint.Length
+        }
+    }
+    catch {
+        Write-WorkerLog -Level 'error' -EventName 'robot_success_marker_read_failed' -Data @{ message = $_.Exception.Message }
+    }
+    return $null
+}
+
+function Remove-RobotSuccessMarker {
+    Remove-Item -LiteralPath (Get-RobotSuccessMarkerPath) -Force -ErrorAction SilentlyContinue
+}
+
 function Apply-DesiredState {
     param([object]$Desired)
 
@@ -1320,6 +1371,14 @@ function Get-RobotConfigurationProblem {
     }
     try {
         $config = Read-JsonFile -Path $script:Context.RobotConfigPath
+        if (
+            $config.PSObject.Properties.Name -notcontains 'calibration' -or
+            [string]$config.calibration.status -ne 'verified' -or
+            [int]$config.calibration.profileVersion -lt 1 -or
+            [string]::IsNullOrWhiteSpace([string]$config.calibration.calibratedAt)
+        ) {
+            return 'Robot automatic calibration has not been verified.'
+        }
         if (-not [bool]$config.workflow.allowUnsafeExecution) {
             return 'Real robot execution is not allowed in robot configuration.'
         }
@@ -1335,7 +1394,8 @@ function Get-RobotConfigurationProblem {
                     [string]$selector.name,
                     [string]$selector.automationId,
                     [string]$selector.className,
-                    [string]$selector.controlType
+                    [string]$selector.controlType,
+                    $(if ($selector.PSObject.Properties.Name -contains 'path') { [string]$selector.path } else { '' })
                 ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($values.Count -eq 0) {
                 return "Selector '$($step.selector)' is empty."
@@ -1356,7 +1416,8 @@ function Get-RobotConfigurationProblem {
                 [string]$successSelector.name,
                 [string]$successSelector.automationId,
                 [string]$successSelector.className,
-                [string]$successSelector.controlType
+                [string]$successSelector.controlType,
+                $(if ($successSelector.PSObject.Properties.Name -contains 'path') { [string]$successSelector.path } else { '' })
             ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($successValues.Count -eq 0) {
             return "Success selector '$($successCondition.selector)' is empty."
@@ -1424,7 +1485,16 @@ function Invoke-RobotPoll {
 
         $fingerprint = [string]$record.fingerprint
         $receipt = Get-RobotReceipt -Id ([string]$record.id) -Fingerprint $fingerprint
+        $successMarker = Get-RobotSuccessMarker -Id ([string]$record.id) -Fingerprint $fingerprint
+        if ($null -eq $receipt -and $null -ne $successMarker) {
+            Save-RobotReceipt `
+                -Id ([string]$record.id) `
+                -Fingerprint $fingerprint `
+                -CompletedAt ([string]$successMarker.completedAt)
+            $receipt = $successMarker
+        }
         if ($null -ne $receipt) {
+            $localExecutionSucceeded = $true
             [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
                 id = [string]$record.id
                 agentId = [string]$script:Context.Config.agent.id
@@ -1438,18 +1508,22 @@ function Invoke-RobotPoll {
             $script:State.robot.lastSuccessAt = [string]$receipt.completedAt
             $script:State.robot.lastError = ''
             Write-WorkerLog -Level 'info' -EventName 'robot_task_recovered' -Data @{ id = [string]$record.id }
+            Remove-RobotSuccessMarker
             Write-RuntimeState
             return
         }
 
         New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
         $taskPath = Join-Path $script:Context.CommandDirectory 'robot-task.json'
+        $successMarkerPath = Get-RobotSuccessMarkerPath
+        Remove-RobotSuccessMarker
         $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $taskPath -Encoding UTF8
         $robotScript = Join-Path $script:Context.BaseDirectory 'robot\Start-IdentRobot.ps1'
         try {
             $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$robotScript`" " +
                 "-Mode RunOnce -ConfigPath `"$($script:Context.RobotConfigPath)`" " +
-                "-TaskFile `"$taskPath`" -MaxTasks 1 -MinUserIdleSeconds $minimumIdleSeconds -Execute"
+                "-TaskFile `"$taskPath`" -MaxTasks 1 -MinUserIdleSeconds $minimumIdleSeconds " +
+                "-SuccessMarkerPath `"$successMarkerPath`" -Execute"
             $processResult = Invoke-PowerShellChildProcess `
                 -Arguments $arguments `
                 -TimeoutSeconds 120 `
@@ -1463,7 +1537,8 @@ function Invoke-RobotPoll {
             }
         }
 
-        if ($exitCode -ne 0) {
+        $successMarker = Get-RobotSuccessMarker -Id ([string]$record.id) -Fingerprint $fingerprint
+        if ($null -eq $successMarker -and $exitCode -ne 0) {
             if ($output -match 'ROBOT_DEFER_USER_ACTIVE') {
                 throw 'ROBOT_DEFER_USER_ACTIVE'
             }
@@ -1482,8 +1557,28 @@ function Invoke-RobotPoll {
             }
             throw $message
         }
+        if ($null -eq $successMarker) {
+            $markerDiagnostics = if (Test-Path -LiteralPath $successMarkerPath) {
+                try {
+                    $rawMarker = Read-JsonFile -Path $successMarkerPath
+                    @{
+                        path = $successMarkerPath
+                        id = [string]$rawMarker.id
+                        expectedId = [string]$record.id
+                        fingerprint = [string]$rawMarker.fingerprint
+                        expectedFingerprint = $fingerprint
+                        completedAt = [string]$rawMarker.completedAt
+                    }
+                }
+                catch { @{ path = $successMarkerPath; readError = $_.Exception.Message } }
+            } else {
+                @{ path = $successMarkerPath; missing = $true }
+            }
+            Write-WorkerLog -Level 'error' -EventName 'robot_success_marker_missing' -Data $markerDiagnostics
+            throw 'Robot exited without a verified local success marker.'
+        }
 
-        $completedAt = (Get-Date).ToString('o')
+        $completedAt = [string]$successMarker.completedAt
         Save-RobotReceipt `
             -Id ([string]$record.id) `
             -Fingerprint $fingerprint `
@@ -1502,6 +1597,7 @@ function Invoke-RobotPoll {
         $script:State.robot.lastSuccessAt = $completedAt
         $script:State.robot.lastError = ''
         Write-WorkerLog -Level 'info' -EventName 'robot_task_completed' -Data @{ id = [string]$record.id }
+        Remove-RobotSuccessMarker
     }
     catch {
         $message = $_.Exception.Message

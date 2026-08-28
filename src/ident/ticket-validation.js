@@ -19,6 +19,12 @@ const TICKET_FIELDS = [
   'Comment',
   'DoctorId',
   'DoctorName',
+  'BranchId',
+  'BranchName',
+  'ServiceId',
+  'ServiceName',
+  'ServiceCode',
+  'DurationMinutes',
   'UtmSource',
   'UtmMedium',
   'UtmCampaign',
@@ -104,6 +110,12 @@ function normalizeTicket(ticket) {
     const doctorId = Number.parseInt(String(normalized.DoctorId), 10);
     if (Number.isFinite(doctorId)) normalized.DoctorId = doctorId;
   }
+  for (const field of ['BranchId', 'ServiceId', 'DurationMinutes']) {
+    if (normalized[field] !== undefined) {
+      const value = Number.parseInt(String(normalized[field]), 10);
+      if (Number.isFinite(value)) normalized[field] = value;
+    }
+  }
 
   return stripEmpty(normalized);
 }
@@ -142,6 +154,13 @@ function validateTicket(ticket) {
 
   if (ticket.DoctorId !== undefined && !Number.isInteger(Number(ticket.DoctorId))) {
     errors.push('DoctorId must be an integer');
+  }
+  if (ticket.DurationMinutes !== undefined && (
+    !Number.isInteger(Number(ticket.DurationMinutes)) ||
+    Number(ticket.DurationMinutes) <= 0 ||
+    Number(ticket.DurationMinutes) % 15 !== 0
+  )) {
+    errors.push('DurationMinutes must be a positive integer divisible by 15');
   }
 
   return [...new Set(errors)];

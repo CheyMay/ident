@@ -444,7 +444,7 @@ export class TicketQueue {
     return released;
   }
 
-  async claimForRobot(agentId, leaseSeconds = 300, timetable = null) {
+  async claimForRobot(agentId, leaseSeconds = 300, timetable = null, activationCutoff = null) {
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return null;
 
@@ -464,8 +464,15 @@ export class TicketQueue {
         }
       }
 
+      const cutoffTime = activationCutoff ? new Date(activationCutoff) : null;
+      const hasCutoff = cutoffTime && !Number.isNaN(cutoffTime.getTime());
       const candidates = records
-        .filter((item) => item.status === 'queued')
+        .filter((item) => {
+          if (item.status !== 'queued') return false;
+          if (!hasCutoff) return true;
+          const queuedAt = new Date(item.queuedAt || item.createdAt || 0);
+          return !Number.isNaN(queuedAt.getTime()) && queuedAt >= cutoffTime;
+        })
         .sort((left, right) => new Date(left.queuedAt || left.createdAt) - new Date(right.queuedAt || right.createdAt));
       if (!candidates.length) {
         await this.writeRecords(records);
@@ -666,9 +673,13 @@ export class AgentStatusStore {
     const mappingProvided = Object.prototype.hasOwnProperty.call(input, 'scheduleMapping');
     const sqlConfigurationProvided = Object.prototype.hasOwnProperty.call(input, 'sqlConfiguration');
     const updateProvided = Object.prototype.hasOwnProperty.call(input, 'update');
+    const activationCutoffProvided = Object.prototype.hasOwnProperty.call(input, 'robotActivationCutoff');
     data.desired[normalized] = {
       scheduleEnabled: typeof input.scheduleEnabled === 'boolean' ? input.scheduleEnabled : existing.scheduleEnabled,
       robotEnabled: typeof input.robotEnabled === 'boolean' ? input.robotEnabled : existing.robotEnabled,
+      robotActivationCutoff: activationCutoffProvided
+        ? cleanAgentDate(input.robotActivationCutoff)
+        : existing.robotActivationCutoff,
       scheduleMapping: mappingProvided
         ? normalizeDesiredScheduleMapping(input.scheduleMapping)
         : existing.scheduleMapping,
@@ -739,6 +750,7 @@ export class AgentStatusStore {
     return {
       scheduleEnabled: typeof stored.scheduleEnabled === 'boolean' ? stored.scheduleEnabled : true,
       robotEnabled: typeof stored.robotEnabled === 'boolean' ? stored.robotEnabled : false,
+      robotActivationCutoff: cleanAgentDate(stored.robotActivationCutoff),
       scheduleMapping: normalizeDesiredScheduleMapping(stored.scheduleMapping),
       mappingRevision: cleanAgentDate(stored.mappingRevision),
       sqlConfiguration: normalizeDesiredSqlConfiguration(stored.sqlConfiguration),

@@ -9,6 +9,7 @@ Set-StrictMode -Version 2.0
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'config.local.json'
@@ -186,12 +187,16 @@ $script:CommandDirectory = Resolve-LocalPath -BaseDirectory $script:BaseDirector
 $script:SupervisorStatePath = Join-Path $script:BaseDirectory 'supervisor-state.json'
 $script:RestartRequestPath = Join-Path $script:CommandDirectory 'restart-worker'
 $script:RobotConfigPath = Resolve-LocalPath -BaseDirectory $script:BaseDirectory -Value ([string]$script:Config.paths.robotConfig)
+$script:CalibrationReportPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-report.json'
+$script:CalibrationProcess = $null
+$script:CalibrationStage = 'idle'
+$script:CalibrationStartedAt = [DateTimeOffset]::MinValue
 $script:Refreshing = $false
 $script:AllowClose = $false
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Code9 IDENT'
-$form.ClientSize = New-Object Drawing.Size(540, 635)
+$form.ClientSize = New-Object Drawing.Size(540, 690)
 $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
 $form.MaximizeBox = $false
 $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
@@ -259,29 +264,45 @@ $separator2.Size = New-Object Drawing.Size(494, 2)
 $form.Controls.Add($separator2)
 
 $robotCheck = New-Object System.Windows.Forms.CheckBox
-$robotCheck.Location = New-Object Drawing.Point(20, 416)
+$robotCheck.Location = New-Object Drawing.Point(20, 408)
 $robotCheck.Size = New-Object Drawing.Size(280, 26)
 $robotCheck.Text = 'Робот подтверждения заявок включен'
 $robotCheck.Checked = [bool]$script:Config.features.robotEnabled
 $form.Controls.Add($robotCheck)
 
-$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 446
-$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 472
+$robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 438
+$robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 464
+
+$robotGuideLabel = New-StatusLabel -Parent $form -Text 'Откройте в IDENT окно новой записи и нажмите кнопку настройки.' -Top 491
+$robotGuideLabel.Size = New-Object Drawing.Size(494, 42)
+$robotGuideLabel.ForeColor = [Drawing.Color]::FromArgb(74, 91, 108)
+
+$calibrateButton = New-Object System.Windows.Forms.Button
+$calibrateButton.Location = New-Object Drawing.Point(20, 536)
+$calibrateButton.Size = New-Object Drawing.Size(240, 42)
+$calibrateButton.Text = 'Настроить и включить робота'
+$calibrateButton.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+$calibrateButton.FlatStyle = [Windows.Forms.FlatStyle]::Flat
+$calibrateButton.FlatAppearance.BorderSize = 0
+$calibrateButton.BackColor = [Drawing.Color]::FromArgb(29, 112, 66)
+$calibrateButton.ForeColor = [Drawing.Color]::White
+$calibrateButton.Cursor = [Windows.Forms.Cursors]::Hand
+$form.Controls.Add($calibrateButton)
 
 $inspectButton = New-Object System.Windows.Forms.Button
-$inspectButton.Location = New-Object Drawing.Point(20, 506)
+$inspectButton.Location = New-Object Drawing.Point(20, 588)
 $inspectButton.Size = New-Object Drawing.Size(154, 34)
-$inspectButton.Text = 'Сканировать IDENT'
+$inspectButton.Text = 'Тех. диагностика'
 $form.Controls.Add($inspectButton)
 
 $folderButton = New-Object System.Windows.Forms.Button
-$folderButton.Location = New-Object Drawing.Point(184, 506)
+$folderButton.Location = New-Object Drawing.Point(184, 588)
 $folderButton.Size = New-Object Drawing.Size(154, 34)
 $folderButton.Text = 'Открыть папку'
 $form.Controls.Add($folderButton)
 
-$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 558
-$errorLabel.Size = New-Object Drawing.Size(494, 60)
+$errorLabel = New-StatusLabel -Parent $form -Text '' -Top 632
+$errorLabel.Size = New-Object Drawing.Size(494, 44)
 $errorLabel.ForeColor = [Drawing.Color]::FromArgb(157, 35, 32)
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
@@ -319,6 +340,107 @@ function Request-SchedulePush {
     New-Item -ItemType Directory -Force -Path $script:CommandDirectory | Out-Null
     New-Item -ItemType File -Force -Path (Join-Path $script:CommandDirectory 'send-now') | Out-Null
     $scheduleStateLabel.Text = 'Состояние: команда на отправку принята'
+}
+
+function Start-RobotCalibration {
+    if ($script:CalibrationStage -ne 'idle' -and $script:CalibrationStage -ne 'failed' -and $script:CalibrationStage -ne 'ready') {
+        return
+    }
+    try {
+        $robotScript = Join-Path $script:BaseDirectory 'robot\Start-IdentRobot.ps1'
+        if (-not (Test-Path -LiteralPath $robotScript)) {
+            throw 'Модуль робота не найден. Дождитесь обновления приложения.'
+        }
+        Remove-Item -LiteralPath $script:CalibrationReportPath -Force -ErrorAction SilentlyContinue
+        $stdoutPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-output.log'
+        $stderrPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-error.log'
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$robotScript`" " +
+            "-Mode Calibrate -ConfigPath `"$script:RobotConfigPath`" " +
+            "-ReportPath `"$script:CalibrationReportPath`""
+        $script:CalibrationProcess = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList $arguments `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -PassThru
+        $script:CalibrationStage = 'scanning'
+        $script:CalibrationStartedAt = [DateTimeOffset]::Now
+        $calibrateButton.Enabled = $false
+        $calibrateButton.Text = 'IDENT проверяется...'
+        $robotGuideLabel.Text = 'Не закрывайте окно IDENT. Проверка не вводит данные и ничего не сохраняет.'
+        $errorLabel.Text = ''
+        $form.Hide()
+    }
+    catch {
+        $script:CalibrationStage = 'failed'
+        $calibrateButton.Enabled = $true
+        $calibrateButton.Text = 'Повторить настройку робота'
+        $errorLabel.Text = $_.Exception.Message
+    }
+}
+
+function Update-RobotCalibration {
+    if ($script:CalibrationStage -eq 'scanning') {
+        if ($null -eq $script:CalibrationProcess -or -not $script:CalibrationProcess.HasExited) {
+            return
+        }
+        $script:CalibrationProcess.Dispose()
+        $script:CalibrationProcess = $null
+        Show-MainWindow
+        $report = Read-JsonFile -Path $script:CalibrationReportPath
+        if ($null -eq $report -or -not [bool]$report.ok) {
+            $issues = if ($null -ne $report -and $report.PSObject.Properties.Name -contains 'issues') {
+                @($report.issues | Select-Object -First 3) -join ' '
+            } else {
+                'IDENT или окно новой записи не найдено.'
+            }
+            $script:CalibrationStage = 'failed'
+            $calibrateButton.Enabled = $true
+            $calibrateButton.Text = 'Повторить настройку робота'
+            $robotGuideLabel.Text = 'Разверните IDENT, откройте пустое окно «Новый прием» и повторите.'
+            $errorLabel.Text = $issues
+            return
+        }
+
+        New-Item -ItemType Directory -Force -Path $script:CommandDirectory | Out-Null
+        New-Item -ItemType File -Force -Path $script:RestartRequestPath | Out-Null
+        $script:CalibrationStage = 'waiting_for_worker'
+        $script:CalibrationStartedAt = [DateTimeOffset]::Now
+        $calibrateButton.Text = 'Проверяется служба...'
+        $robotGuideLabel.Text = 'Элементы найдены. Приложение проверяет службу и связь с сервером.'
+        return
+    }
+
+    if ($script:CalibrationStage -ne 'waiting_for_worker') {
+        return
+    }
+    if (([DateTimeOffset]::Now - $script:CalibrationStartedAt).TotalSeconds -gt 120) {
+        $script:CalibrationStage = 'failed'
+        $calibrateButton.Enabled = $true
+        $calibrateButton.Text = 'Повторить настройку робота'
+        $robotGuideLabel.Text = 'Калибровка сохранена, но служба не подтвердила запуск.'
+        $errorLabel.Text = 'Нажмите «Перезапуск», подождите минуту и повторите настройку.'
+        return
+    }
+    $state = Read-JsonFile -Path $script:StatePath
+    if ($null -eq $state -or -not [bool]$state.robot.configured -or -not [bool]$state.worker.backendOnline) {
+        return
+    }
+    try {
+        Invoke-AgentSettings -ScheduleEnabled ([bool]$state.schedule.enabled) -RobotEnabled $true
+        $script:CalibrationStage = 'ready'
+        $script:Refreshing = $true
+        try { $robotCheck.Checked = $true } finally { $script:Refreshing = $false }
+        $calibrateButton.Enabled = $true
+        $calibrateButton.Text = 'Повторно проверить робота'
+        $robotGuideLabel.Text = 'Готово. Робот включен и будет обрабатывать только новые заявки.'
+        $errorLabel.Text = ''
+    }
+    catch {
+        # The backend may receive the calibration heartbeat a few seconds later.
+    }
 }
 
 function Refresh-Status {
@@ -394,6 +516,14 @@ function Refresh-Status {
     $robotStateLabel.Text = 'Робот: ' + (Format-StateName -Value ([string]$state.robot.state)) +
         $(if ([bool]$state.robot.configured) { '' } else { ' (не откалиброван)' })
     $robotTimeLabel.Text = 'Последнее выполнение: ' + (Format-DateValue -Value $state.robot.lastSuccessAt)
+    $robotCheck.Enabled = [bool]$state.robot.configured -and $script:CalibrationStage -notin @('scanning', 'waiting_for_worker')
+    if ($script:CalibrationStage -eq 'idle' -and [bool]$state.robot.configured) {
+        $robotGuideLabel.Text = $(if ([bool]$state.robot.enabled) {
+            'Робот настроен и ожидает новые заявки.'
+        } else {
+            'Робот настроен. Нажмите кнопку, чтобы повторно проверить и включить его.'
+        })
+    }
     $schemaState = if ($state.PSObject.Properties.Name -contains 'schema') { $state.schema } else { $null }
     if ($null -ne $schemaState) {
         $schemaLabel.Text = 'Структура БД: ' + (Format-StateName -Value ([string]$schemaState.state)) +
@@ -453,6 +583,7 @@ $robotCheck.Add_CheckedChanged({
 })
 $sendButton.Add_Click({ Request-SchedulePush })
 $sendMenuItem.Add_Click({ Request-SchedulePush })
+$calibrateButton.Add_Click({ Start-RobotCalibration })
 $autoSqlButton.Add_Click({
     $agentScript = Join-Path $script:BaseDirectory 'IdentAgent.ps1'
     $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$agentScript`" -ConfigPath `"$ConfigPath`" -AutoConfigureSql"
@@ -500,6 +631,7 @@ $timer.Interval = 3000
 $timer.Add_Tick({
     try {
         Refresh-Status
+        Update-RobotCalibration
     }
     catch {
         $errorLabel.Text = $_.Exception.Message

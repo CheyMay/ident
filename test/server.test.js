@@ -327,6 +327,9 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
             planEnd: '2026-08-16T09:30:00+03:00',
             doctorId: 1904,
             doctorName: 'Иванов Иван Иванович',
+            branchId: 1,
+            branchName: 'Main Branch',
+            service: { Id: 501, Name: 'Consultation', Code: 'CONS' },
             createAmoLead: false
           })
         });
@@ -334,6 +337,10 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         assert.equal(bookingResponse.status, 201);
         const booking = await bookingResponse.json();
         assert.equal(booking.ticket.Id, 'amo-widget:123:1904:202608160900');
+        assert.equal(booking.ticket.BranchId, 1);
+        assert.equal(booking.ticket.ServiceId, 501);
+        assert.equal(booking.ticket.ServiceName, 'Consultation');
+        assert.equal(booking.ticket.DurationMinutes, 30);
         assert.equal(booking.amoLeadId, null);
         assert.equal(booking.queued, true);
         assert.equal(booking.status, 'queued');
@@ -1224,11 +1231,11 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       const readyHeartbeat = await readyHeartbeatResponse.json();
       assert.deepEqual(readyHeartbeat.desired.scheduleMapping.intervalsSql, scheduleMapping.intervalsSql);
 
-      const settingsResponse = await fetch(`${baseUrl}/api/agent/settings`, {
+      const settingsResponse = await fetch(`${baseUrl}/api/agent/config`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': 'test-service-key'
+          'X-Agent-Key': 'test-agent-key'
         },
         body: JSON.stringify({ agentId: 'clinic-1', robotEnabled: true })
       });
@@ -1240,6 +1247,7 @@ test('tracks clinic agent heartbeat and safely claims robot tickets', async () =
       assert.equal(configResponse.status, 200);
       const desiredConfig = (await configResponse.json()).desired;
       assert.equal(desiredConfig.robotEnabled, true);
+      assert.equal(Number.isNaN(new Date(desiredConfig.robotActivationCutoff).getTime()), false);
       assert.deepEqual(desiredConfig.scheduleMapping.branchesSql, scheduleMapping.branchesSql);
 
       const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {

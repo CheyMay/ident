@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -45,9 +45,17 @@ param(
     [string]$TaskFile,
     [int]$MaxTasks,
     [int]$MinUserIdleSeconds,
+    [string]$SuccessMarkerPath,
     [switch]$Execute
 )
 Add-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'robot-executions.txt') -Value 'run'
+$record = Get-Content -LiteralPath $TaskFile -Raw -Encoding UTF8 | ConvertFrom-Json
+@{
+    id = [string]$record.id
+    fingerprint = [string]$record.fingerprint
+    completedAt = (Get-Date).ToString('o')
+    verifiedBy = 'fake-robot-test'
+} | ConvertTo-Json | Set-Content -LiteralPath $SuccessMarkerPath -Encoding UTF8
 exit 0
 '@
     Set-Content `
@@ -56,6 +64,11 @@ exit 0
         -Encoding UTF8
 
     $robotConfig = @{
+        calibration = @{
+            status = 'verified'
+            profileVersion = 1
+            calibratedAt = '2026-08-27T10:00:00Z'
+        }
         workflow = @{
             allowUnsafeExecution = $true
             confirmBeforeEachStep = $false
@@ -121,7 +134,7 @@ exit 0
 
     $config = [ordered]@{
         version = 2
-        agent = @{ id = 'robot-lifecycle'; version = '2.9.4-test' }
+        agent = @{ id = 'robot-lifecycle'; version = '2.10.0-test' }
         features = @{ scheduleEnabled = $false; robotEnabled = $true }
         robot = @{ minUserIdleSeconds = 60 }
         intervals = @{ heartbeatSeconds = 30; scheduleSeconds = 60; schemaSeconds = 300; robotSeconds = 15 }
@@ -295,6 +308,9 @@ server.listen(port, "127.0.0.1");
         0
     }
     $statePath = Join-Path $tempRoot 'state.json'
+    for ($attempt = 0; $attempt -lt 20 -and -not (Test-Path -LiteralPath $statePath); $attempt++) {
+        Start-Sleep -Milliseconds 100
+    }
     if (-not (Test-Path -LiteralPath $statePath)) {
         $worker.Refresh()
         $workerOutput = if (Test-Path -LiteralPath $workerOutputPath) {
@@ -318,6 +334,15 @@ server.listen(port, "127.0.0.1");
     Write-Host "Server completed: $($status.completed)"
     Write-Host "Worker robot state: $($state.robot.state)"
     Write-Host "Worker robot error: $($state.robot.lastError)"
+    if (-not [bool]$status.completed) {
+        Write-Host '--- worker stdout ---'
+        if (Test-Path -LiteralPath $workerOutputPath) { Get-Content -LiteralPath $workerOutputPath -Encoding UTF8 }
+        Write-Host '--- worker stderr ---'
+        if (Test-Path -LiteralPath $workerErrorPath) { Get-Content -LiteralPath $workerErrorPath -Encoding UTF8 }
+        Write-Host '--- worker log ---'
+        $workerLogPath = Join-Path $tempRoot 'logs\agent.log'
+        if (Test-Path -LiteralPath $workerLogPath) { Get-Content -LiteralPath $workerLogPath -Encoding UTF8 }
+    }
 
     Assert-Equal -Actual $executionCount -Expected 1 -Label 'Robot execution count'
     Assert-Equal -Actual ([int]$status.completes) -Expected 2 -Label 'Complete request count'
@@ -339,6 +364,7 @@ server.listen(port, "127.0.0.1");
     Assert-Equal -Actual ([string]$appliedMapping.intervalsSql) -Expected 'SELECT DoctorId, BranchId, StartDateTime, LengthInMinutes, IsBusy FROM dbo.Schedule' -Label 'Remote intervals SQL'
     Assert-Equal -Actual ([string]$appliedMapping.servicesSql) -Expected 'SELECT Id, Name, Price FROM dbo.ServiceItems' -Label 'Remote services SQL'
     Assert-Equal -Actual (Test-Path -LiteralPath (Join-Path $tempRoot 'receipts.json')) -Expected $true -Label 'Receipt file'
+    Assert-Equal -Actual (Test-Path -LiteralPath (Join-Path $tempRoot 'commands\robot-success-marker.json')) -Expected $false -Label 'Consumed robot success marker'
 
     Write-Host 'IDENT WORKER LIFECYCLE TEST OK' -ForegroundColor Green
 }

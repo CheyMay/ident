@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +13,11 @@ try {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $robotPath -Mode SelfTest
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Robot built-in self-test failed.'
+    }
 
     $config = @{
         backend = @{ baseUrl = ''; serviceApiKey = ''; ticketStatus = 'queued' }
