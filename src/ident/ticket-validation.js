@@ -4,7 +4,7 @@ import { stripEmpty } from './contracts.js';
 const MAX_TICKET_ID_LENGTH = 400;
 const MAX_APPOINTMENT_MS = 12 * 60 * 60 * 1000;
 
-const TICKET_FIELDS = [
+const IDENT_TICKET_FIELDS = [
   'Id',
   'DateAndTime',
   'ClientPhone',
@@ -19,12 +19,6 @@ const TICKET_FIELDS = [
   'Comment',
   'DoctorId',
   'DoctorName',
-  'BranchId',
-  'BranchName',
-  'ServiceId',
-  'ServiceName',
-  'ServiceCode',
-  'DurationMinutes',
   'UtmSource',
   'UtmMedium',
   'UtmCampaign',
@@ -33,8 +27,28 @@ const TICKET_FIELDS = [
   'HttpReferer'
 ];
 
+const INTERNAL_TICKET_FIELDS = [
+  ...IDENT_TICKET_FIELDS,
+  'BranchId',
+  'BranchName',
+  'ServiceId',
+  'ServiceName',
+  'ServiceCode',
+  'DurationMinutes'
+];
+
 export function normalizeAndValidateTicket(ticket) {
-  const normalized = normalizeTicket(ticket);
+  const normalized = normalizeTicket(ticket, INTERNAL_TICKET_FIELDS);
+  const errors = validateTicket(normalized);
+  return {
+    ok: errors.length === 0,
+    errors,
+    ticket: normalized
+  };
+}
+
+export function normalizeAndValidateIdentTicket(ticket) {
+  const normalized = normalizeTicket(ticket, IDENT_TICKET_FIELDS);
   const errors = validateTicket(normalized);
   return {
     ok: errors.length === 0,
@@ -93,9 +107,9 @@ export function normalizePhoneForIdent(value) {
   return { ok: true, value: digits };
 }
 
-function normalizeTicket(ticket) {
+function normalizeTicket(ticket, fields) {
   const normalized = {};
-  for (const field of TICKET_FIELDS) {
+  for (const field of fields) {
     if (ticket[field] !== undefined && ticket[field] !== null && ticket[field] !== '') {
       normalized[field] = ticket[field];
     }

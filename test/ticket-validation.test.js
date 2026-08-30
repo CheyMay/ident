@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeAndValidateTicket, normalizePhoneForIdent } from '../src/ident/ticket-validation.js';
+import {
+  normalizeAndValidateIdentTicket,
+  normalizeAndValidateTicket,
+  normalizePhoneForIdent
+} from '../src/ident/ticket-validation.js';
 
 test('normalizes phones for IDENT tickets', () => {
   assert.deepEqual(normalizePhoneForIdent('+7 (911) 000-11-22'), {
@@ -38,4 +42,34 @@ test('validates IDENT ticket contract fields', () => {
 
   assert.equal(invalid.ok, false);
   assert.match(invalid.errors.join('; '), /12 hours/);
+});
+
+test('keeps robot metadata internal to the official GetTickets contract', () => {
+  const ticket = {
+    Id: 'ticket-robot-1',
+    DateAndTime: '2026-05-08T10:00:00+03:00',
+    ClientPhone: '+79110001122',
+    ClientFullName: 'Ivan Ivanov',
+    PlanStart: '2026-05-12T10:00:00+03:00',
+    PlanEnd: '2026-05-12T10:30:00+03:00',
+    DoctorId: 10,
+    DoctorName: 'Doctor',
+    BranchId: 20,
+    BranchName: 'Clinic',
+    ServiceId: 30,
+    ServiceName: 'Consultation',
+    ServiceCode: 'CONS',
+    DurationMinutes: 30
+  };
+
+  const internal = normalizeAndValidateTicket(ticket);
+  const outgoing = normalizeAndValidateIdentTicket(ticket);
+
+  assert.equal(internal.ok, true);
+  assert.equal(internal.ticket.ServiceName, 'Consultation');
+  assert.equal(outgoing.ok, true);
+  assert.equal(outgoing.ticket.DoctorId, 10);
+  for (const field of ['BranchId', 'BranchName', 'ServiceId', 'ServiceName', 'ServiceCode', 'DurationMinutes']) {
+    assert.equal(Object.hasOwn(outgoing.ticket, field), false);
+  }
 });

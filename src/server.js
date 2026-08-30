@@ -20,7 +20,7 @@ import {
   applyDoctorMapping,
   MappingStore
 } from './ident/mapping-store.js';
-import { normalizeAndValidateTicket } from './ident/ticket-validation.js';
+import { normalizeAndValidateIdentTicket, normalizeAndValidateTicket } from './ident/ticket-validation.js';
 import {
   BadRequestError,
   filterTickets,
@@ -1091,7 +1091,7 @@ async function prepareTicketsForIdent({ ticketQueue, logger }) {
   const records = await ticketQueue.listRecords({ status: ['queued', 'sent_to_ident'] });
   const tickets = [];
   for (const record of records) {
-    const validation = normalizeAndValidateTicket(record.ticket);
+    const validation = normalizeAndValidateIdentTicket(record.ticket);
     if (!validation.ok) {
       await ticketQueue.markFailed(record.id, validation.errors.join('; '));
       logger.warn('Queued ticket failed IDENT validation', { id: record.id, errors: validation.errors });
