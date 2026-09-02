@@ -1,0 +1,15 @@
+{
+  "widget": {
+    "name": "IDENT amoCRM",
+    "description": "Интеграция передает заявки из amoCRM в IDENT, помогает проверить готовность сделки к записи и настроить поля, статусы, вебхуки и соответствие врачей.",
+    "short_description": "Запись клиентов из amoCRM в IDENT",
+    "tour_description": "Подключите сервис, создайте поля amoCRM и передавайте заявки в IDENT из карточки сделки."
+  },
+  "settings": {
+    "backend_url": "URL интеграционного сервиса",
+    "service_api_key": "Сервисный API-ключ"
+  },
+  "advanced": {
+    "title": "IDENT amoCRM"
+  }
+}

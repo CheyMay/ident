@@ -1,0 +1,49 @@
+{
+  "widget": {
+    "name": "widget.name",
+    "description": "widget.description",
+    "short_description": "widget.short_description",
+    "version": "1.16.0",
+    "interface_version": 2,
+    "init_once": false,
+    "locale": [
+      "ru"
+    ],
+    "installation": true,
+    "support": {
+      "link": "https://t.me/C9_support",
+      "email": "support@codenine.ru"
+    }
+  },
+  "locations": [
+    "settings",
+    "advanced_settings",
+    "lcard-1"
+  ],
+  "tour": {
+    "is_tour": true,
+    "tour_images": {
+      "ru": [
+        "/images/tour_1_ru.png",
+        "/images/tour_2_ru.png",
+        "/images/tour_3_ru.png"
+      ]
+    },
+    "tour_description": "widget.tour_description"
+  },
+  "settings": {
+    "backend_url": {
+      "name": "settings.backend_url",
+      "type": "text",
+      "required": true
+    },
+    "service_api_key": {
+      "name": "settings.service_api_key",
+      "type": "text",
+      "required": false
+    }
+  },
+  "advanced": {
+    "title": "advanced.title"
+  }
+}

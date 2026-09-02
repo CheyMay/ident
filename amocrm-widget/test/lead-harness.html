@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IDENT lead panel preview</title>
+  <style>
+    body { background: #edf1f4; margin: 0; padding: 32px; }
+    .card-holder__fields { background: #fff; margin: 0 auto; max-width: 300px; min-height: 620px; padding: 20px; }
+    .modal-test-shell { background: rgba(21, 27, 36, 0.35); inset: 0; position: fixed; z-index: 10; }
+    .with-side-panel .modal-test-shell { right: 38%; }
+    .modal-test-window { background: #183247; box-shadow: 0 12px 42px rgba(21, 27, 36, 0.22); left: 50%; overflow: hidden; padding: 30px; position: absolute; top: 32px; transform: translateX(-50%); width: 500px; }
+  </style>
+</head>
+<body>
+  <main class="card-holder__fields"></main>
+  <pre data-last-booking-request hidden></pre>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script>
+    window.autoOpenIdent = new URLSearchParams(window.location.search).get('open') === '1';
+    if (new URLSearchParams(window.location.search).get('panel') === '1') {
+      document.documentElement.classList.add('with-side-panel');
+    }
+    window.history.replaceState({}, '', '/leads/detail/123456');
+    window.APP = { constant: function (name) { return name === 'card_id' ? 123456 : ''; } };
+
+    function futureSlot(dayOffset, hour, minute, doctorId, duration) {
+      var date = new Date();
+      date.setDate(date.getDate() + dayOffset);
+      date.setHours(hour, minute, 0, 0);
+      return {
+        DoctorId: doctorId,
+        BranchId: 1,
+        StartDateTime: date.toISOString(),
+        LengthInMinutes: duration || 30,
+        IsBusy: false
+      };
+    }
+
+    var services = [
+      { Key: '501:3:701', Id: 501, Name: 'Первичная консультация стоматолога', Code: 'CONS-01', Price: 1500, PriceGroupName: 'Основной прайс', FolderName: 'Консультации' },
+      { Key: '502:3:702', Id: 502, Name: 'Профессиональная гигиена полости рта', Code: 'HYGIENE', Price: 5200, PriceGroupName: 'Основной прайс', FolderName: 'Профилактика' },
+      { Key: '503:3:703', Id: 503, Name: 'Лечение кариеса', Code: 'THERAPY-1', Price: 7800, PriceGroupName: 'Основной прайс', FolderName: 'Терапия' },
+      { Key: '504:3:704', Id: 504, Name: 'Удаление зуба простое', Code: 'SURG-01', Price: 4500, PriceGroupName: 'Основной прайс', FolderName: 'Хирургия' },
+      { Key: '505:3:705', Id: 505, Name: 'Консультация ортодонта', Code: 'ORTHO-C', Price: 2000, PriceGroupName: 'Основной прайс', FolderName: 'Ортодонтия' },
+      { Key: '506:3:706', Id: 506, Name: 'Компьютерная томография', Code: 'CT', Price: 3200, PriceGroupName: 'Диагностика', FolderName: 'Рентгенология' }
+    ];
+
+    window.fetch = function (url, options) {
+      var body = url.indexOf('/api/bookings') !== -1 ? (function () {
+        window.lastBookingRequest = JSON.parse((options && options.body) || '{}');
+        document.querySelector('[data-last-booking-request]').textContent = JSON.stringify(window.lastBookingRequest);
+        return {
+          ticket: { Id: window.lastBookingRequest.id },
+          amoLeadId: null,
+          queued: true,
+          status: 'queued'
+        };
+      }()) : url.indexOf('/health') !== -1 ? {
+        ok: true,
+        amoConfigured: true,
+        amoOAuthConfigured: true
+      } : url.indexOf('/api/services') !== -1 ? {
+        receivedAt: new Date().toISOString(),
+        Services: services,
+        Summary: { services: services.length, priceGroups: 2, folders: 6 }
+      } : url.indexOf('/api/amocrm/leads/preview') !== -1 ? {
+        readyForIdent: true,
+        mappedTicket: {
+          ClientFullName: 'Иванова Мария Сергеевна',
+          ClientPhone: '+7 912 345-67-89',
+          ClientEmail: 'maria.ivanova@example.ru'
+        },
+        validation: { ok: true, ticket: {} }
+      } : {
+        receivedAt: new Date().toISOString(),
+        Doctors: [
+          { Id: 1904, Name: 'Рамазанов Омар Магомедович' },
+          { Id: 2129, Name: 'Пахрудинов Муса Магомедович' },
+          { Id: 2361, Name: 'Гюльметов Низами Фирдовси' },
+          { Id: 3011, Name: 'Рогожин Аркадий Александрович' }
+        ],
+        Branches: [{ Id: 1, Name: 'Стом Дент (Лабытнанги)' }],
+        Intervals: [
+          futureSlot(1, 9, 0, 1904),
+          Object.assign(futureSlot(1, 9, 15, 1904), { IsBusy: true }),
+          futureSlot(1, 9, 30, 1904),
+          Object.assign(futureSlot(1, 9, 45, 1904), { IsBusy: true }),
+          futureSlot(1, 10, 0, 1904),
+          futureSlot(1, 10, 30, 1904, 15),
+          futureSlot(1, 9, 30, 2129),
+          Object.assign(futureSlot(1, 9, 45, 2129), { IsBusy: true }),
+          futureSlot(1, 10, 0, 2361),
+          Object.assign(futureSlot(1, 10, 15, 2361), { IsBusy: true }),
+          futureSlot(1, 13, 0, 2361, 15),
+          futureSlot(1, 13, 15, 2361, 15),
+          futureSlot(1, 13, 30, 2361, 15),
+          futureSlot(1, 13, 45, 2361, 15),
+          futureSlot(1, 14, 0, 2361, 15),
+          futureSlot(1, 14, 15, 2361, 15),
+          futureSlot(1, 14, 30, 2361, 15),
+          futureSlot(1, 14, 45, 2361, 15),
+          futureSlot(1, 11, 30, 3011),
+          Object.assign(futureSlot(1, 11, 45, 3011), { IsBusy: true }),
+          futureSlot(2, 12, 0, 1904),
+          Object.assign(futureSlot(2, 12, 15, 1904), { IsBusy: true }),
+          futureSlot(2, 14, 30, 2129),
+          futureSlot(3, 9, 0, 2361),
+          Object.assign(futureSlot(3, 9, 15, 2361), { IsBusy: true }),
+          futureSlot(4, 10, 0, 3011),
+          futureSlot(5, 11, 0, 1904),
+          futureSlot(6, 12, 0, 2129),
+          futureSlot(7, 13, 0, 2361)
+        ],
+        Services: services,
+        Summary: { doctors: 4, branches: 1, intervals: 2171, services: services.length, freeIntervals: 1684, busyIntervals: 487 }
+      };
+      return Promise.resolve({
+        ok: true,
+        text: function () { return Promise.resolve(JSON.stringify(body)); }
+      });
+    };
+
+    function ModalStub(options) {
+      var self = this;
+      var $shell = window.jQuery('<div class="modal-test-shell"></div>').appendTo('body');
+      var $window = window.jQuery('<div class="modal-test-window modal-body"></div>').appendTo($shell);
+      var $body = window.jQuery('<div class="modal-test-body ' + (options.class_name || '') + '"></div>').appendTo($window);
+      this.destroy = function () {
+        if (options.destroy) options.destroy.call(self);
+        $shell.remove();
+      };
+      options.init.call(this, $body);
+    }
+
+    window.define = function (dependencies, factory) {
+      var createWidget = factory(window.jQuery, ModalStub);
+      var widget = {
+        params: { path: '/front', widget_code: 'ident-amocrm' },
+        get_settings: function () {
+          return { backend_url: 'https://ident.code9dev.ru', service_api_key: 'preview', widget_code: 'ident-amocrm' };
+        },
+        render_template: function (template) {
+          window.jQuery('.card-holder__fields').html(template.render);
+        }
+      };
+      createWidget.call(widget);
+      window.previewWidget = widget;
+    };
+  </script>
+  <script src="/front/script.js?v=1.16.0"></script>
+  <script>
+    window.previewWidget.callbacks.render();
+    window.previewWidget.callbacks.bind_actions();
+    if (window.autoOpenIdent) {
+      window.jQuery('[data-ident-action="open_workspace"]').trigger('click');
+    }
+  </script>
+</body>
+</html>
