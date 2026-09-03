@@ -1,9 +1,10 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.17.0';
+    var FRONT_VERSION = '1.18.0';
     var state = {
       leadPanelRendered: false,
+      smartLauncherTimer: null,
       advancedReady: false,
       amoReady: false,
       workspaceModal: null,
@@ -26,12 +27,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     this.callbacks = {
       init: function () {
         ensureWidgetStyles();
+        renderLeadSmartLauncher(0);
         return true;
       },
 
       render: function () {
         ensureWidgetStyles();
         renderLeadPanel();
+        renderLeadSmartLauncher(0);
         return true;
       },
 
@@ -68,10 +71,12 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
       destroy: function () {
         $(document).off('.identWidget');
+        if (state.smartLauncherTimer) window.clearTimeout(state.smartLauncherTimer);
         if (state.workspaceModal && typeof state.workspaceModal.destroy === 'function') {
           state.workspaceModal.destroy();
         }
-        $('.ident-widget-launcher, .ident-widget-workspace').remove();
+        $('.ident-widget-launcher, .ident-widget-smart-launcher, .ident-widget-workspace').remove();
+        state.smartLauncherTimer = null;
         state.workspaceModal = null;
         return true;
       }
@@ -166,6 +171,34 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       state.leadPanelRendered = true;
     }
 
+    function renderLeadSmartLauncher(attempt) {
+      if (state.smartLauncherTimer) {
+        window.clearTimeout(state.smartLauncherTimer);
+        state.smartLauncherTimer = null;
+      }
+      if (!isLeadCard() || $('.ident-widget-smart-launcher').length) return;
+
+      var $anchor = findLeadFeedAnchor();
+      if (!$anchor.length) {
+        if (attempt < 16) {
+          state.smartLauncherTimer = window.setTimeout(function () {
+            renderLeadSmartLauncher(attempt + 1);
+          }, 250);
+        }
+        return;
+      }
+
+      $anchor.before(
+        '<div class="ident-widget-scope ident-widget-smart-launcher">' +
+          '<button type="button" class="ident-widget-smart-launcher__button" data-ident-action="open_workspace">' +
+            '<span class="ident-widget-smart-launcher__mark">ID</span>' +
+            '<span class="ident-widget-smart-launcher__text">Запись в IDENT</span>' +
+            '<span class="ident-widget-smart-launcher__hint">Открыть расписание</span>' +
+          '</button>' +
+        '</div>'
+      );
+    }
+
     function bindLeadPanelActions() {
       $(document)
         .off('click.identWidget')
@@ -173,21 +206,17 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           if ($(event.target).closest('[data-ident-action]').length) return;
           openIdentWorkspace();
         })
-        .on('click.identWidget', '.ident-widget-launcher [data-ident-action], .ident-widget-workspace [data-ident-action]', function () {
+        .on('click.identWidget', '.ident-widget-launcher [data-ident-action], .ident-widget-smart-launcher [data-ident-action], .ident-widget-workspace [data-ident-action]', function () {
           var action = $(this).attr('data-ident-action');
           if (action === 'open_workspace') openIdentWorkspace();
           if (action === 'refresh_schedule') loadWorkspaceSchedule();
           if (action === 'select_day') selectWorkspaceDay($(this).attr('data-ident-date'));
           if (action === 'select_slot') selectWorkspaceSlot($(this).attr('data-ident-slot-key'));
           if (action === 'set_duration') setWorkspaceDuration($(this).attr('data-ident-duration'));
-          if (action === 'toggle_doctor_filter') toggleWorkspaceDoctorFilter();
           if (action === 'select_service') selectWorkspaceService($(this).attr('data-ident-service-key'));
           if (action === 'clear_service') selectWorkspaceService('');
           if (action === 'submit_booking') submitWorkspaceBooking();
           if (action === 'preview') previewCurrentLead();
-        })
-        .on('click.identWidget', function (event) {
-          if (!$(event.target).closest('.ident-widget-workspace__doctor-picker').length) closeWorkspaceDoctorFilter();
         });
 
       $(document)
@@ -353,17 +382,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           workspaceMetric('Обновлено', '—') +
         '</div>' +
         '<div class="ident-widget-workspace__toolbar">' +
-          '<div class="ident-widget-workspace__field">' +
-            '<span>Врачи</span>' +
-            '<div class="ident-widget-workspace__doctor-picker">' +
-              '<button type="button" class="ident-widget-workspace__doctor-trigger" data-ident-action="toggle_doctor_filter" aria-expanded="false">' +
-                '<strong data-ident-doctor-filter-label>Все врачи</strong><i aria-hidden="true">⌄</i>' +
-              '</button>' +
-              '<div class="ident-widget-workspace__doctor-menu" data-ident-doctor-filter-menu>' +
+          '<div class="ident-widget-workspace__field ident-widget-workspace__field_doctors">' +
+            '<span>Врачи <b data-ident-doctor-filter-label>все</b></span>' +
+            '<div class="ident-widget-workspace__doctor-picker" aria-label="Выбор врачей">' +
+              '<div class="ident-widget-workspace__doctor-menu">' +
                 '<label class="ident-widget-workspace__doctor-option ident-widget-workspace__doctor-option_all">' +
-                  '<input type="checkbox" data-ident-filter-doctor-all checked><span>Все врачи</span>' +
+                  '<input type="checkbox" data-ident-filter-doctor-all checked><span>Все</span>' +
                 '</label>' +
-                '<div data-ident-filter-doctor-options></div>' +
+                '<div class="ident-widget-workspace__doctor-options" data-ident-filter-doctor-options></div>' +
               '</div>' +
             '</div>' +
           '</div>' +
@@ -531,26 +557,12 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var options = doctors.map(function (doctor) {
         var id = String(doctor.Id);
         return '<label class="ident-widget-workspace__doctor-option">' +
-          '<input type="checkbox" data-ident-filter-doctor value="' + escapeHtml(id) + '"' + (selected[id] ? ' checked' : '') + '>' +
-          '<span>' + escapeHtml(doctor.Name) + '</span>' +
+          '<input type="checkbox" data-ident-filter-doctor value="' + escapeHtml(id) + '" aria-label="' + escapeHtml(doctor.Name) + '"' + (selected[id] ? ' checked' : '') + '>' +
+          '<span title="' + escapeHtml(doctor.Name) + '">' + escapeHtml(compactDoctorName(doctor.Name)) + '</span>' +
         '</label>';
       }).join('');
       $root.find('[data-ident-filter-doctor-options]').html(options);
       syncWorkspaceDoctorFilter($root);
-    }
-
-    function toggleWorkspaceDoctorFilter() {
-      var $root = $('.ident-widget-workspace').last();
-      var $picker = $root.find('.ident-widget-workspace__doctor-picker');
-      var open = !$picker.hasClass('is-open');
-      $picker.toggleClass('is-open', open);
-      $picker.find('[data-ident-action="toggle_doctor_filter"]').attr('aria-expanded', open ? 'true' : 'false');
-    }
-
-    function closeWorkspaceDoctorFilter() {
-      var $picker = $('.ident-widget-workspace').last().find('.ident-widget-workspace__doctor-picker');
-      $picker.removeClass('is-open');
-      $picker.find('[data-ident-action="toggle_doctor_filter"]').attr('aria-expanded', 'false');
     }
 
     function updateWorkspaceDoctorSelection($changed) {
@@ -572,17 +584,12 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
     function syncWorkspaceDoctorFilter($root) {
       var selected = state.selectedDoctorIds;
-      var label = 'Все врачи';
-      if (selected.length === 1) {
-        var doctor = (state.workspaceData.Doctors || []).find(function (item) {
-          return String(item.Id) === String(selected[0]);
-        });
-        label = doctor ? doctor.Name : 'Выбран 1 врач';
-      } else if (selected.length > 1) {
-        label = 'Выбрано: ' + selected.length;
-      }
+      var label = selected.length ? 'выбрано: ' + selected.length : 'все';
       $root.find('[data-ident-filter-doctor-all]').prop('checked', selected.length === 0);
       $root.find('[data-ident-doctor-filter-label]').text(label);
+      $root.find('.ident-widget-workspace__doctor-option').each(function () {
+        $(this).toggleClass('is-selected', Boolean($(this).find('input').prop('checked')));
+      });
     }
 
     function renderWorkspaceMetrics($root) {
@@ -2288,6 +2295,43 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         if ($node.length) return $node;
       }
       return $('body');
+    }
+
+    function findLeadFeedAnchor() {
+      var selectors = [
+        '.feed-compose',
+        '.feed-compose__wrapper',
+        '.card-feed__compose',
+        '.notes-wrapper__add-note',
+        '[data-entity="note-form"]',
+        '[data-id="note-form"]'
+      ];
+      for (var index = 0; index < selectors.length; index += 1) {
+        var $node = $(selectors[index]).filter(function () {
+          return !$(this).closest('.ident-widget-scope, .modal').length && $(this).is(':visible');
+        }).first();
+        if ($node.length) return $node;
+      }
+
+      var $input = $('textarea[placeholder*="Примеч"], input[placeholder*="Примеч"], [contenteditable="true"][data-placeholder*="Примеч"]').filter(function () {
+        return !$(this).closest('.ident-widget-scope, .modal').length && $(this).is(':visible');
+      }).first();
+      if ($input.length) {
+        var $container = $input.closest('.feed-compose, .feed-compose__wrapper, .card-feed__compose, .notes-wrapper__add-note');
+        return $container.length ? $container : $input.parent();
+      }
+
+      var $prompt = $('span, div, button').filter(function () {
+        var $item = $(this);
+        return !$item.children().length &&
+          /^Примечание:\s*введите текст$/i.test($.trim($item.text())) &&
+          !$item.closest('.ident-widget-scope, .modal').length &&
+          $item.is(':visible');
+      }).first();
+      if (!$prompt.length) return $();
+
+      var $promptContainer = $prompt.closest('.feed-compose, .feed-compose__wrapper, .card-feed__compose, .notes-wrapper__add-note');
+      return $promptContainer.length ? $promptContainer : $prompt.parent();
     }
 
     function parseJson(text) {

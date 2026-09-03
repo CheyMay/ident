@@ -33,7 +33,14 @@ async function main() {
   try {
     const page = await browser.newPage({ viewport: { width: 1900, height: 1080 } });
     await page.goto(`http://127.0.0.1:${port}/?panel=1`, { waitUntil: 'networkidle' });
-    await page.click('.ident-widget-caption');
+    await page.waitForSelector('.ident-widget-smart-launcher');
+    const smartLauncherPosition = await page.evaluate(() => {
+      const launcher = document.querySelector('.ident-widget-smart-launcher');
+      const composer = document.querySelector('.feed-compose');
+      return launcher.nextElementSibling === composer;
+    });
+    if (!smartLauncherPosition) throw new Error('Smart launcher was not inserted above the feed composer');
+    await page.click('.ident-widget-smart-launcher__button');
     await page.waitForSelector('.ident-widget-modal-shell');
 
     const result = await page.evaluate(() => {
@@ -81,17 +88,17 @@ async function main() {
     }
     if (result.commentRows < 5) throw new Error(`Comment field is too small: ${result.commentRows} rows`);
 
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.17.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.18.0.png'), fullPage: true });
 
-    await page.click('[data-ident-action="toggle_doctor_filter"]');
     const doctorCheckboxes = page.locator('[data-ident-filter-doctor]');
     await doctorCheckboxes.nth(0).check();
     await doctorCheckboxes.nth(1).check();
     const selectedDoctorState = await page.evaluate(() => ({
       label: document.querySelector('[data-ident-doctor-filter-label]').textContent.trim(),
+      checked: document.querySelectorAll('[data-ident-filter-doctor]:checked').length,
       columns: document.querySelectorAll('.ident-widget-workspace-timeline__doctor').length
     }));
-    if (selectedDoctorState.label !== 'Выбрано: 2' || selectedDoctorState.columns !== 2) {
+    if (selectedDoctorState.label !== 'выбрано: 2' || selectedDoctorState.checked !== 2 || selectedDoctorState.columns !== 2) {
       throw new Error(`Multiple doctor filter failed: ${JSON.stringify(selectedDoctorState)}`);
     }
     await page.selectOption('[data-ident-duration-select]', '120');
