@@ -1,7 +1,7 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.18.0';
+    var FRONT_VERSION = '1.19.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
@@ -193,7 +193,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           '<button type="button" class="ident-widget-smart-launcher__button" data-ident-action="open_workspace">' +
             '<span class="ident-widget-smart-launcher__mark">ID</span>' +
             '<span class="ident-widget-smart-launcher__text">Запись в IDENT</span>' +
-            '<span class="ident-widget-smart-launcher__hint">Открыть расписание</span>' +
           '</button>' +
         '</div>'
       );
@@ -2298,40 +2297,54 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     }
 
     function findLeadFeedAnchor() {
-      var selectors = [
-        '.feed-compose',
-        '.feed-compose__wrapper',
-        '.card-feed__compose',
-        '.notes-wrapper__add-note',
-        '[data-entity="note-form"]',
-        '[data-id="note-form"]'
-      ];
-      for (var index = 0; index < selectors.length; index += 1) {
-        var $node = $(selectors[index]).filter(function () {
-          return !$(this).closest('.ident-widget-scope, .modal').length && $(this).is(':visible');
-        }).first();
-        if ($node.length) return $node;
-      }
-
       var $input = $('textarea[placeholder*="Примеч"], input[placeholder*="Примеч"], [contenteditable="true"][data-placeholder*="Примеч"]').filter(function () {
         return !$(this).closest('.ident-widget-scope, .modal').length && $(this).is(':visible');
-      }).first();
+      }).last();
       if ($input.length) {
-        var $container = $input.closest('.feed-compose, .feed-compose__wrapper, .card-feed__compose, .notes-wrapper__add-note');
-        return $container.length ? $container : $input.parent();
+        return findCompactFeedAnchor($input);
       }
 
-      var $prompt = $('span, div, button').filter(function () {
+      var $prompt = $('span, div, label, button, a').filter(function () {
         var $item = $(this);
-        return !$item.children().length &&
-          /^Примечание:\s*введите текст$/i.test($.trim($item.text())) &&
+        return /^Примечание:\s*введите текст$/i.test($.trim($item.text()).replace(/\s+/g, ' ')) &&
           !$item.closest('.ident-widget-scope, .modal').length &&
           $item.is(':visible');
-      }).first();
-      if (!$prompt.length) return $();
+      }).last();
+      if ($prompt.length) return findCompactFeedAnchor($prompt);
 
-      var $promptContainer = $prompt.closest('.feed-compose, .feed-compose__wrapper, .card-feed__compose, .notes-wrapper__add-note');
-      return $promptContainer.length ? $promptContainer : $prompt.parent();
+      var $fallbacks = $('.feed-compose, .feed-compose__wrapper, .card-feed__compose, .notes-wrapper__add-note, [data-entity="note-form"], [data-id="note-form"]').filter(function () {
+        if ($(this).closest('.ident-widget-scope, .modal').length || !$(this).is(':visible')) return false;
+        var rect = this.getBoundingClientRect();
+        return rect.height > 0 && rect.height <= 180;
+      });
+      if (!$fallbacks.length) return $();
+
+      var anchor = null;
+      var lowest = -1;
+      $fallbacks.each(function () {
+        var bottom = this.getBoundingClientRect().bottom;
+        if (bottom > lowest) {
+          lowest = bottom;
+          anchor = this;
+        }
+      });
+      return anchor ? $(anchor) : $();
+    }
+
+    function findCompactFeedAnchor($node) {
+      var current = $node && $node.length ? $node[0] : null;
+      var candidate = current;
+      var steps = 0;
+      while (current && current.parentElement && current.parentElement !== document.body && steps < 6) {
+        var parent = current.parentElement;
+        if ($(parent).closest('.ident-widget-scope, .modal').length) break;
+        var rect = parent.getBoundingClientRect();
+        if (rect.height <= 0 || rect.height > 180) break;
+        candidate = parent;
+        current = parent;
+        steps += 1;
+      }
+      return candidate ? $(candidate) : $();
     }
 
     function parseJson(text) {

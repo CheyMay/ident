@@ -8,6 +8,8 @@
     body { background: #edf1f4; margin: 0; padding: 32px; }
     .card-layout { display: grid; gap: 24px; grid-template-columns: 300px minmax(420px, 760px); margin: 0 auto; max-width: 1100px; }
     .card-holder__fields, .card-feed { background: #fff; min-height: 620px; padding: 20px; }
+    .card-feed { display: flex; flex-direction: column; }
+    .feed-timeline { flex: 1 1 auto; }
     .feed-compose { border: 1px solid #cbd6df; min-height: 52px; padding: 14px; }
     .modal-test-shell { background: rgba(21, 27, 36, 0.35); inset: 0; position: fixed; z-index: 10; }
     .with-side-panel .modal-test-shell { right: 38%; }
@@ -17,7 +19,10 @@
 <body>
   <main class="card-layout">
     <section class="card-holder__fields"></section>
-    <section class="card-feed"><div class="feed-compose">Примечание: введите текст</div></section>
+    <section class="card-feed">
+      <div class="feed-timeline"></div>
+      <div class="feed-compose"><span>Примечание: введите текст</span></div>
+    </section>
   </main>
   <pre data-last-booking-request hidden></pre>
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
@@ -157,7 +162,7 @@
       window.previewWidget = widget;
     };
   </script>
-  <script src="/front/script.js?v=1.18.0"></script>
+  <script src="/front/script.js?v=1.19.0"></script>
   <script>
     window.previewWidget.callbacks.render();
     window.previewWidget.callbacks.bind_actions();
