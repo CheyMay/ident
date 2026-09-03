@@ -40,15 +40,17 @@ async function main() {
       const launcherRect = launcher.getBoundingClientRect();
       const composerRect = composer.getBoundingClientRect();
       return {
-        beforeComposer: launcher.nextElementSibling === composer,
+        outsideComposer: launcher.parentElement === document.body,
         compact: launcherRect.width <= 220,
-        nearComposer: composerRect.top - launcherRect.bottom <= 12
+        aboveComposer: launcherRect.bottom <= composerRect.top,
+        nearComposer: composerRect.top - launcherRect.bottom <= 12,
+        visible: getComputedStyle(launcher).visibility === 'visible'
       };
     });
-    if (!smartLauncherPosition.beforeComposer || !smartLauncherPosition.compact || !smartLauncherPosition.nearComposer) {
+    if (!smartLauncherPosition.outsideComposer || !smartLauncherPosition.compact || !smartLauncherPosition.aboveComposer || !smartLauncherPosition.nearComposer || !smartLauncherPosition.visible) {
       throw new Error(`Smart launcher is not compact above the feed composer: ${JSON.stringify(smartLauncherPosition)}`);
     }
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.19.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.20.0.png'), fullPage: true });
     await page.click('.ident-widget-smart-launcher__button');
     await page.waitForSelector('.ident-widget-modal-shell');
 
@@ -97,7 +99,7 @@ async function main() {
     }
     if (result.commentRows < 5) throw new Error(`Comment field is too small: ${result.commentRows} rows`);
 
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.19.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.20.0.png'), fullPage: true });
 
     const doctorCheckboxes = page.locator('[data-ident-filter-doctor]');
     await doctorCheckboxes.nth(0).check();

@@ -1,10 +1,13 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.19.0';
+    var FRONT_VERSION = '1.20.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
+      smartLauncherAnchor: null,
+      smartLauncherFrame: null,
+      smartLauncherPositionHandler: null,
       advancedReady: false,
       amoReady: false,
       workspaceModal: null,
@@ -72,11 +75,21 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       destroy: function () {
         $(document).off('.identWidget');
         if (state.smartLauncherTimer) window.clearTimeout(state.smartLauncherTimer);
+        if (state.smartLauncherPositionHandler) {
+          window.removeEventListener('resize', state.smartLauncherPositionHandler);
+          document.removeEventListener('scroll', state.smartLauncherPositionHandler, true);
+        }
+        if (state.smartLauncherFrame && typeof window.cancelAnimationFrame === 'function') {
+          window.cancelAnimationFrame(state.smartLauncherFrame);
+        }
         if (state.workspaceModal && typeof state.workspaceModal.destroy === 'function') {
           state.workspaceModal.destroy();
         }
         $('.ident-widget-launcher, .ident-widget-smart-launcher, .ident-widget-workspace').remove();
         state.smartLauncherTimer = null;
+        state.smartLauncherAnchor = null;
+        state.smartLauncherFrame = null;
+        state.smartLauncherPositionHandler = null;
         state.workspaceModal = null;
         return true;
       }
@@ -176,7 +189,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         window.clearTimeout(state.smartLauncherTimer);
         state.smartLauncherTimer = null;
       }
-      if (!isLeadCard() || $('.ident-widget-smart-launcher').length) return;
+      if (!isLeadCard()) return;
 
       var $anchor = findLeadFeedAnchor();
       if (!$anchor.length) {
@@ -188,7 +201,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         return;
       }
 
-      $anchor.before(
+      state.smartLauncherAnchor = $anchor[0];
+      if (!$('.ident-widget-smart-launcher').length) $('body').append(
         '<div class="ident-widget-scope ident-widget-smart-launcher">' +
           '<button type="button" class="ident-widget-smart-launcher__button" data-ident-action="open_workspace">' +
             '<span class="ident-widget-smart-launcher__mark">ID</span>' +
@@ -196,6 +210,43 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           '</button>' +
         '</div>'
       );
+      bindLeadSmartLauncherPosition();
+      positionLeadSmartLauncher();
+      window.setTimeout(scheduleLeadSmartLauncherPosition, 80);
+      window.setTimeout(scheduleLeadSmartLauncherPosition, 350);
+    }
+
+    function bindLeadSmartLauncherPosition() {
+      if (state.smartLauncherPositionHandler) return;
+      state.smartLauncherPositionHandler = scheduleLeadSmartLauncherPosition;
+      window.addEventListener('resize', state.smartLauncherPositionHandler);
+      document.addEventListener('scroll', state.smartLauncherPositionHandler, true);
+    }
+
+    function scheduleLeadSmartLauncherPosition() {
+      if (state.smartLauncherFrame) return;
+      state.smartLauncherFrame = window.requestAnimationFrame(function () {
+        state.smartLauncherFrame = null;
+        positionLeadSmartLauncher();
+      });
+    }
+
+    function positionLeadSmartLauncher() {
+      var anchor = state.smartLauncherAnchor;
+      var $launcher = $('.ident-widget-smart-launcher').first();
+      if (!anchor || !$launcher.length || !document.documentElement.contains(anchor)) return;
+
+      var rect = anchor.getBoundingClientRect();
+      var launcherWidth = $launcher.outerWidth() || 190;
+      var launcherHeight = $launcher.outerHeight() || 34;
+      var left = Math.max(8, Math.min(rect.left + 10, window.innerWidth - launcherWidth - 8));
+      var top = rect.top - launcherHeight - 10;
+      if (top < 8) top = rect.bottom + 8;
+      $launcher.css({
+        left: Math.round(left) + 'px',
+        top: Math.round(top) + 'px',
+        visibility: rect.bottom < 0 || rect.top > window.innerHeight ? 'hidden' : 'visible'
+      });
     }
 
     function bindLeadPanelActions() {

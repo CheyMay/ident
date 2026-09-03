@@ -73,12 +73,12 @@
 }
 
 .ident-widget-scope.ident-widget-smart-launcher {
-  align-self: flex-start;
   display: block;
-  flex: 0 0 auto;
-  margin: 0 0 8px 10px;
-  max-width: calc(100% - 10px);
+  margin: 0;
+  position: fixed;
+  visibility: hidden;
   width: 190px;
+  z-index: 30;
 }
 
 .ident-widget-scope .ident-widget-smart-launcher__button {
