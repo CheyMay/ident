@@ -1,7 +1,7 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.21.0';
+    var FRONT_VERSION = '1.22.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
@@ -243,24 +243,24 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var top = rect.top - launcherHeight - 10;
       if (top < 8) top = rect.bottom + 8;
 
-      var taskBanner = findLeadTaskBanner();
-      if (taskBanner) {
-        var taskRect = taskBanner.getBoundingClientRect();
+      for (var attempt = 0; attempt < 5; attempt += 1) {
         var launcherRect = {
           left: left,
           right: left + launcherWidth,
           top: top,
           bottom: top + launcherHeight
         };
-        if (rectanglesOverlap(launcherRect, taskRect, 4)) {
-          var rightOfBanner = taskRect.right + 10;
-          var rightBoundary = Math.min(window.innerWidth - 8, rect.right || window.innerWidth - 8);
-          if (rightOfBanner + launcherWidth <= rightBoundary) {
-            left = rightOfBanner;
-            top = Math.max(8, taskRect.top + Math.round((taskRect.height - launcherHeight) / 2));
-          } else {
-            top = Math.max(8, taskRect.top - launcherHeight - 8);
-          }
+        var obstacle = findLauncherObstacle(launcherRect, anchor);
+        if (!obstacle) break;
+
+        var obstacleRect = obstacle.getBoundingClientRect();
+        var rightOfObstacle = obstacleRect.right + 10;
+        var rightBoundary = Math.min(window.innerWidth - 8, rect.right || window.innerWidth - 8);
+        if (rightOfObstacle + launcherWidth <= rightBoundary) {
+          left = rightOfObstacle;
+          top = Math.max(8, obstacleRect.top + Math.round((obstacleRect.height - launcherHeight) / 2));
+        } else {
+          top = Math.max(8, obstacleRect.top - launcherHeight - 8);
         }
       }
 
@@ -271,21 +271,47 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       });
     }
 
-    function findLeadTaskBanner() {
+    function findLauncherObstacle(launcherRect, anchor) {
+      if (typeof document.elementsFromPoint !== 'function') return null;
+      var points = [
+        [launcherRect.left + 3, launcherRect.top + 3],
+        [launcherRect.right - 3, launcherRect.top + 3],
+        [(launcherRect.left + launcherRect.right) / 2, (launcherRect.top + launcherRect.bottom) / 2],
+        [launcherRect.left + 3, launcherRect.bottom - 3],
+        [launcherRect.right - 3, launcherRect.bottom - 3]
+      ];
+      var seen = [];
       var best = null;
-      var bestArea = Number.POSITIVE_INFINITY;
-      $('div, span, a, button').filter(function () {
-        var $item = $(this);
-        return /нет запланированных задач/i.test($.trim($item.text())) &&
-          !$item.closest('.ident-widget-scope, .modal').length &&
-          $item.is(':visible');
-      }).each(function () {
-        var rect = this.getBoundingClientRect();
-        var area = rect.width * rect.height;
-        if (rect.width > 0 && rect.height > 0 && rect.height <= 80 && area < bestArea) {
-          best = this;
-          bestArea = area;
-        }
+      var bestArea = 0;
+
+      points.forEach(function (point) {
+        var x = Math.max(0, Math.min(window.innerWidth - 1, Math.round(point[0])));
+        var y = Math.max(0, Math.min(window.innerHeight - 1, Math.round(point[1])));
+        document.elementsFromPoint(x, y).forEach(function (element) {
+          if (seen.indexOf(element) !== -1) return;
+          seen.push(element);
+          if (element === document.body || element === document.documentElement ||
+              $(element).closest('.ident-widget-scope, .modal').length ||
+              element === anchor || element.contains(anchor) || anchor.contains(element)) return;
+
+          var elementRect = element.getBoundingClientRect();
+          if (elementRect.width < 24 || elementRect.height < 8 || elementRect.height > 180 ||
+              !rectanglesOverlap(launcherRect, elementRect, 2)) return;
+
+          var styles = window.getComputedStyle(element);
+          var hasBorder = parseFloat(styles.borderTopWidth) > 0 || parseFloat(styles.borderRightWidth) > 0 ||
+            parseFloat(styles.borderBottomWidth) > 0 || parseFloat(styles.borderLeftWidth) > 0;
+          var hasBackground = styles.backgroundColor && styles.backgroundColor !== 'transparent' &&
+            !/^rgba\([^)]*,\s*0\)$/.test(styles.backgroundColor);
+          var hasShadow = styles.boxShadow && styles.boxShadow !== 'none';
+          if (!hasBorder && !hasBackground && !hasShadow) return;
+
+          var area = elementRect.width * elementRect.height;
+          if (area > bestArea) {
+            best = element;
+            bestArea = area;
+          }
+        });
       });
       return best;
     }

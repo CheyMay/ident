@@ -53,7 +53,27 @@ async function main() {
     if (!smartLauncherPosition.outsideComposer || !smartLauncherPosition.compact || !smartLauncherPosition.aboveComposer || !smartLauncherPosition.nearComposer || !smartLauncherPosition.avoidsTaskBanner || !smartLauncherPosition.visible) {
       throw new Error(`Smart launcher is not compact above the feed composer: ${JSON.stringify(smartLauncherPosition)}`);
     }
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.21.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.22.0.png'), fullPage: true });
+
+    await page.evaluate(() => {
+      const taskBanner = document.querySelector('.feed-task-banner');
+      taskBanner.classList.add('is-task');
+      taskBanner.textContent = 'Завтра для Омар';
+      window.dispatchEvent(new Event('resize'));
+    });
+    await page.waitForTimeout(100);
+    const fullTaskPosition = await page.evaluate(() => {
+      const launcherRect = document.querySelector('.ident-widget-smart-launcher').getBoundingClientRect();
+      const taskRect = document.querySelector('.feed-task-banner').getBoundingClientRect();
+      return {
+        avoidsTask: launcherRect.right <= taskRect.left || launcherRect.left >= taskRect.right || launcherRect.bottom <= taskRect.top || launcherRect.top >= taskRect.bottom,
+        aboveTask: launcherRect.bottom <= taskRect.top
+      };
+    });
+    if (!fullTaskPosition.avoidsTask || !fullTaskPosition.aboveTask) {
+      throw new Error(`Smart launcher overlaps a full task card: ${JSON.stringify(fullTaskPosition)}`);
+    }
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-task-1.22.0.png'), fullPage: true });
     await page.click('.ident-widget-smart-launcher__button');
     await page.waitForSelector('.ident-widget-modal-shell');
 
@@ -102,7 +122,7 @@ async function main() {
     }
     if (result.commentRows < 5) throw new Error(`Comment field is too small: ${result.commentRows} rows`);
 
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.21.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.22.0.png'), fullPage: true });
 
     const doctorCheckboxes = page.locator('[data-ident-filter-doctor]');
     await doctorCheckboxes.nth(0).check();
