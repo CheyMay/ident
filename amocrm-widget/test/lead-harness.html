@@ -10,6 +10,7 @@
     .card-holder__fields, .card-feed { background: #fff; min-height: 620px; padding: 20px; }
     .card-feed { display: flex; flex-direction: column; }
     .feed-timeline { flex: 1 1 auto; }
+    .feed-task-banner { background: #fff6da; border: 1px solid #e6b744; border-radius: 4px; font-size: 12px; margin-bottom: 8px; padding: 4px 10px; width: 360px; }
     .feed-compose { border: 1px solid #cbd6df; min-height: 52px; padding: 14px; }
     .modal-test-shell { background: rgba(21, 27, 36, 0.35); inset: 0; position: fixed; z-index: 10; }
     .with-side-panel .modal-test-shell { right: 38%; }
@@ -21,6 +22,7 @@
     <section class="card-holder__fields"></section>
     <section class="card-feed">
       <div class="feed-timeline"></div>
+      <div class="feed-task-banner">Нет запланированных задач, рекомендуем добавить</div>
       <div class="feed-compose"><span>Примечание: введите текст</span></div>
     </section>
   </main>
@@ -162,7 +164,7 @@
       window.previewWidget = widget;
     };
   </script>
-  <script src="/front/script.js?v=1.20.0"></script>
+  <script src="/front/script.js?v=1.21.0"></script>
   <script>
     window.previewWidget.callbacks.render();
     window.previewWidget.callbacks.bind_actions();

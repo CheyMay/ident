@@ -1,7 +1,7 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.20.0';
+    var FRONT_VERSION = '1.21.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
@@ -242,11 +242,60 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var left = Math.max(8, Math.min(rect.left + 10, window.innerWidth - launcherWidth - 8));
       var top = rect.top - launcherHeight - 10;
       if (top < 8) top = rect.bottom + 8;
+
+      var taskBanner = findLeadTaskBanner();
+      if (taskBanner) {
+        var taskRect = taskBanner.getBoundingClientRect();
+        var launcherRect = {
+          left: left,
+          right: left + launcherWidth,
+          top: top,
+          bottom: top + launcherHeight
+        };
+        if (rectanglesOverlap(launcherRect, taskRect, 4)) {
+          var rightOfBanner = taskRect.right + 10;
+          var rightBoundary = Math.min(window.innerWidth - 8, rect.right || window.innerWidth - 8);
+          if (rightOfBanner + launcherWidth <= rightBoundary) {
+            left = rightOfBanner;
+            top = Math.max(8, taskRect.top + Math.round((taskRect.height - launcherHeight) / 2));
+          } else {
+            top = Math.max(8, taskRect.top - launcherHeight - 8);
+          }
+        }
+      }
+
       $launcher.css({
         left: Math.round(left) + 'px',
         top: Math.round(top) + 'px',
         visibility: rect.bottom < 0 || rect.top > window.innerHeight ? 'hidden' : 'visible'
       });
+    }
+
+    function findLeadTaskBanner() {
+      var best = null;
+      var bestArea = Number.POSITIVE_INFINITY;
+      $('div, span, a, button').filter(function () {
+        var $item = $(this);
+        return /нет запланированных задач/i.test($.trim($item.text())) &&
+          !$item.closest('.ident-widget-scope, .modal').length &&
+          $item.is(':visible');
+      }).each(function () {
+        var rect = this.getBoundingClientRect();
+        var area = rect.width * rect.height;
+        if (rect.width > 0 && rect.height > 0 && rect.height <= 80 && area < bestArea) {
+          best = this;
+          bestArea = area;
+        }
+      });
+      return best;
+    }
+
+    function rectanglesOverlap(left, right, margin) {
+      var gap = Number(margin) || 0;
+      return left.left < right.right + gap &&
+        left.right > right.left - gap &&
+        left.top < right.bottom + gap &&
+        left.bottom > right.top - gap;
     }
 
     function bindLeadPanelActions() {

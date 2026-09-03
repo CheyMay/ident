@@ -37,20 +37,23 @@ async function main() {
     const smartLauncherPosition = await page.evaluate(() => {
       const launcher = document.querySelector('.ident-widget-smart-launcher');
       const composer = document.querySelector('.feed-compose');
+      const taskBanner = document.querySelector('.feed-task-banner');
       const launcherRect = launcher.getBoundingClientRect();
       const composerRect = composer.getBoundingClientRect();
+      const taskRect = taskBanner.getBoundingClientRect();
       return {
         outsideComposer: launcher.parentElement === document.body,
         compact: launcherRect.width <= 220,
         aboveComposer: launcherRect.bottom <= composerRect.top,
         nearComposer: composerRect.top - launcherRect.bottom <= 12,
+        avoidsTaskBanner: launcherRect.right <= taskRect.left || launcherRect.left >= taskRect.right || launcherRect.bottom <= taskRect.top || launcherRect.top >= taskRect.bottom,
         visible: getComputedStyle(launcher).visibility === 'visible'
       };
     });
-    if (!smartLauncherPosition.outsideComposer || !smartLauncherPosition.compact || !smartLauncherPosition.aboveComposer || !smartLauncherPosition.nearComposer || !smartLauncherPosition.visible) {
+    if (!smartLauncherPosition.outsideComposer || !smartLauncherPosition.compact || !smartLauncherPosition.aboveComposer || !smartLauncherPosition.nearComposer || !smartLauncherPosition.avoidsTaskBanner || !smartLauncherPosition.visible) {
       throw new Error(`Smart launcher is not compact above the feed composer: ${JSON.stringify(smartLauncherPosition)}`);
     }
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.20.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.21.0.png'), fullPage: true });
     await page.click('.ident-widget-smart-launcher__button');
     await page.waitForSelector('.ident-widget-modal-shell');
 
@@ -99,7 +102,7 @@ async function main() {
     }
     if (result.commentRows < 5) throw new Error(`Comment field is too small: ${result.commentRows} rows`);
 
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.20.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.21.0.png'), fullPage: true });
 
     const doctorCheckboxes = page.locator('[data-ident-filter-doctor]');
     await doctorCheckboxes.nth(0).check();
