@@ -78,7 +78,8 @@
           { Id: 1904, Name: 'Рамазанов Омар Магомедович' },
           { Id: 2129, Name: 'Пахрудинов Муса Магомедович' },
           { Id: 2361, Name: 'Гюльметов Низами Фирдовси' },
-          { Id: 3011, Name: 'Рогожин Аркадий Александрович' }
+          { Id: 3011, Name: 'Рогожин Аркадий Александрович' },
+          { Id: 9999, Name: 'Ахметова Юлия Сергеевна' }
         ],
         Branches: [{ Id: 1, Name: 'Стом Дент (Лабытнанги)' }],
         Intervals: [
@@ -100,6 +101,7 @@
           futureSlot(1, 14, 15, 2361, 15),
           futureSlot(1, 14, 30, 2361, 15),
           futureSlot(1, 14, 45, 2361, 15),
+          futureSlot(1, 13, 0, 9999, 15),
           futureSlot(1, 11, 30, 3011),
           Object.assign(futureSlot(1, 11, 45, 3011), { IsBusy: true }),
           futureSlot(2, 12, 0, 1904),
@@ -141,14 +143,16 @@
           return { backend_url: 'https://ident.code9dev.ru', service_api_key: 'preview', widget_code: 'ident-amocrm' };
         },
         render_template: function (template) {
-          window.jQuery('.card-holder__fields').html(template.render);
+          window.jQuery('.card-holder__fields').html(
+            '<button type="button" class="' + template.caption.class_name + '">IDENT</button>' + template.render
+          );
         }
       };
       createWidget.call(widget);
       window.previewWidget = widget;
     };
   </script>
-  <script src="/front/script.js?v=1.16.0"></script>
+  <script src="/front/script.js?v=1.17.0"></script>
   <script>
     window.previewWidget.callbacks.render();
     window.previewWidget.callbacks.bind_actions();

@@ -1,17 +1,21 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.16.0';
+    var FRONT_VERSION = '1.17.0';
     var state = {
       leadPanelRendered: false,
       advancedReady: false,
       amoReady: false,
       workspaceModal: null,
       workspaceData: null,
+      workspaceServices: [],
       workspaceCellOptions: {},
+      selectedDoctorIds: [],
       selectedSlot: null,
       bookingDuration: 30,
       showNonWorking: true,
+      selectedService: null,
+      manualService: '',
       leadPreview: null,
       preparedBooking: null,
       bookingSubmitting: false,
@@ -165,6 +169,10 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     function bindLeadPanelActions() {
       $(document)
         .off('click.identWidget')
+        .on('click.identWidget', '.ident-widget-caption', function (event) {
+          if ($(event.target).closest('[data-ident-action]').length) return;
+          openIdentWorkspace();
+        })
         .on('click.identWidget', '.ident-widget-launcher [data-ident-action], .ident-widget-workspace [data-ident-action]', function () {
           var action = $(this).attr('data-ident-action');
           if (action === 'open_workspace') openIdentWorkspace();
@@ -172,13 +180,19 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           if (action === 'select_day') selectWorkspaceDay($(this).attr('data-ident-date'));
           if (action === 'select_slot') selectWorkspaceSlot($(this).attr('data-ident-slot-key'));
           if (action === 'set_duration') setWorkspaceDuration($(this).attr('data-ident-duration'));
+          if (action === 'toggle_doctor_filter') toggleWorkspaceDoctorFilter();
+          if (action === 'select_service') selectWorkspaceService($(this).attr('data-ident-service-key'));
+          if (action === 'clear_service') selectWorkspaceService('');
           if (action === 'submit_booking') submitWorkspaceBooking();
           if (action === 'preview') previewCurrentLead();
+        })
+        .on('click.identWidget', function (event) {
+          if (!$(event.target).closest('.ident-widget-workspace__doctor-picker').length) closeWorkspaceDoctorFilter();
         });
 
       $(document)
         .off('change.identWidget')
-        .on('change.identWidget', '[data-ident-filter-doctor], [data-ident-filter-date], [data-ident-show-nonworking], [data-ident-duration-select]', function () {
+        .on('change.identWidget', '[data-ident-filter-doctor], [data-ident-filter-doctor-all], [data-ident-filter-date], [data-ident-show-nonworking], [data-ident-duration-select]', function () {
           if ($(this).is('[data-ident-duration-select]')) {
             setWorkspaceDuration($(this).val());
             return;
@@ -188,16 +202,25 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
             renderWorkspaceSlots();
             return;
           }
+          if ($(this).is('[data-ident-filter-doctor], [data-ident-filter-doctor-all]')) {
+            updateWorkspaceDoctorSelection($(this));
+            return;
+          }
           state.selectedSlot = null;
           resetWorkspaceSubmission();
-          if ($(this).is('[data-ident-filter-doctor]')) {
-            $('.ident-widget-workspace').last().find('[data-ident-filter-date]').val('');
-          }
           renderWorkspaceSlots();
         });
 
       $(document)
         .off('input.identWidget')
+        .on('input.identWidget', '[data-ident-service-search]', function () {
+          renderWorkspaceServices($('.ident-widget-workspace').last());
+        })
+        .on('input.identWidget', '[data-ident-manual-service]', function () {
+          state.manualService = String($(this).val() || '').trim();
+          resetWorkspaceSubmission();
+          updateWorkspaceReadiness($('.ident-widget-workspace').last());
+        })
         .on('input.identWidget', '[data-ident-booking-field]', function () {
           resetWorkspaceSubmission();
           updateWorkspaceReadiness($('.ident-widget-workspace').last());
@@ -208,10 +231,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       if ($('.ident-widget-workspace').length) return;
 
       state.workspaceData = null;
+      state.workspaceServices = [];
       state.workspaceCellOptions = {};
+      state.selectedDoctorIds = [];
       state.selectedSlot = null;
       state.bookingDuration = 30;
       state.showNonWorking = true;
+      state.selectedService = null;
+      state.manualService = '';
       state.leadPreview = null;
       state.preparedBooking = null;
       state.bookingSubmitting = false;
@@ -236,7 +263,11 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         destroy: function () {
           state.workspaceModal = null;
           state.workspaceData = null;
+          state.workspaceServices = [];
+          state.selectedDoctorIds = [];
           state.selectedSlot = null;
+          state.selectedService = null;
+          state.manualService = '';
           state.leadPreview = null;
           state.preparedBooking = null;
           state.bookingSubmitting = false;
@@ -292,7 +323,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       if (!shell) return;
       var containerWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
       var availableWidth = Math.max(320, containerWidth || window.innerWidth);
-      var width = Math.max(320, Math.min(1180, availableWidth - 64));
+      var width = Math.max(320, Math.min(1440, availableWidth - 32));
 
       shell.classList.add('ident-widget-modal-shell');
       shell.style.setProperty('background', '#ffffff', 'important');
@@ -322,10 +353,20 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           workspaceMetric('Обновлено', '—') +
         '</div>' +
         '<div class="ident-widget-workspace__toolbar">' +
-          '<label class="ident-widget-workspace__field">' +
-            '<span>Врач</span>' +
-            '<select data-ident-filter-doctor><option value="">Все врачи</option></select>' +
-          '</label>' +
+          '<div class="ident-widget-workspace__field">' +
+            '<span>Врачи</span>' +
+            '<div class="ident-widget-workspace__doctor-picker">' +
+              '<button type="button" class="ident-widget-workspace__doctor-trigger" data-ident-action="toggle_doctor_filter" aria-expanded="false">' +
+                '<strong data-ident-doctor-filter-label>Все врачи</strong><i aria-hidden="true">⌄</i>' +
+              '</button>' +
+              '<div class="ident-widget-workspace__doctor-menu" data-ident-doctor-filter-menu>' +
+                '<label class="ident-widget-workspace__doctor-option ident-widget-workspace__doctor-option_all">' +
+                  '<input type="checkbox" data-ident-filter-doctor-all checked><span>Все врачи</span>' +
+                '</label>' +
+                '<div data-ident-filter-doctor-options></div>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
           '<label class="ident-widget-workspace__field">' +
             '<span>Дата</span>' +
             '<input type="date" data-ident-filter-date>' +
@@ -386,6 +427,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
                 '</label>' +
               '</div>' +
             '</div>' +
+            '<div class="ident-widget-workspace__form-section">' +
+              '<div class="ident-widget-workspace__form-title">Услуга *</div>' +
+              '<div data-ident-service-selected></div>' +
+              '<div class="ident-widget-workspace__service-picker">' +
+                '<input type="search" data-ident-service-search placeholder="Найти услугу по названию или коду">' +
+                '<div class="ident-widget-workspace__service-results" data-ident-service-results></div>' +
+              '</div>' +
+            '</div>' +
             '<label class="ident-widget-workspace__form-field ident-widget-workspace__form-field_comment">' +
               '<span>Комментарий</span>' +
               '<textarea rows="5" data-ident-booking-field="comment" placeholder="Пожелания пациента или примечание для администратора"></textarea>' +
@@ -413,15 +462,23 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       $root.find('[data-ident-workspace-slots]').html('<div class="ident-widget-empty">Обновляю расписание...</div>');
       Promise.all([
         safeApiRequest('/api/timetable'),
+        safeApiRequest('/api/services'),
         safeApiRequest('/health')
       ]).then(function (results) {
         var slotsResult = results[0];
-        var healthResult = results[1];
+        var servicesResult = results[1];
+        var healthResult = results[2];
         if (!slotsResult.ok) throw new Error(slotsResult.error || 'Расписание пока не загружено.');
 
-        state.workspaceData = slotsResult.data;
+        state.workspaceData = filterWorkspaceData(slotsResult.data);
+        state.workspaceServices = normalizeWorkspaceServices(
+          servicesResult.ok ? servicesResult.data.Services : slotsResult.data.Services
+        );
+        state.selectedDoctorIds = [];
         state.selectedSlot = null;
         state.workspaceCellOptions = {};
+        state.selectedService = null;
+        state.manualService = '';
         state.preparedBooking = null;
         state.bookingSubmitting = false;
         state.submittedTicketId = null;
@@ -431,10 +488,11 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         renderWorkspaceDoctorFilter($root);
         renderWorkspaceMetrics($root);
         renderWorkspaceSlots();
+        renderWorkspaceServices($root);
         updateWorkspaceReadiness($root);
         setLeadStatus(
           state.amoReady
-            ? 'Расписание загружено.'
+            ? 'Расписание и услуги загружены.'
             : 'Расписание доступно. Данные пациента можно заполнить вручную.',
           state.amoReady ? 'ok' : 'warn'
         );
@@ -445,13 +503,86 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       });
     }
 
+    function filterWorkspaceData(data) {
+      var source = data || {};
+      var doctors = (source.Doctors || []).filter(function (doctor) {
+        return !/^ахметов(?:а)?(?:\s|$)/i.test(String(doctor.Name || '').trim());
+      });
+      var visibleIds = {};
+      doctors.forEach(function (doctor) { visibleIds[String(doctor.Id)] = true; });
+      return Object.assign({}, source, {
+        Doctors: doctors,
+        Intervals: (source.Intervals || []).filter(function (interval) {
+          return visibleIds[String(interval.DoctorId)];
+        })
+      });
+    }
+
     function renderWorkspaceDoctorFilter($root) {
-      var $select = $root.find('[data-ident-filter-doctor]');
-      var selected = String($select.val() || '');
-      var options = (state.workspaceData.Doctors || []).map(function (doctor) {
-        return '<option value="' + escapeHtml(doctor.Id) + '">' + escapeHtml(doctor.Name) + '</option>';
+      var doctors = (state.workspaceData.Doctors || []).slice().sort(function (left, right) {
+        return String(left.Name || '').localeCompare(String(right.Name || ''), 'ru');
+      });
+      var available = {};
+      doctors.forEach(function (doctor) { available[String(doctor.Id)] = true; });
+      state.selectedDoctorIds = state.selectedDoctorIds.filter(function (id) { return available[String(id)]; });
+
+      var selected = {};
+      state.selectedDoctorIds.forEach(function (id) { selected[String(id)] = true; });
+      var options = doctors.map(function (doctor) {
+        var id = String(doctor.Id);
+        return '<label class="ident-widget-workspace__doctor-option">' +
+          '<input type="checkbox" data-ident-filter-doctor value="' + escapeHtml(id) + '"' + (selected[id] ? ' checked' : '') + '>' +
+          '<span>' + escapeHtml(doctor.Name) + '</span>' +
+        '</label>';
       }).join('');
-      $select.html('<option value="">Все врачи</option>' + options).val(selected);
+      $root.find('[data-ident-filter-doctor-options]').html(options);
+      syncWorkspaceDoctorFilter($root);
+    }
+
+    function toggleWorkspaceDoctorFilter() {
+      var $root = $('.ident-widget-workspace').last();
+      var $picker = $root.find('.ident-widget-workspace__doctor-picker');
+      var open = !$picker.hasClass('is-open');
+      $picker.toggleClass('is-open', open);
+      $picker.find('[data-ident-action="toggle_doctor_filter"]').attr('aria-expanded', open ? 'true' : 'false');
+    }
+
+    function closeWorkspaceDoctorFilter() {
+      var $picker = $('.ident-widget-workspace').last().find('.ident-widget-workspace__doctor-picker');
+      $picker.removeClass('is-open');
+      $picker.find('[data-ident-action="toggle_doctor_filter"]').attr('aria-expanded', 'false');
+    }
+
+    function updateWorkspaceDoctorSelection($changed) {
+      var $root = $('.ident-widget-workspace').last();
+      var $all = $root.find('[data-ident-filter-doctor-all]');
+      var $doctors = $root.find('[data-ident-filter-doctor]');
+      if ($changed.is('[data-ident-filter-doctor-all]') && $changed.prop('checked')) {
+        $doctors.prop('checked', false);
+      }
+      var selected = $doctors.filter(':checked').map(function () { return String($(this).val()); }).get();
+      if (!selected.length) $all.prop('checked', true);
+      else $all.prop('checked', false);
+      state.selectedDoctorIds = selected;
+      state.selectedSlot = null;
+      resetWorkspaceSubmission();
+      syncWorkspaceDoctorFilter($root);
+      renderWorkspaceSlots();
+    }
+
+    function syncWorkspaceDoctorFilter($root) {
+      var selected = state.selectedDoctorIds;
+      var label = 'Все врачи';
+      if (selected.length === 1) {
+        var doctor = (state.workspaceData.Doctors || []).find(function (item) {
+          return String(item.Id) === String(selected[0]);
+        });
+        label = doctor ? doctor.Name : 'Выбран 1 врач';
+      } else if (selected.length > 1) {
+        label = 'Выбрано: ' + selected.length;
+      }
+      $root.find('[data-ident-filter-doctor-all]').prop('checked', selected.length === 0);
+      $root.find('[data-ident-doctor-filter-label]').text(label);
     }
 
     function renderWorkspaceMetrics($root) {
@@ -473,13 +604,13 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var $root = $('.ident-widget-workspace').last();
       if (!$root.length || !state.workspaceData) return;
 
-      var doctorId = String($root.find('[data-ident-filter-doctor]').val() || '');
+      var doctorIds = state.selectedDoctorIds.map(String);
       var date = String($root.find('[data-ident-filter-date]').val() || '');
       var doctors = mapById(state.workspaceData.Doctors || []);
       var branches = mapById(state.workspaceData.Branches || []);
       var allIntervals = futureScheduleSlots(state.workspaceData.Intervals || []);
       var doctorIntervals = allIntervals.filter(function (item) {
-        return !doctorId || String(item.DoctorId) === doctorId;
+        return !doctorIds.length || doctorIds.indexOf(String(item.DoctorId)) !== -1;
       });
 
       if (!date && doctorIntervals.length) {
@@ -493,7 +624,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       });
 
       if (state.selectedSlot && (
-        (doctorId && String(state.selectedSlot.DoctorId) !== doctorId) ||
+        (doctorIds.length && doctorIds.indexOf(String(state.selectedSlot.DoctorId)) === -1) ||
         (date && slotDateValue(state.selectedSlot.StartDateTime) !== date)
       )) {
         state.selectedSlot = null;
@@ -501,7 +632,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       }
 
       var visibleDoctors = (state.workspaceData.Doctors || []).filter(function (doctor) {
-        return !doctorId || String(doctor.Id) === doctorId;
+        return !doctorIds.length || doctorIds.indexOf(String(doctor.Id)) !== -1;
       }).sort(function (left, right) {
         return String(left.Name || '').localeCompare(String(right.Name || ''), 'ru');
       });
@@ -770,6 +901,100 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         '</div>'
       );
       updateWorkspaceReadiness($root);
+    }
+
+    function normalizeWorkspaceServices(items) {
+      var seen = {};
+      return (items || []).filter(function (item) {
+        var key = String(item.Key || [item.Id, item.PriceGroupId || 'default', item.PriceId || 'default'].join(':'));
+        if (!item.Id || !item.Name || seen[key]) return false;
+        seen[key] = true;
+        item.Key = key;
+        return true;
+      }).sort(function (left, right) {
+        return String(left.Name).localeCompare(String(right.Name), 'ru');
+      });
+    }
+
+    function renderWorkspaceServices($root) {
+      if (!$root || !$root.length) return;
+      var query = String($root.find('[data-ident-service-search]').val() || '').trim().toLowerCase();
+      var services = state.workspaceServices.filter(function (service) {
+        if (!query) return true;
+        return [service.Name, service.Code, service.FolderName, service.CategoryName]
+          .join(' ').toLowerCase().indexOf(query) !== -1;
+      });
+
+      var rows = services.map(function (service) {
+        return '<button type="button" class="ident-widget-workspace-service" data-ident-action="select_service" ' +
+          'data-ident-service-key="' + escapeHtml(service.Key) + '">' +
+          '<span><strong>' + escapeHtml(service.Name) + '</strong><small>' + escapeHtml(serviceMeta(service)) + '</small></span>' +
+          '<b>' + escapeHtml(formatServicePrice(service.Price)) + '</b>' +
+        '</button>';
+      }).join('');
+
+      var fallback = '<div class="ident-widget-workspace__service-fallback">' +
+        '<div class="ident-widget-empty">' +
+          (state.workspaceServices.length ? 'По запросу ничего не найдено.' : 'Каталог услуг еще не получен от агента.') +
+        '</div>' +
+        '<label><span>Указать услугу вручную</span>' +
+          '<input type="text" maxlength="160" data-ident-manual-service value="' + escapeHtml(state.manualService) + '" placeholder="Например, первичная консультация">' +
+        '</label>' +
+      '</div>';
+      $root.find('[data-ident-service-results]').html(rows || fallback);
+      renderWorkspaceSelectedService($root);
+    }
+
+    function renderWorkspaceSelectedService($root) {
+      var $selected = $root.find('[data-ident-service-selected]');
+      if (!state.selectedService) {
+        $selected.empty();
+        $root.find('.ident-widget-workspace__service-picker').show();
+        return;
+      }
+      var service = state.selectedService;
+      $selected.html(
+        '<div class="ident-widget-workspace-service ident-widget-workspace-service_selected">' +
+          '<span><strong>' + escapeHtml(service.Name) + '</strong><small>' + escapeHtml(serviceMeta(service)) + '</small></span>' +
+          '<b>' + escapeHtml(formatServicePrice(service.Price)) + '</b>' +
+          '<button type="button" data-ident-action="clear_service" title="Выбрать другую услугу" aria-label="Выбрать другую услугу">×</button>' +
+        '</div>'
+      );
+      $root.find('.ident-widget-workspace__service-picker').hide();
+    }
+
+    function selectWorkspaceService(key) {
+      state.selectedService = key
+        ? state.workspaceServices.find(function (service) { return String(service.Key) === String(key); }) || null
+        : null;
+      if (state.selectedService) state.manualService = '';
+      resetWorkspaceSubmission();
+      var $root = $('.ident-widget-workspace').last();
+      if (!key) $root.find('[data-ident-service-search]').val('');
+      renderWorkspaceServices($root);
+      updateWorkspaceReadiness($root);
+    }
+
+    function serviceMeta(service) {
+      if (service.Manual) return 'Указано вручную';
+      var parts = [];
+      if (service.Code) parts.push('Код ' + service.Code);
+      if (service.FolderName) parts.push(service.FolderName);
+      else if (service.CategoryName) parts.push(service.CategoryName);
+      if (service.PriceGroupName) parts.push(service.PriceGroupName);
+      return parts.join(' · ') || 'Услуга IDENT #' + service.Id;
+    }
+
+    function selectedWorkspaceService() {
+      if (state.selectedService) return state.selectedService;
+      var name = String(state.manualService || '').trim();
+      return name ? { Key: 'manual', Id: null, Name: name, Price: null, Manual: true } : null;
+    }
+
+    function formatServicePrice(value) {
+      var price = Number(value);
+      if (!Number.isFinite(price)) return 'цена не указана';
+      return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(price) + ' ₽';
     }
 
     function futureFreeSlots(intervals) {
@@ -1078,24 +1303,26 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       return {
         slot: Boolean(state.selectedSlot),
         patient: Boolean(draft.fullName),
-        phone: draft.phone.replace(/\D/g, '').length >= 10
+        phone: draft.phone.replace(/\D/g, '').length >= 10,
+        service: Boolean(selectedWorkspaceService())
       };
     }
 
     function updateWorkspaceReadiness($root) {
       if (!$root || !$root.length) return;
       var checks = workspaceBookingChecks($root);
-      var ready = checks.slot && checks.patient && checks.phone;
+      var ready = checks.slot && checks.patient && checks.phone && checks.service;
       var rows = [
         readinessRow(checks.slot, 'Время и врач'),
         readinessRow(checks.patient, 'Пациент'),
-        readinessRow(checks.phone, 'Телефон')
+        readinessRow(checks.phone, 'Телефон'),
+        readinessRow(checks.service, 'Услуга')
       ].join('');
 
       $root.find('[data-ident-booking-readiness]').html(
         '<div class="ident-widget-workspace__readiness-head"><strong>' +
           (ready ? 'Данные заполнены' : 'Заполните обязательные поля') +
-        '</strong><span>' + Object.keys(checks).filter(function (key) { return checks[key]; }).length + '/3</span></div>' +
+        '</strong><span>' + Object.keys(checks).filter(function (key) { return checks[key]; }).length + '/4</span></div>' +
         '<div class="ident-widget-workspace__readiness-rows">' + rows + '</div>'
       ).toggleClass('ident-widget-workspace__readiness_ready', ready);
 
@@ -1108,13 +1335,13 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       $root.find('[data-ident-action="submit_booking"]')
         .prop('disabled', !ready || state.bookingSubmitting || submitted)
         .text(buttonText);
-      $root.find('[data-ident-booking-field]')
+      $root.find('[data-ident-booking-field], [data-ident-service-search], [data-ident-manual-service]')
         .prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-action="select_slot"]').each(function () {
         var key = $(this).attr('data-ident-slot-key');
         $(this).prop('disabled', state.bookingSubmitting || !state.workspaceCellOptions[key]);
       });
-      $root.find('[data-ident-action="set_duration"], [data-ident-duration-select]')
+      $root.find('[data-ident-action="select_service"], [data-ident-action="clear_service"], [data-ident-action="set_duration"], [data-ident-duration-select]')
         .prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-show-nonworking]').prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-booking-state]')
@@ -1156,18 +1383,25 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     function buildWorkspaceBooking($root) {
       if (!$root.length) return null;
       var checks = workspaceBookingChecks($root);
-      if (!(checks.slot && checks.patient && checks.phone)) {
+      if (!(checks.slot && checks.patient && checks.phone && checks.service)) {
         updateWorkspaceReadiness($root);
-        setLeadStatus('Заполните время, пациента и телефон.', 'warn');
+        setLeadStatus('Заполните время, пациента, телефон и услугу.', 'warn');
         return null;
       }
 
       var draft = readWorkspaceDraft($root);
       var slot = state.selectedSlot;
+      var service = selectedWorkspaceService();
       var doctors = mapById(state.workspaceData.Doctors || []);
       var branches = mapById(state.workspaceData.Branches || []);
       var leadId = getCurrentLeadId();
       var branchName = nameById(branches, slot.BranchId, '');
+      var serviceDetails = [];
+      if (service.Id) serviceDetails.push('IDENT ID ' + service.Id);
+      if (service.Price !== null && service.Price !== '' && Number.isFinite(Number(service.Price))) {
+        serviceDetails.push(formatServicePrice(service.Price));
+      }
+      var serviceLine = 'Услуга: ' + service.Name + (serviceDetails.length ? ' (' + serviceDetails.join(', ') + ')' : '');
       state.preparedBooking = {
         id: workspaceTicketId(leadId, slot),
         dateAndTime: new Date().toISOString(),
@@ -1181,8 +1415,10 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         doctorName: nameById(doctors, slot.DoctorId, ''),
         branchId: slot.BranchId,
         branchName: branchName,
+        service: service,
         comment: [
           draft.comment,
+          serviceLine,
           branchName ? 'Филиал: ' + branchName + (slot.BranchId ? ' (IDENT ID ' + slot.BranchId + ')' : '') : '',
           'Длительность: ' + formatWorkspaceDuration(slot.LengthInMinutes || 15),
           'Сделка amoCRM #' + (leadId || 'не определена')
