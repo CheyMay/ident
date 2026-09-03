@@ -16,6 +16,10 @@
     .modal-test-shell { background: rgba(21, 27, 36, 0.35); inset: 0; position: fixed; z-index: 10; }
     .with-side-panel .modal-test-shell { right: 38%; }
     .modal-test-window { background: #183247; box-shadow: 0 12px 42px rgba(21, 27, 36, 0.22); left: 50%; overflow: hidden; padding: 30px; position: absolute; top: 32px; transform: translateX(-50%); width: 500px; }
+    #list_page_holder { display: none; }
+    .advanced-mode { background: #f7f9fb; padding: 0; }
+    .advanced-mode .card-layout { display: none; }
+    .advanced-mode #list_page_holder { display: block; }
   </style>
 </head>
 <body>
@@ -27,15 +31,18 @@
       <div class="feed-compose"><span>Примечание: введите текст</span></div>
     </section>
   </main>
+  <section id="list_page_holder"></section>
   <pre data-last-booking-request hidden></pre>
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script>
     window.autoOpenIdent = new URLSearchParams(window.location.search).get('open') === '1';
+    window.advancedIdent = new URLSearchParams(window.location.search).get('advanced') === '1';
     if (new URLSearchParams(window.location.search).get('panel') === '1') {
       document.documentElement.classList.add('with-side-panel');
     }
-    window.history.replaceState({}, '', '/leads/detail/123456');
-    window.APP = { constant: function (name) { return name === 'card_id' ? 123456 : ''; } };
+    if (window.advancedIdent) document.body.classList.add('advanced-mode');
+    window.history.replaceState({}, '', window.advancedIdent ? '/settings/widgets/ident-amocrm' : '/leads/detail/123456');
+    window.APP = { constant: function (name) { return !window.advancedIdent && name === 'card_id' ? 123456 : ''; } };
 
     function futureSlot(dayOffset, hour, minute, doctorId, duration) {
       var date = new Date();
@@ -165,12 +172,16 @@
       window.previewWidget = widget;
     };
   </script>
-  <script src="/front/script.js?v=1.22.0"></script>
+  <script src="/front/script.js?v=1.23.0"></script>
   <script>
-    window.previewWidget.callbacks.render();
-    window.previewWidget.callbacks.bind_actions();
-    if (window.autoOpenIdent) {
-      window.jQuery('[data-ident-action="open_workspace"]').trigger('click');
+    if (window.advancedIdent) {
+      window.previewWidget.callbacks.advancedSettings();
+    } else {
+      window.previewWidget.callbacks.render();
+      window.previewWidget.callbacks.bind_actions();
+      if (window.autoOpenIdent) {
+        window.jQuery('[data-ident-action="open_workspace"]').trigger('click');
+      }
     }
   </script>
 </body>

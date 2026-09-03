@@ -53,7 +53,7 @@ async function main() {
     if (!smartLauncherPosition.outsideComposer || !smartLauncherPosition.compact || !smartLauncherPosition.aboveComposer || !smartLauncherPosition.nearComposer || !smartLauncherPosition.avoidsTaskBanner || !smartLauncherPosition.visible) {
       throw new Error(`Smart launcher is not compact above the feed composer: ${JSON.stringify(smartLauncherPosition)}`);
     }
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.22.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-1.23.0.png'), fullPage: true });
 
     await page.evaluate(() => {
       const taskBanner = document.querySelector('.feed-task-banner');
@@ -73,8 +73,8 @@ async function main() {
     if (!fullTaskPosition.avoidsTask || !fullTaskPosition.aboveTask) {
       throw new Error(`Smart launcher overlaps a full task card: ${JSON.stringify(fullTaskPosition)}`);
     }
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-task-1.22.0.png'), fullPage: true });
-    await page.click('.ident-widget-smart-launcher__button');
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-launcher-task-1.23.0.png'), fullPage: true });
+    await page.click('.ident-widget-caption');
     await page.waitForSelector('.ident-widget-modal-shell');
 
     const result = await page.evaluate(() => {
@@ -94,9 +94,10 @@ async function main() {
         durationValues: Array.from(document.querySelectorAll('[data-ident-duration-select] option')).map((option) => option.value),
         selectedDuration: document.querySelector('[data-ident-duration-select]').value,
         serviceControls: document.querySelectorAll('[data-ident-service-search], [data-ident-service-results], [data-ident-service-selected]').length,
-        serviceRows: document.querySelectorAll('[data-ident-action="select_service"]').length,
+        dayCount: document.querySelectorAll('.ident-widget-workspace-day').length,
         doctorOptions: Array.from(document.querySelectorAll('[data-ident-filter-doctor]')).map((item) => item.parentElement.textContent.trim()),
-        metricLabels: Array.from(document.querySelectorAll('.ident-widget-workspace__metric span')).map((item) => item.textContent.trim()),
+        metricCount: document.querySelectorAll('.ident-widget-workspace__metrics, .ident-widget-workspace__metric').length,
+        launcherHidden: getComputedStyle(document.querySelector('.ident-widget-smart-launcher')).visibility === 'hidden',
         commentRows: document.querySelector('[data-ident-booking-field="comment"]').rows
       };
     });
@@ -114,15 +115,16 @@ async function main() {
       throw new Error(`Duration selector is incomplete: ${result.durationValues.join(',')}`);
     }
     if (result.selectedDuration !== '30') throw new Error(`Unexpected default duration: ${result.selectedDuration}`);
-    if (result.serviceControls < 3 || result.serviceRows !== 6 || result.metricLabels.includes('Услуги')) {
-      throw new Error('Full service picker is missing or the service counter is still visible');
-    }
+    if (result.serviceControls !== 0) throw new Error('Service controls are still visible');
+    if (result.metricCount !== 0) throw new Error('Workspace metrics block is still visible');
+    if (result.dayCount !== 31) throw new Error(`Expected 31 calendar days, got ${result.dayCount}`);
+    if (!result.launcherHidden) throw new Error('Smart launcher remains visible over the modal');
     if (result.doctorOptions.length !== 4 || result.doctorOptions.some((name) => /Ахметов/i.test(name))) {
       throw new Error(`Doctor exclusion failed: ${result.doctorOptions.join(', ')}`);
     }
     if (result.commentRows < 5) throw new Error(`Comment field is too small: ${result.commentRows} rows`);
 
-    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.22.0.png'), fullPage: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-modal-1.23.0.png'), fullPage: true });
 
     const doctorCheckboxes = page.locator('[data-ident-filter-doctor]');
     await doctorCheckboxes.nth(0).check();
@@ -138,17 +140,40 @@ async function main() {
     await page.selectOption('[data-ident-duration-select]', '120');
     const longSlot = page.locator('[data-ident-action="select_slot"]:not([disabled])').filter({ hasText: 'Свободно' }).first();
     await longSlot.click();
-    await page.click('[data-ident-action="select_service"]');
     await page.fill('[data-ident-booking-field="comment"]', 'Комментарий клиента');
     await page.click('[data-ident-action="submit_booking"]');
     await page.waitForFunction(() => Boolean(window.lastBookingRequest));
     const booking = await page.evaluate(() => window.lastBookingRequest);
     if (booking.durationMinutes !== 120) throw new Error(`Unexpected booking duration: ${booking.durationMinutes}`);
-    if (!booking.service || !booking.service.Name) throw new Error('Selected service is missing from booking payload');
+    if (booking.service || booking.serviceName || booking.ServiceName) throw new Error('Service leaked into booking payload');
     if (!String(booking.comment || '').includes('Комментарий клиента')) throw new Error('Booking comment was not preserved');
 
     result.bookingDuration = booking.durationMinutes;
-    result.bookingHasService = Boolean(booking.service && booking.service.Name);
+    result.bookingHasService = false;
+
+    const advancedPage = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await advancedPage.goto(`http://127.0.0.1:${port}/?advanced=1`, { waitUntil: 'networkidle' });
+    await advancedPage.waitForSelector('[data-ident-advanced-panel="calendar"] .ident-widget-workspace-day');
+    const advanced = await advancedPage.evaluate(() => ({
+      activeTab: document.querySelector('[data-ident-advanced-tab].is-active').textContent.trim(),
+      calendarHidden: document.querySelector('[data-ident-advanced-panel="calendar"]').hidden,
+      settingsHidden: document.querySelector('[data-ident-advanced-panel="settings"]').hidden,
+      dayCount: document.querySelectorAll('[data-ident-advanced-panel="calendar"] .ident-widget-workspace-day').length,
+      serviceControls: document.querySelectorAll('[data-ident-advanced-panel="calendar"] [data-ident-service-search]').length
+    }));
+    if (advanced.activeTab !== 'Календарь' || advanced.calendarHidden || !advanced.settingsHidden) {
+      throw new Error(`Calendar is not the default advanced tab: ${JSON.stringify(advanced)}`);
+    }
+    if (advanced.dayCount !== 31 || advanced.serviceControls !== 0) {
+      throw new Error(`Advanced calendar is incomplete: ${JSON.stringify(advanced)}`);
+    }
+    await advancedPage.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-advanced-calendar-1.23.0.png'), fullPage: true });
+    await advancedPage.click('[data-ident-advanced-tab="settings"]');
+    if (!(await advancedPage.locator('[data-ident-advanced-panel="settings"] .ident-widget-title').isVisible())) {
+      throw new Error('Integration settings tab did not open');
+    }
+    await advancedPage.screenshot({ path: path.join(os.tmpdir(), 'ident-widget-advanced-1.23.0.png'), fullPage: true });
+    await advancedPage.close();
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } finally {
     await browser.close();

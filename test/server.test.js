@@ -329,7 +329,6 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
             doctorName: 'Иванов Иван Иванович',
             branchId: 1,
             branchName: 'Main Branch',
-            service: { Id: 501, Name: 'Consultation', Code: 'CONS' },
             createAmoLead: false
           })
         });
@@ -338,8 +337,8 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         const booking = await bookingResponse.json();
         assert.equal(booking.ticket.Id, 'amo-widget:123:1904:202608160900');
         assert.equal(booking.ticket.BranchId, 1);
-        assert.equal(booking.ticket.ServiceId, 501);
-        assert.equal(booking.ticket.ServiceName, 'Consultation');
+        assert.equal(booking.ticket.ServiceId, undefined);
+        assert.equal(booking.ticket.ServiceName, undefined);
         assert.equal(booking.ticket.DurationMinutes, 30);
         assert.equal(booking.amoLeadId, null);
         assert.equal(booking.queued, true);

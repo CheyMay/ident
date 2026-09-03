@@ -1,25 +1,23 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.22.0';
+    var FRONT_VERSION = '1.23.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
       smartLauncherAnchor: null,
       smartLauncherFrame: null,
       smartLauncherPositionHandler: null,
+      leadCaptionCaptureHandler: null,
       advancedReady: false,
       amoReady: false,
       workspaceModal: null,
       workspaceData: null,
-      workspaceServices: [],
       workspaceCellOptions: {},
       selectedDoctorIds: [],
       selectedSlot: null,
       bookingDuration: 30,
       showNonWorking: true,
-      selectedService: null,
-      manualService: '',
       leadPreview: null,
       preparedBooking: null,
       bookingSubmitting: false,
@@ -79,6 +77,9 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           window.removeEventListener('resize', state.smartLauncherPositionHandler);
           document.removeEventListener('scroll', state.smartLauncherPositionHandler, true);
         }
+        if (state.leadCaptionCaptureHandler) {
+          document.removeEventListener('click', state.leadCaptionCaptureHandler, true);
+        }
         if (state.smartLauncherFrame && typeof window.cancelAnimationFrame === 'function') {
           window.cancelAnimationFrame(state.smartLauncherFrame);
         }
@@ -90,6 +91,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         state.smartLauncherAnchor = null;
         state.smartLauncherFrame = null;
         state.smartLauncherPositionHandler = null;
+        state.leadCaptionCaptureHandler = null;
         state.workspaceModal = null;
         return true;
       }
@@ -325,6 +327,18 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     }
 
     function bindLeadPanelActions() {
+      if (!state.leadCaptionCaptureHandler) {
+        state.leadCaptionCaptureHandler = function (event) {
+          var target = event.target;
+          var caption = target && target.closest ? target.closest('.ident-widget-caption') : null;
+          if (!caption || $(target).closest('[data-ident-action]').length) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          openIdentWorkspace();
+        };
+        document.addEventListener('click', state.leadCaptionCaptureHandler, true);
+      }
+
       $(document)
         .off('click.identWidget')
         .on('click.identWidget', '.ident-widget-caption', function (event) {
@@ -338,8 +352,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           if (action === 'select_day') selectWorkspaceDay($(this).attr('data-ident-date'));
           if (action === 'select_slot') selectWorkspaceSlot($(this).attr('data-ident-slot-key'));
           if (action === 'set_duration') setWorkspaceDuration($(this).attr('data-ident-duration'));
-          if (action === 'select_service') selectWorkspaceService($(this).attr('data-ident-service-key'));
-          if (action === 'clear_service') selectWorkspaceService('');
           if (action === 'submit_booking') submitWorkspaceBooking();
           if (action === 'preview') previewCurrentLead();
         });
@@ -367,14 +379,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
       $(document)
         .off('input.identWidget')
-        .on('input.identWidget', '[data-ident-service-search]', function () {
-          renderWorkspaceServices($('.ident-widget-workspace').last());
-        })
-        .on('input.identWidget', '[data-ident-manual-service]', function () {
-          state.manualService = String($(this).val() || '').trim();
-          resetWorkspaceSubmission();
-          updateWorkspaceReadiness($('.ident-widget-workspace').last());
-        })
         .on('input.identWidget', '[data-ident-booking-field]', function () {
           resetWorkspaceSubmission();
           updateWorkspaceReadiness($('.ident-widget-workspace').last());
@@ -382,17 +386,15 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     }
 
     function openIdentWorkspace() {
-      if ($('.ident-widget-workspace').length) return;
+      if ($('.ident-widget-workspace:not(.ident-widget-workspace_embedded)').length) return;
 
+      $('.ident-widget-smart-launcher').css('visibility', 'hidden');
       state.workspaceData = null;
-      state.workspaceServices = [];
       state.workspaceCellOptions = {};
       state.selectedDoctorIds = [];
       state.selectedSlot = null;
       state.bookingDuration = 30;
       state.showNonWorking = true;
-      state.selectedService = null;
-      state.manualService = '';
       state.leadPreview = null;
       state.preparedBooking = null;
       state.bookingSubmitting = false;
@@ -417,16 +419,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         destroy: function () {
           state.workspaceModal = null;
           state.workspaceData = null;
-          state.workspaceServices = [];
           state.selectedDoctorIds = [];
           state.selectedSlot = null;
-          state.selectedService = null;
-          state.manualService = '';
           state.leadPreview = null;
           state.preparedBooking = null;
           state.bookingSubmitting = false;
           state.submittedTicketId = null;
           state.submittedStatus = null;
+          window.setTimeout(scheduleLeadSmartLauncherPosition, 0);
         }
       });
     }
@@ -489,22 +489,24 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       shell.style.setProperty('width', width + 'px', 'important');
     }
 
-    function buildWorkspaceHtml() {
-      var leadId = getCurrentLeadId();
-      return '<div class="ident-widget-scope ident-widget-workspace">' +
+    function buildWorkspaceHtml(options) {
+      var settings = options || {};
+      var embedded = Boolean(settings.embedded);
+      var leadId = embedded ? '' : getCurrentLeadId();
+      var workspaceClass = 'ident-widget-scope ident-widget-workspace' + (embedded ? ' ident-widget-workspace_embedded' : '');
+      var meta = embedded
+        ? 'Календарь · v' + FRONT_VERSION
+        : 'Сделка #' + (leadId || 'не определена') + ' · v' + FRONT_VERSION;
+      var previewButton = embedded
+        ? ''
+        : '<button type="button" class="ident-widget-btn ident-widget-btn_secondary" data-ident-action="preview" data-ident-requires-amo disabled>Заполнить из сделки</button>';
+      return '<div class="' + workspaceClass + '" data-ident-workspace-mode="' + (embedded ? 'calendar' : 'lead') + '">' +
         '<div class="ident-widget-workspace__head">' +
           '<div>' +
             '<div class="ident-widget-workspace__eyebrow">IDENT</div>' +
             '<div class="ident-widget-workspace__title">Расписание и запись</div>' +
           '</div>' +
-          '<div class="ident-widget-workspace__meta">Сделка #' + escapeHtml(leadId || 'не определена') + ' · v' + escapeHtml(FRONT_VERSION) + '</div>' +
-        '</div>' +
-        '<div class="ident-widget-workspace__metrics" data-ident-workspace-metrics>' +
-          workspaceMetric('Врачи', '—') +
-          workspaceMetric('Свободно', '—') +
-          workspaceMetric('Занято', '—') +
-          workspaceMetric('Филиал', '—') +
-          workspaceMetric('Обновлено', '—') +
+          '<div class="ident-widget-workspace__meta">' + escapeHtml(meta) + '</div>' +
         '</div>' +
         '<div class="ident-widget-workspace__toolbar">' +
           '<div class="ident-widget-workspace__field ident-widget-workspace__field_doctors">' +
@@ -562,7 +564,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
               '<div class="ident-widget-empty">Сначала выберите свободное окно.</div>' +
             '</div>' +
             '<div class="ident-widget-workspace__form-section">' +
-              '<div class="ident-widget-workspace__form-title">Пациент <span data-ident-patient-source>из сделки amoCRM</span></div>' +
+              '<div class="ident-widget-workspace__form-title">Пациент <span data-ident-patient-source>' + (embedded ? 'ручной ввод' : 'из сделки amoCRM') + '</span></div>' +
               '<label class="ident-widget-workspace__form-field">' +
                 '<span>ФИО *</span>' +
                 '<input type="text" autocomplete="off" data-ident-booking-field="fullName" placeholder="Фамилия Имя Отчество">' +
@@ -578,21 +580,13 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
                 '</label>' +
               '</div>' +
             '</div>' +
-            '<div class="ident-widget-workspace__form-section">' +
-              '<div class="ident-widget-workspace__form-title">Услуга *</div>' +
-              '<div data-ident-service-selected></div>' +
-              '<div class="ident-widget-workspace__service-picker">' +
-                '<input type="search" data-ident-service-search placeholder="Найти услугу по названию или коду">' +
-                '<div class="ident-widget-workspace__service-results" data-ident-service-results></div>' +
-              '</div>' +
-            '</div>' +
             '<label class="ident-widget-workspace__form-field ident-widget-workspace__form-field_comment">' +
               '<span>Комментарий</span>' +
               '<textarea rows="5" data-ident-booking-field="comment" placeholder="Пожелания пациента или примечание для администратора"></textarea>' +
             '</label>' +
             '<div class="ident-widget-workspace__readiness" data-ident-booking-readiness></div>' +
             '<div class="ident-widget-workspace__actions">' +
-              '<button type="button" class="ident-widget-btn ident-widget-btn_secondary" data-ident-action="preview" data-ident-requires-amo disabled>Заполнить из сделки</button>' +
+              previewButton +
               '<button type="button" class="ident-widget-btn" data-ident-action="submit_booking" disabled>Создать заявку в IDENT</button>' +
             '</div>' +
             '<div class="ident-widget-workspace__action-note">Будет создана заявка на выбранное время. Подтверждение приема выполняет IDENT.</div>' +
@@ -602,10 +596,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       '</div>';
     }
 
-    function workspaceMetric(label, value) {
-      return '<div class="ident-widget-workspace__metric"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
-    }
-
     function loadWorkspaceSchedule($workspace) {
       var $root = $workspace && $workspace.length ? $workspace : $('.ident-widget-workspace').last();
       if (!$root.length) return;
@@ -613,23 +603,16 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       $root.find('[data-ident-workspace-slots]').html('<div class="ident-widget-empty">Обновляю расписание...</div>');
       Promise.all([
         safeApiRequest('/api/timetable'),
-        safeApiRequest('/api/services'),
         safeApiRequest('/health')
       ]).then(function (results) {
         var slotsResult = results[0];
-        var servicesResult = results[1];
-        var healthResult = results[2];
+        var healthResult = results[1];
         if (!slotsResult.ok) throw new Error(slotsResult.error || 'Расписание пока не загружено.');
 
         state.workspaceData = filterWorkspaceData(slotsResult.data);
-        state.workspaceServices = normalizeWorkspaceServices(
-          servicesResult.ok ? servicesResult.data.Services : slotsResult.data.Services
-        );
         state.selectedDoctorIds = [];
         state.selectedSlot = null;
         state.workspaceCellOptions = {};
-        state.selectedService = null;
-        state.manualService = '';
         state.preparedBooking = null;
         state.bookingSubmitting = false;
         state.submittedTicketId = null;
@@ -637,17 +620,15 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         state.amoReady = Boolean(healthResult.ok && healthResult.data.amoConfigured);
         $root.find('[data-ident-requires-amo]').prop('disabled', !state.amoReady);
         renderWorkspaceDoctorFilter($root);
-        renderWorkspaceMetrics($root);
         renderWorkspaceSlots();
-        renderWorkspaceServices($root);
         updateWorkspaceReadiness($root);
         setLeadStatus(
           state.amoReady
-            ? 'Расписание и услуги загружены.'
+            ? 'Расписание загружено.'
             : 'Расписание доступно. Данные пациента можно заполнить вручную.',
           state.amoReady ? 'ok' : 'warn'
         );
-        if (state.amoReady) loadWorkspaceLeadPreview($root);
+        if (state.amoReady && $root.attr('data-ident-workspace-mode') === 'lead') loadWorkspaceLeadPreview($root);
       }).catch(function (error) {
         $root.find('[data-ident-workspace-slots]').html('<div class="ident-widget-empty">Расписание недоступно.</div>');
         setLeadStatus(error.message, 'error');
@@ -717,21 +698,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       });
     }
 
-    function renderWorkspaceMetrics($root) {
-      var data = state.workspaceData || {};
-      var intervals = futureScheduleSlots(data.Intervals || []);
-      var freeCount = intervals.filter(function (item) { return !item.IsBusy; }).length;
-      var busyCount = intervals.length - freeCount;
-      var branches = data.Branches || [];
-      $root.find('[data-ident-workspace-metrics]').html(
-        workspaceMetric('Врачи', (data.Doctors || []).length) +
-        workspaceMetric('Свободно', freeCount) +
-        workspaceMetric('Занято', busyCount) +
-        workspaceMetric('Филиал', branches.length === 1 ? branches[0].Name : branches.length) +
-        workspaceMetric('Обновлено', formatWorkspaceUpdatedAt(data.receivedAt))
-      );
-    }
-
     function renderWorkspaceSlots() {
       var $root = $('.ident-widget-workspace').last();
       if (!$root.length || !state.workspaceData) return;
@@ -747,6 +713,10 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
       if (!date && doctorIntervals.length) {
         date = slotDateValue(doctorIntervals[0].StartDateTime);
+        $root.find('[data-ident-filter-date]').val(date);
+      }
+      if (!date) {
+        date = workspaceDateTimeValue(Date.now()).slice(0, 10);
         $root.find('[data-ident-filter-date]').val(date);
       }
 
@@ -943,23 +913,16 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     }
 
     function renderWorkspaceDays($root, intervals, selectedDate) {
-      var dates = [];
       var dateCounts = {};
       intervals.forEach(function (item) {
         var value = slotDateValue(item.StartDateTime);
         if (!dateCounts[value]) {
           dateCounts[value] = { free: 0, busy: 0 };
-          dates.push(value);
         }
         dateCounts[value][item.IsBusy ? 'busy' : 'free'] += 1;
       });
-      dates.sort();
-
-      var selectedIndex = Math.max(0, dates.indexOf(selectedDate));
-      var start = Math.max(0, Math.min(selectedIndex - 2, Math.max(0, dates.length - 7)));
-      var visibleDates = dates.slice(start, start + 7);
-      var html = visibleDates.map(function (value) {
-        var counts = dateCounts[value];
+      var html = workspaceCalendarDateKeys(selectedDate).map(function (value) {
+        var counts = dateCounts[value] || { free: 0, busy: 0 };
         var selected = value === selectedDate;
         return '<button type="button" class="ident-widget-workspace-day' + (selected ? ' ident-widget-workspace-day_selected' : '') + '" ' +
           'data-ident-action="select_day" data-ident-date="' + escapeHtml(value) + '" aria-pressed="' + (selected ? 'true' : 'false') + '">' +
@@ -969,6 +932,24 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         '</button>';
       }).join('');
       $root.find('[data-ident-workspace-days]').html(html);
+    }
+
+    function workspaceCalendarDateKeys(selectedDate) {
+      var start = new Date();
+      start.setHours(12, 0, 0, 0);
+      var selectedTimestamp = slotTimestamp(String(selectedDate || '') + 'T12:00:00');
+      var lastDefaultTimestamp = start.getTime() + 30 * 24 * 60 * 60 * 1000;
+      if (Number.isFinite(selectedTimestamp) && selectedTimestamp > lastDefaultTimestamp) {
+        start = new Date(selectedTimestamp);
+      }
+
+      var values = [];
+      for (var index = 0; index < 31; index += 1) {
+        var value = new Date(start.getTime());
+        value.setDate(start.getDate() + index);
+        values.push(workspaceDateTimeValue(value.getTime()).slice(0, 10));
+      }
+      return values;
     }
 
     function selectWorkspaceDay(date) {
@@ -1035,106 +1016,6 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       updateWorkspaceReadiness($root);
     }
 
-    function normalizeWorkspaceServices(items) {
-      var seen = {};
-      return (items || []).filter(function (item) {
-        var key = String(item.Key || [item.Id, item.PriceGroupId || 'default', item.PriceId || 'default'].join(':'));
-        if (!item.Id || !item.Name || seen[key]) return false;
-        seen[key] = true;
-        item.Key = key;
-        return true;
-      }).sort(function (left, right) {
-        return String(left.Name).localeCompare(String(right.Name), 'ru');
-      });
-    }
-
-    function renderWorkspaceServices($root) {
-      if (!$root || !$root.length) return;
-      var query = String($root.find('[data-ident-service-search]').val() || '').trim().toLowerCase();
-      var services = state.workspaceServices.filter(function (service) {
-        if (!query) return true;
-        return [service.Name, service.Code, service.FolderName, service.CategoryName]
-          .join(' ').toLowerCase().indexOf(query) !== -1;
-      });
-
-      var rows = services.map(function (service) {
-        return '<button type="button" class="ident-widget-workspace-service" data-ident-action="select_service" ' +
-          'data-ident-service-key="' + escapeHtml(service.Key) + '">' +
-          '<span><strong>' + escapeHtml(service.Name) + '</strong><small>' + escapeHtml(serviceMeta(service)) + '</small></span>' +
-          '<b>' + escapeHtml(formatServicePrice(service.Price)) + '</b>' +
-        '</button>';
-      }).join('');
-
-      var fallback = '<div class="ident-widget-workspace__service-fallback">' +
-        '<div class="ident-widget-empty">' +
-          (state.workspaceServices.length ? 'По запросу ничего не найдено.' : 'Каталог услуг еще не получен от агента.') +
-        '</div>' +
-        '<label><span>Указать услугу вручную</span>' +
-          '<input type="text" maxlength="160" data-ident-manual-service value="' + escapeHtml(state.manualService) + '" placeholder="Например, первичная консультация">' +
-        '</label>' +
-      '</div>';
-      $root.find('[data-ident-service-results]').html(rows || fallback);
-      renderWorkspaceSelectedService($root);
-    }
-
-    function renderWorkspaceSelectedService($root) {
-      var $selected = $root.find('[data-ident-service-selected]');
-      if (!state.selectedService) {
-        $selected.empty();
-        $root.find('.ident-widget-workspace__service-picker').show();
-        return;
-      }
-      var service = state.selectedService;
-      $selected.html(
-        '<div class="ident-widget-workspace-service ident-widget-workspace-service_selected">' +
-          '<span><strong>' + escapeHtml(service.Name) + '</strong><small>' + escapeHtml(serviceMeta(service)) + '</small></span>' +
-          '<b>' + escapeHtml(formatServicePrice(service.Price)) + '</b>' +
-          '<button type="button" data-ident-action="clear_service" title="Выбрать другую услугу" aria-label="Выбрать другую услугу">×</button>' +
-        '</div>'
-      );
-      $root.find('.ident-widget-workspace__service-picker').hide();
-    }
-
-    function selectWorkspaceService(key) {
-      state.selectedService = key
-        ? state.workspaceServices.find(function (service) { return String(service.Key) === String(key); }) || null
-        : null;
-      if (state.selectedService) state.manualService = '';
-      resetWorkspaceSubmission();
-      var $root = $('.ident-widget-workspace').last();
-      if (!key) $root.find('[data-ident-service-search]').val('');
-      renderWorkspaceServices($root);
-      updateWorkspaceReadiness($root);
-    }
-
-    function serviceMeta(service) {
-      if (service.Manual) return 'Указано вручную';
-      var parts = [];
-      if (service.Code) parts.push('Код ' + service.Code);
-      if (service.FolderName) parts.push(service.FolderName);
-      else if (service.CategoryName) parts.push(service.CategoryName);
-      if (service.PriceGroupName) parts.push(service.PriceGroupName);
-      return parts.join(' · ') || 'Услуга IDENT #' + service.Id;
-    }
-
-    function selectedWorkspaceService() {
-      if (state.selectedService) return state.selectedService;
-      var name = String(state.manualService || '').trim();
-      return name ? { Key: 'manual', Id: null, Name: name, Price: null, Manual: true } : null;
-    }
-
-    function formatServicePrice(value) {
-      var price = Number(value);
-      if (!Number.isFinite(price)) return 'цена не указана';
-      return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(price) + ' ₽';
-    }
-
-    function futureFreeSlots(intervals) {
-      return futureScheduleSlots(intervals).filter(function (item) {
-        return !item.IsBusy;
-      });
-    }
-
     function futureScheduleSlots(intervals) {
       return (intervals || []).filter(function (item) {
         return isFutureSlot(item.StartDateTime);
@@ -1143,18 +1024,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       });
     }
 
-    function workspaceSlotKey(item) {
-      return String(item.DoctorId) + '|' + String(item.BranchId) + '|' + String(item.StartDateTime);
-    }
-
     function slotDateValue(value) {
       return String(value || '').slice(0, 10);
-    }
-
-    function formatWorkspaceUpdatedAt(value) {
-      var timestamp = slotTimestamp(value);
-      if (!Number.isFinite(timestamp)) return '—';
-      return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp));
     }
 
     function formatSlotTime(value) {
@@ -1214,6 +1085,14 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var config = getConfig();
       var html =
         '<div class="ident-widget-scope ident-widget-advanced">' +
+          '<div class="ident-widget-advanced__tabs" role="tablist" aria-label="Разделы IDENT">' +
+            '<button type="button" role="tab" aria-selected="true" class="is-active" data-ident-advanced-tab="calendar">Календарь</button>' +
+            '<button type="button" role="tab" aria-selected="false" data-ident-advanced-tab="settings">Настройки интеграции</button>' +
+          '</div>' +
+          '<section class="ident-widget-advanced__panel" data-ident-advanced-panel="calendar">' +
+            buildWorkspaceHtml({ embedded: true }) +
+          '</section>' +
+          '<section class="ident-widget-advanced__panel ident-widget-advanced__settings" data-ident-advanced-panel="settings" hidden>' +
           '<div class="ident-widget-head">' +
             '<div>' +
               '<div class="ident-widget-title">IDENT amoCRM</div>' +
@@ -1334,16 +1213,36 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           '<div class="ident-widget-status" data-ident-advanced-status>' +
             'Backend: ' + escapeHtml(config.backendUrl || 'не указан') +
           '</div>' +
+          '</section>' +
         '</div>';
 
       $root.html(html);
-      $('[data-ident-booking-json]').val(JSON.stringify(buildDefaultBooking(), null, 2));
-      $('[data-ident-db-json]').val(JSON.stringify(buildDefaultIdentDbMapping(), null, 2));
-      $('[data-ident-agent-mapping-json]').val(JSON.stringify(buildDefaultIdentDbMapping(), null, 2));
-      $root.off('click.identAdvanced').on('click.identAdvanced', '[data-ident-action]', function () {
-        runAdvancedAction($(this).attr('data-ident-action'));
-      });
+      $root.find('[data-ident-booking-json]').val(JSON.stringify(buildDefaultBooking(), null, 2));
+      $root.find('[data-ident-db-json]').val(JSON.stringify(buildDefaultIdentDbMapping(), null, 2));
+      $root.find('[data-ident-agent-mapping-json]').val(JSON.stringify(buildDefaultIdentDbMapping(), null, 2));
+      $root.off('click.identAdvanced')
+        .on('click.identAdvanced', '[data-ident-advanced-tab]', function () {
+          selectAdvancedTab($root, $(this).attr('data-ident-advanced-tab'));
+        })
+        .on('click.identAdvanced', '[data-ident-advanced-panel="settings"] [data-ident-action]', function (event) {
+          event.stopPropagation();
+          runAdvancedAction($(this).attr('data-ident-action'));
+        });
+      bindLeadPanelActions();
+      selectAdvancedTab($root, 'calendar');
+      loadWorkspaceSchedule($root.find('[data-ident-advanced-panel="calendar"] .ident-widget-workspace'));
       window.setTimeout(loadAdvancedOverview, 0);
+    }
+
+    function selectAdvancedTab($root, name) {
+      var selected = name === 'settings' ? 'settings' : 'calendar';
+      $root.find('[data-ident-advanced-tab]').each(function () {
+        var active = $(this).attr('data-ident-advanced-tab') === selected;
+        $(this).toggleClass('is-active', active).attr('aria-selected', active ? 'true' : 'false');
+      });
+      $root.find('[data-ident-advanced-panel]').each(function () {
+        $(this).prop('hidden', $(this).attr('data-ident-advanced-panel') !== selected);
+      });
     }
 
     function advancedCard(key, title, text, buttons) {
@@ -1435,26 +1334,24 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       return {
         slot: Boolean(state.selectedSlot),
         patient: Boolean(draft.fullName),
-        phone: draft.phone.replace(/\D/g, '').length >= 10,
-        service: Boolean(selectedWorkspaceService())
+        phone: draft.phone.replace(/\D/g, '').length >= 10
       };
     }
 
     function updateWorkspaceReadiness($root) {
       if (!$root || !$root.length) return;
       var checks = workspaceBookingChecks($root);
-      var ready = checks.slot && checks.patient && checks.phone && checks.service;
+      var ready = checks.slot && checks.patient && checks.phone;
       var rows = [
         readinessRow(checks.slot, 'Время и врач'),
         readinessRow(checks.patient, 'Пациент'),
-        readinessRow(checks.phone, 'Телефон'),
-        readinessRow(checks.service, 'Услуга')
+        readinessRow(checks.phone, 'Телефон')
       ].join('');
 
       $root.find('[data-ident-booking-readiness]').html(
         '<div class="ident-widget-workspace__readiness-head"><strong>' +
           (ready ? 'Данные заполнены' : 'Заполните обязательные поля') +
-        '</strong><span>' + Object.keys(checks).filter(function (key) { return checks[key]; }).length + '/4</span></div>' +
+        '</strong><span>' + Object.keys(checks).filter(function (key) { return checks[key]; }).length + '/3</span></div>' +
         '<div class="ident-widget-workspace__readiness-rows">' + rows + '</div>'
       ).toggleClass('ident-widget-workspace__readiness_ready', ready);
 
@@ -1467,13 +1364,13 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       $root.find('[data-ident-action="submit_booking"]')
         .prop('disabled', !ready || state.bookingSubmitting || submitted)
         .text(buttonText);
-      $root.find('[data-ident-booking-field], [data-ident-service-search], [data-ident-manual-service]')
+      $root.find('[data-ident-booking-field]')
         .prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-action="select_slot"]').each(function () {
         var key = $(this).attr('data-ident-slot-key');
         $(this).prop('disabled', state.bookingSubmitting || !state.workspaceCellOptions[key]);
       });
-      $root.find('[data-ident-action="select_service"], [data-ident-action="clear_service"], [data-ident-action="set_duration"], [data-ident-duration-select]')
+      $root.find('[data-ident-action="set_duration"], [data-ident-duration-select]')
         .prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-show-nonworking]').prop('disabled', state.bookingSubmitting);
       $root.find('[data-ident-booking-state]')
@@ -1508,32 +1405,24 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         }
       });
       var $root = $('.ident-widget-workspace').last();
-      renderWorkspaceMetrics($root);
       renderWorkspaceSlots();
     }
 
     function buildWorkspaceBooking($root) {
       if (!$root.length) return null;
       var checks = workspaceBookingChecks($root);
-      if (!(checks.slot && checks.patient && checks.phone && checks.service)) {
+      if (!(checks.slot && checks.patient && checks.phone)) {
         updateWorkspaceReadiness($root);
-        setLeadStatus('Заполните время, пациента, телефон и услугу.', 'warn');
+        setLeadStatus('Заполните время, пациента и телефон.', 'warn');
         return null;
       }
 
       var draft = readWorkspaceDraft($root);
       var slot = state.selectedSlot;
-      var service = selectedWorkspaceService();
       var doctors = mapById(state.workspaceData.Doctors || []);
       var branches = mapById(state.workspaceData.Branches || []);
       var leadId = getCurrentLeadId();
       var branchName = nameById(branches, slot.BranchId, '');
-      var serviceDetails = [];
-      if (service.Id) serviceDetails.push('IDENT ID ' + service.Id);
-      if (service.Price !== null && service.Price !== '' && Number.isFinite(Number(service.Price))) {
-        serviceDetails.push(formatServicePrice(service.Price));
-      }
-      var serviceLine = 'Услуга: ' + service.Name + (serviceDetails.length ? ' (' + serviceDetails.join(', ') + ')' : '');
       state.preparedBooking = {
         id: workspaceTicketId(leadId, slot),
         dateAndTime: new Date().toISOString(),
@@ -1547,10 +1436,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         doctorName: nameById(doctors, slot.DoctorId, ''),
         branchId: slot.BranchId,
         branchName: branchName,
-        service: service,
         comment: [
           draft.comment,
-          serviceLine,
           branchName ? 'Филиал: ' + branchName + (slot.BranchId ? ' (IDENT ID ' + slot.BranchId + ')' : '') : '',
           'Длительность: ' + formatWorkspaceDuration(slot.LengthInMinutes || 15),
           'Сделка amoCRM #' + (leadId || 'не определена')
