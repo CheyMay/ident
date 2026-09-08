@@ -1,7 +1,7 @@
 define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
   return function () {
     var self = this;
-    var FRONT_VERSION = '1.23.0';
+    var FRONT_VERSION = '1.24.0';
     var state = {
       leadPanelRendered: false,
       smartLauncherTimer: null,
@@ -12,6 +12,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       advancedReady: false,
       amoReady: false,
       workspaceModal: null,
+      workspaceModalResizeHandler: null,
       workspaceData: null,
       workspaceCellOptions: {},
       selectedDoctorIds: [],
@@ -72,6 +73,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
       destroy: function () {
         $(document).off('.identWidget');
+        window.removeEventListener('resize', state.workspaceModalResizeHandler);
+        state.workspaceModalResizeHandler = null;
         if (state.smartLauncherTimer) window.clearTimeout(state.smartLauncherTimer);
         if (state.smartLauncherPositionHandler) {
           window.removeEventListener('resize', state.smartLauncherPositionHandler);
@@ -237,6 +240,10 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       var anchor = state.smartLauncherAnchor;
       var $launcher = $('.ident-widget-smart-launcher').first();
       if (!anchor || !$launcher.length || !document.documentElement.contains(anchor)) return;
+      if ($('.ident-widget-modal-shell:visible').length) {
+        $launcher.css('visibility', 'hidden');
+        return;
+      }
 
       var rect = anchor.getBoundingClientRect();
       var launcherWidth = $launcher.outerWidth() || 190;
@@ -417,6 +424,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
           loadWorkspaceSchedule($modalBody.find('.ident-widget-workspace'));
         },
         destroy: function () {
+          window.removeEventListener('resize', state.workspaceModalResizeHandler);
+          state.workspaceModalResizeHandler = null;
           state.workspaceModal = null;
           state.workspaceData = null;
           state.selectedDoctorIds = [];
@@ -439,6 +448,10 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         sizeWorkspaceModalShell(shell, container);
         $modalBody.trigger('modal:centrify');
       };
+
+      window.removeEventListener('resize', state.workspaceModalResizeHandler);
+      state.workspaceModalResizeHandler = centrify;
+      window.addEventListener('resize', centrify);
 
       centrify();
       if (typeof window.requestAnimationFrame === 'function') {
@@ -476,8 +489,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     function sizeWorkspaceModalShell(shell, container) {
       if (!shell) return;
       var containerWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
-      var availableWidth = Math.max(320, containerWidth || window.innerWidth);
-      var width = Math.max(320, Math.min(1440, availableWidth - 32));
+      var availableWidth = Math.max(0, containerWidth || window.innerWidth);
+      var width = Math.max(0, Math.min(1440, availableWidth - 32));
 
       shell.classList.add('ident-widget-modal-shell');
       shell.style.setProperty('background', '#ffffff', 'important');
@@ -579,6 +592,11 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
                   '<input type="email" autocomplete="off" data-ident-booking-field="email" placeholder="patient@example.ru">' +
                 '</label>' +
               '</div>' +
+              '<label class="ident-widget-workspace__form-field">' +
+                '<span>Дата рождения</span>' +
+                '<input type="date" autocomplete="off" min="1900-01-01" max="' + new Date().toISOString().slice(0, 10) + '" data-ident-booking-field="birthDate">' +
+                '<span data-ident-birth-date-error role="alert" hidden>Укажите корректную дату рождения, не позднее сегодняшней.</span>' +
+              '</label>' +
             '</div>' +
             '<label class="ident-widget-workspace__form-field ident-widget-workspace__form-field_comment">' +
               '<span>Комментарий</span>' +
@@ -969,8 +987,8 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     }
 
     function setWorkspaceDuration(value) {
-      var duration = Number.parseInt(String(value), 10);
-      if (!Number.isInteger(duration) || duration < 15 || duration > 720 || duration % 15 !== 0) return;
+      var duration = Number(value);
+      if (!Number.isInteger(duration) || duration < 15 || duration > 360 || duration % 15 !== 0) return;
       if (duration === state.bookingDuration) return;
       state.bookingDuration = duration;
       state.selectedSlot = null;
@@ -980,7 +998,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
 
     function workspaceDurationOptions() {
       var options = [];
-      for (var duration = 15; duration <= 720; duration += 15) {
+      for (var duration = 15; duration <= 360; duration += 15) {
         options.push(
           '<option value="' + duration + '"' + (duration === 30 ? ' selected' : '') + '>' +
             escapeHtml(formatWorkspaceDuration(duration)) +
@@ -1308,6 +1326,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       setWorkspaceFieldIfEmpty($root, 'fullName', ticket.ClientFullName || ticket.ClientName || '');
       setWorkspaceFieldIfEmpty($root, 'phone', ticket.ClientPhone || '');
       setWorkspaceFieldIfEmpty($root, 'email', ticket.ClientEmail || '');
+      setWorkspaceFieldIfEmpty($root, 'birthDate', ticket.ClientBirthDate || '');
       $root.find('[data-ident-patient-source]').text('из сделки amoCRM');
       updateWorkspaceReadiness($root);
     }
@@ -1325,6 +1344,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         fullName: field('fullName'),
         phone: field('phone'),
         email: field('email'),
+        birthDate: field('birthDate'),
         comment: field('comment')
       };
     }
@@ -1341,7 +1361,9 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     function updateWorkspaceReadiness($root) {
       if (!$root || !$root.length) return;
       var checks = workspaceBookingChecks($root);
-      var ready = checks.slot && checks.patient && checks.phone;
+      var birthDateValid = workspaceBirthDateValid($root);
+      var ready = checks.slot && checks.patient && checks.phone && birthDateValid;
+      $root.find('[data-ident-birth-date-error]').prop('hidden', birthDateValid);
       var rows = [
         readinessRow(checks.slot, 'Время и врач'),
         readinessRow(checks.patient, 'Пациент'),
@@ -1382,6 +1404,17 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
       return '<span class="' + (ok ? 'is-ready' : '') + '"><i>' + (ok ? '✓' : '') + '</i>' + escapeHtml(label) + '</span>';
     }
 
+    function workspaceBirthDateValid($root) {
+      var field = $root.find('[data-ident-booking-field="birthDate"]')[0];
+      if (!field || !field.validity.valid) return false;
+      var value = field.value;
+      if (!value) return true;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      var parsed = new Date(value + 'T00:00:00Z');
+      return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value &&
+        value >= '1900-01-01' && value <= new Date().toISOString().slice(0, 10);
+    }
+
     function resetWorkspaceSubmission() {
       state.preparedBooking = null;
       state.submittedTicketId = null;
@@ -1411,9 +1444,9 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
     function buildWorkspaceBooking($root) {
       if (!$root.length) return null;
       var checks = workspaceBookingChecks($root);
-      if (!(checks.slot && checks.patient && checks.phone)) {
+      if (!(checks.slot && checks.patient && checks.phone && workspaceBirthDateValid($root))) {
         updateWorkspaceReadiness($root);
-        setLeadStatus('Заполните время, пациента и телефон.', 'warn');
+        setLeadStatus('Проверьте время, ФИО, телефон и дату рождения, если она указана.', 'warn');
         return null;
       }
 
@@ -1429,6 +1462,7 @@ define(['jquery', 'lib/components/base/modal'], function ($, Modal) {
         clientFullName: draft.fullName,
         clientPhone: draft.phone,
         clientEmail: draft.email,
+        clientBirthDate: draft.birthDate,
         planStart: slot.StartDateTime,
         planEnd: addMinutesToIdentDate(slot.StartDateTime, slot.LengthInMinutes || 15),
         durationMinutes: slot.LengthInMinutes || 15,

@@ -30,6 +30,7 @@ try {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
     Import-Functions (Join-Path $root 'robot\ident-rpa\Start-IdentRobot.ps1') @(
         'Get-ObjectProperty', 'Resolve-TaskValue', 'Resolve-StepValue', 'Assert-BookingContract',
+        'Convert-PatientBirthDate', 'Test-SkipEmptyBirthDateStep',
         'Get-CalibrationDefinitions', 'Get-CalibrationSelector', 'Get-NearbyControlText', 'Convert-BoundsText', 'Format-Bounds'
     )
     $config = Get-Content (Join-Path $root 'robot\ident-rpa\config.example.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -37,12 +38,39 @@ try {
         ClientFullName = 'Test Patient'; ClientPhone = '+79990000000'; DoctorName = 'Test Doctor'
         PlanStart = '2099-09-09T09:00:00+05:00'; PlanEnd = '2099-09-09T09:45:00+05:00'
     } }
-    foreach ($minutes in @(15,30,45,120,180)) {
+    foreach ($minutes in @(15,30,45,120,180,345,360)) {
         $task.ticket.PlanEnd = ([DateTimeOffset]::Parse($task.ticket.PlanStart)).AddMinutes($minutes).ToString('o')
         Assert-BookingContract $config $task
     }
     $step = [pscustomobject]@{ valueFrom = 'ticket.PlanStart'; valueFormat = 'dd.MM.yyyy HH:mm' }
     Assert-True ((Resolve-StepValue $task $step) -eq '09.09.2099 09:00') 'Clinic time must not convert to workstation timezone'
+    $task.ticket.PlanEnd = '2099-09-09T15:15:00+05:00'
+    Assert-Throws { Assert-BookingContract $config $task } '6 hours'
+    $task.ticket.PlanEnd = '2099-09-09T15:00:00+05:00'
+    $birthStep = @($config.workflow.steps | Where-Object { $_.name -eq 'set_patient_birth_date' })[0]
+    Assert-True (Test-SkipEmptyBirthDateStep $task $birthStep) 'Missing birthday must not erase the IDENT patient field'
+    $task.ticket | Add-Member -NotePropertyName ClientBirthDate -NotePropertyValue '2000-02-29'
+    Assert-Throws { Assert-BookingContract $config $task } 'ClientBirthDate selector'
+    $config.selectors.patientBirthDateInput.automationId = 'PatientBirthDateInput'
+    Assert-BookingContract $config $task
+    $birthStep.selector = 'patientNameInput'
+    Assert-Throws { Assert-BookingContract $config $task } 'separate patient field selector'
+    $birthStep.selector = 'patientBirthDateInput'
+    $task.ticket | Add-Member -NotePropertyName DurationMinutes -NotePropertyValue 375
+    Assert-Throws { Assert-BookingContract $config $task } 'DurationMinutes must match'
+    $task.ticket.PSObject.Properties.Remove('DurationMinutes')
+    Assert-True (-not (Test-SkipEmptyBirthDateStep $task $birthStep)) 'Provided birthday must not be skipped'
+    Assert-True ((Resolve-StepValue $task $birthStep) -eq '29.02.2000') 'Birthday must format without a timezone conversion'
+    $savedSteps = @($config.workflow.steps)
+    $config.workflow.steps = @($savedSteps | Where-Object { $_.name -ne 'set_patient_birth_date' })
+    Assert-Throws { Assert-BookingContract $config $task } 'ClientBirthDate exactly once'
+    $config.workflow.steps = $savedSteps
+    foreach ($birthDate in @('2001-02-29', '2099-01-01', '2000-02-29T00:00:00Z', '29.02.2000', '1899-01-01')) {
+        $task.ticket.ClientBirthDate = $birthDate
+        Assert-Throws { Assert-BookingContract $config $task } 'ClientBirthDate must be a valid'
+    }
+    $task.ticket.ClientBirthDate = ''
+    Assert-BookingContract $config $task
     $task.ticket.PlanEnd = '2099-09-09T09:44:00+05:00'
     Assert-Throws { Assert-BookingContract $config $task } 'multiple of 15'
     $task.ticket.PlanEnd = ''

@@ -41,7 +41,7 @@ test('validates IDENT ticket contract fields', () => {
   });
 
   assert.equal(invalid.ok, false);
-  assert.match(invalid.errors.join('; '), /12 hours/);
+  assert.match(invalid.errors.join('; '), /6 hours/);
 });
 
 test('keeps robot metadata internal to the official GetTickets contract', () => {

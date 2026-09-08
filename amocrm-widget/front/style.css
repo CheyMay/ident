@@ -1130,6 +1130,15 @@
   margin-bottom: 4px;
 }
 
+.ident-widget-scope .ident-widget-workspace__form-field > [data-ident-birth-date-error] {
+  color: #a62e2e;
+  margin-top: 4px;
+}
+
+.ident-widget-scope .ident-widget-workspace__form-field > [data-ident-birth-date-error][hidden] {
+  display: none;
+}
+
 .ident-widget-scope .ident-widget-workspace__form-field input,
 .ident-widget-scope .ident-widget-workspace__form-field textarea {
   background: #ffffff;
@@ -1343,7 +1352,7 @@
 
   .ident-widget-scope.ident-widget-workspace {
     max-height: calc(100vh - 32px);
-    width: calc(100vw - 40px);
+    width: 100%;
   }
 
   .ident-widget-scope .ident-widget-workspace__head {

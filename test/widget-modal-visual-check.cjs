@@ -111,7 +111,7 @@ async function main() {
       throw new Error(`Modal is not centered: ${result.leftGap}px / ${result.rightGap}px`);
     }
     if (result.workspaceOverflow) throw new Error('Workspace has horizontal overflow');
-    if (!result.durationValues.includes('15') || !result.durationValues.includes('30') || !result.durationValues.includes('120') || !result.durationValues.includes('720') || result.durationValues.length !== 48) {
+    if (!result.durationValues.includes('15') || !result.durationValues.includes('30') || !result.durationValues.includes('120') || !result.durationValues.includes('360') || result.durationValues.length !== 24 || result.durationValues.some((value) => Number(value) > 360)) {
       throw new Error(`Duration selector is incomplete: ${result.durationValues.join(',')}`);
     }
     if (result.selectedDuration !== '30') throw new Error(`Unexpected default duration: ${result.selectedDuration}`);
@@ -137,23 +137,49 @@ async function main() {
     if (selectedDoctorState.label !== 'выбрано: 2' || selectedDoctorState.checked !== 2 || selectedDoctorState.columns !== 2) {
       throw new Error(`Multiple doctor filter failed: ${JSON.stringify(selectedDoctorState)}`);
     }
-    await page.selectOption('[data-ident-duration-select]', '120');
+    await page.selectOption('[data-ident-duration-select]', '360');
     const longSlot = page.locator('[data-ident-action="select_slot"]:not([disabled])').filter({ hasText: 'Свободно' }).first();
     await longSlot.click();
+    await page.fill('[data-ident-booking-field="birthDate"]', '2099-01-01');
+    if (!(await page.locator('[data-ident-action="submit_booking"]').isDisabled()) ||
+        !(await page.locator('[data-ident-birth-date-error]').isVisible())) throw new Error('Future birthday was accepted');
+    await page.fill('[data-ident-booking-field="birthDate"]', '');
+    if (await page.locator('[data-ident-action="submit_booking"]').isDisabled()) throw new Error('Optional birthday blocks legacy bookings');
+    await page.fill('[data-ident-booking-field="birthDate"]', '2000-02-29');
     await page.fill('[data-ident-booking-field="comment"]', 'Комментарий клиента');
     await page.click('[data-ident-action="submit_booking"]');
     await page.waitForFunction(() => Boolean(window.lastBookingRequest));
     const booking = await page.evaluate(() => window.lastBookingRequest);
-    if (booking.durationMinutes !== 120) throw new Error(`Unexpected booking duration: ${booking.durationMinutes}`);
+    if (booking.durationMinutes !== 360) throw new Error(`Unexpected booking duration: ${booking.durationMinutes}`);
+    if (booking.clientBirthDate !== '2000-02-29') throw new Error('Birthday missing or shifted in booking payload');
     if (booking.service || booking.serviceName || booking.ServiceName) throw new Error('Service leaked into booking payload');
     if (!String(booking.comment || '').includes('Комментарий клиента')) throw new Error('Booking comment was not preserved');
 
     result.bookingDuration = booking.durationMinutes;
     result.bookingHasService = false;
+    for (const viewport of [{ width: 1366, height: 900 }, { width: 1024, height: 768 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.locator('[data-ident-booking-field="birthDate"]').scrollIntoViewIfNeeded();
+      const layout = await page.evaluate(() => {
+        const field = document.querySelector('[data-ident-booking-field="birthDate"]');
+        const bounds = field.getBoundingClientRect();
+        const parent = field.parentElement.getBoundingClientRect();
+        const shell = document.querySelector('.ident-widget-modal-shell').getBoundingClientRect();
+        return { field: bounds.toJSON(), parent: parent.toJSON(), shell: shell.toJSON(),
+          ok: bounds.width > 100 && bounds.left >= parent.left && bounds.right <= parent.right + 1 &&
+            shell.left >= -1 && shell.right <= innerWidth + 1 && bounds.right <= shell.right + 1 &&
+            getComputedStyle(document.querySelector('.ident-widget-smart-launcher')).visibility === 'hidden' };
+      });
+      await page.screenshot({ path: path.join(os.tmpdir(), `ident-booking-birthday-${viewport.width}.png`) });
+      if (!layout.ok) throw new Error(`Birthday field or modal escapes viewport: ${JSON.stringify({ viewport, layout })}`);
+    }
 
     const advancedPage = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
     await advancedPage.goto(`http://127.0.0.1:${port}/?advanced=1`, { waitUntil: 'networkidle' });
     await advancedPage.waitForSelector('[data-ident-advanced-panel="calendar"] .ident-widget-workspace-day');
+    if (!(await advancedPage.locator('[data-ident-advanced-panel="calendar"] [data-ident-booking-field="birthDate"]').isVisible())) {
+      throw new Error('Birthday field missing from the advanced calendar');
+    }
     const advanced = await advancedPage.evaluate(() => ({
       activeTab: document.querySelector('[data-ident-advanced-tab].is-active').textContent.trim(),
       calendarHidden: document.querySelector('[data-ident-advanced-panel="calendar"]').hidden,

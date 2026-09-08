@@ -1,4 +1,6 @@
-import { addMinutes, isWithinRange, normalizeIdentDate } from '../date.js';
+import { addMinutes, isWithinRange, normalizeBirthDate, normalizeIdentDate } from '../date.js';
+
+export const MAX_APPOINTMENT_MINUTES = 360;
 
 export function validateIdentKey(req, config) {
   if (!config.identIntegrationKey) {
@@ -57,15 +59,27 @@ export function normalizeBookingTicket(input, options = {}) {
   const durationMinutes = requestedDuration === null || requestedDuration === ''
     ? Number(options.defaultAppointmentMinutes || 60)
     : Number(requestedDuration);
-  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes % 15 !== 0) {
-    throw new BadRequestError('durationMinutes must be a positive integer divisible by 15');
+  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes > MAX_APPOINTMENT_MINUTES || durationMinutes % 15 !== 0) {
+    throw new BadRequestError('durationMinutes must be divisible by 15 and between 15 and 360 minutes (6 hours)');
   }
   const planEnd =
     normalizeIdentDate(input.planEnd ?? input.PlanEnd ?? input.end) ||
     (planStart ? addMinutes(planStart, durationMinutes) : null);
   const normalizedDurationMinutes = planStart && planEnd
-    ? Math.round((new Date(planEnd).getTime() - new Date(planStart).getTime()) / 60_000)
+    ? (new Date(planEnd).getTime() - new Date(planStart).getTime()) / 60_000
     : durationMinutes;
+  if (!Number.isInteger(normalizedDurationMinutes) || normalizedDurationMinutes <= 0 ||
+      normalizedDurationMinutes > MAX_APPOINTMENT_MINUTES || normalizedDurationMinutes % 15 !== 0) {
+    throw new BadRequestError('Plan duration must be divisible by 15 and between 15 and 360 minutes (6 hours)');
+  }
+  if (requestedDuration !== null && requestedDuration !== '' && normalizedDurationMinutes !== durationMinutes) {
+    throw new BadRequestError('durationMinutes must match PlanStart and PlanEnd');
+  }
+  const birthDateInput = input.clientBirthDate ?? input.ClientBirthDate;
+  const birthDate = birthDateInput ? normalizeBirthDate(birthDateInput) : null;
+  if (birthDateInput !== undefined && birthDateInput !== null && birthDateInput !== '' && !birthDate) {
+    throw new BadRequestError('clientBirthDate must be a valid YYYY-MM-DD date from 1900-01-01 through today');
+  }
 
   const ticket = stripEmpty({
     Id: String(input.id ?? input.Id ?? `local:${Date.now()}`),
@@ -74,6 +88,7 @@ export function normalizeBookingTicket(input, options = {}) {
     ClientEmail: input.clientEmail ?? input.ClientEmail ?? input.email,
     FormName: input.formName ?? input.FormName ?? 'amoCRM',
     ClientFullName: input.clientFullName ?? input.ClientFullName ?? input.name,
+    ClientBirthDate: birthDate,
     PlanStart: planStart,
     PlanEnd: planEnd,
     Comment: input.comment ?? input.Comment,

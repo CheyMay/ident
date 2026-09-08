@@ -1,8 +1,8 @@
-import { parseDateParam } from '../date.js';
-import { stripEmpty } from './contracts.js';
+import { normalizeBirthDate, parseDateParam } from '../date.js';
+import { MAX_APPOINTMENT_MINUTES, stripEmpty } from './contracts.js';
 
 const MAX_TICKET_ID_LENGTH = 400;
-const MAX_APPOINTMENT_MS = 12 * 60 * 60 * 1000;
+const MAX_APPOINTMENT_MS = MAX_APPOINTMENT_MINUTES * 60 * 1000;
 
 const IDENT_TICKET_FIELDS = [
   'Id',
@@ -29,6 +29,7 @@ const IDENT_TICKET_FIELDS = [
 
 const INTERNAL_TICKET_FIELDS = [
   ...IDENT_TICKET_FIELDS,
+  'ClientBirthDate',
   'BranchId',
   'BranchName',
   'ServiceId',
@@ -50,6 +51,16 @@ export function normalizeAndValidateTicket(ticket) {
 export function normalizeAndValidateIdentTicket(ticket) {
   const normalized = normalizeTicket(ticket, IDENT_TICKET_FIELDS);
   const errors = validateTicket(normalized);
+  // The official IDENT ticket schema has no birth-date field; preserve it in Comment.
+  if (ticket.ClientBirthDate !== undefined && ticket.ClientBirthDate !== null && ticket.ClientBirthDate !== '') {
+    const birthDate = normalizeBirthDate(ticket.ClientBirthDate);
+    if (!birthDate) errors.push('ClientBirthDate must be a valid YYYY-MM-DD date from 1900-01-01 through today');
+    else {
+      const line = `Дата рождения: ${birthDate.split('-').reverse().join('.')}`;
+      const comment = String(normalized.Comment || '');
+      if (!comment.split('\n').includes(line)) normalized.Comment = [comment, line].filter(Boolean).join('\n');
+    }
+  }
   return {
     ok: errors.length === 0,
     errors,
@@ -124,7 +135,8 @@ function normalizeTicket(ticket, fields) {
     const doctorId = Number.parseInt(String(normalized.DoctorId), 10);
     if (Number.isFinite(doctorId)) normalized.DoctorId = doctorId;
   }
-  for (const field of ['BranchId', 'ServiceId', 'DurationMinutes']) {
+  if (normalized.DurationMinutes !== undefined) normalized.DurationMinutes = Number(normalized.DurationMinutes);
+  for (const field of ['BranchId', 'ServiceId']) {
     if (normalized[field] !== undefined) {
       const value = Number.parseInt(String(normalized[field]), 10);
       if (Number.isFinite(value)) normalized[field] = value;
@@ -150,6 +162,9 @@ function validateTicket(ticket) {
   if (hasFullName && hasParts) {
     errors.push('ClientFullName must not be combined with ClientSurname, ClientName or ClientPatronymic');
   }
+  if (ticket.ClientBirthDate !== undefined && !normalizeBirthDate(ticket.ClientBirthDate)) {
+    errors.push('ClientBirthDate must be a valid YYYY-MM-DD date from 1900-01-01 through today');
+  }
 
   const planStart = ticket.PlanStart ? parseDateParam(ticket.PlanStart) : null;
   const planEnd = ticket.PlanEnd ? parseDateParam(ticket.PlanEnd) : null;
@@ -162,7 +177,10 @@ function validateTicket(ticket) {
       errors.push('Plan duration must be divisible by 15 minutes');
     }
     if (durationMs > MAX_APPOINTMENT_MS) {
-      errors.push('Plan duration must not exceed 12 hours');
+      errors.push('Plan duration must not exceed 6 hours');
+    }
+    if (ticket.DurationMinutes !== undefined && Number(ticket.DurationMinutes) * 60000 !== durationMs) {
+      errors.push('DurationMinutes must match PlanStart and PlanEnd');
     }
   }
 
@@ -172,9 +190,10 @@ function validateTicket(ticket) {
   if (ticket.DurationMinutes !== undefined && (
     !Number.isInteger(Number(ticket.DurationMinutes)) ||
     Number(ticket.DurationMinutes) <= 0 ||
+    Number(ticket.DurationMinutes) > MAX_APPOINTMENT_MINUTES ||
     Number(ticket.DurationMinutes) % 15 !== 0
   )) {
-    errors.push('DurationMinutes must be a positive integer divisible by 15');
+    errors.push('DurationMinutes must be divisible by 15 and between 15 and 360 minutes (6 hours)');
   }
 
   return [...new Set(errors)];

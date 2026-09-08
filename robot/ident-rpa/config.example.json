@@ -45,6 +45,12 @@
       "className": "",
       "controlType": ""
     },
+    "patientBirthDateInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
     "doctorInput": {
       "name": "",
       "automationId": "",
@@ -113,6 +119,14 @@
         "action": "setText",
         "selector": "patientNameInput",
         "valueFrom": "ticket.ClientFullName"
+      },
+      {
+        "name": "set_patient_birth_date",
+        "action": "setText",
+        "selector": "patientBirthDateInput",
+        "valueFrom": "ticket.ClientBirthDate",
+        "valueFormat": "dd.MM.yyyy",
+        "skipIfEmpty": true
       },
       {
         "name": "set_doctor",

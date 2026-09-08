@@ -322,6 +322,7 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
             id: 'amo-widget:123:1904:202608160900',
             dateAndTime: '2026-08-15T18:00:00+03:00',
             clientFullName: 'Иванов Иван',
+            clientBirthDate: '2000-02-29',
             clientPhone: '+79110001122',
             planStart: '2026-08-16T09:00:00+03:00',
             planEnd: '2026-08-16T09:30:00+03:00',
@@ -340,6 +341,7 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         assert.equal(booking.ticket.ServiceId, undefined);
         assert.equal(booking.ticket.ServiceName, undefined);
         assert.equal(booking.ticket.DurationMinutes, 30);
+        assert.equal(booking.ticket.ClientBirthDate, '2000-02-29');
         assert.equal(booking.amoLeadId, null);
         assert.equal(booking.queued, true);
         assert.equal(booking.status, 'queued');
@@ -352,6 +354,7 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         const queued = await queuedResponse.json();
         assert.equal(queued.records.length, 1);
         assert.equal(queued.records[0].source, 'amo-widget-booking');
+        assert.equal(queued.records[0].ticket.ClientBirthDate, '2000-02-29');
       },
       {
         AMOCRM_BASE_URL: amoBaseUrl,
@@ -359,6 +362,32 @@ test('queues widget booking without creating a duplicate amoCRM lead', async () 
         AMOCRM_LONG_LIVED_TOKEN: 'true'
       }
     );
+  });
+});
+
+test('booking API rejects invalid birthday and excessive duration before reserving or creating a lead', async () => {
+  await withMockAmoServer(async ({ baseUrl: amoBaseUrl, requests }) => {
+    await withTestServer(async ({ baseUrl }) => {
+      const body = { id: 'booking-six-hours', clientFullName: 'Test Patient', clientPhone: '+79990000000',
+        planStart: '2099-09-09T09:00:00+03:00', durationMinutes: 360, doctorId: 1904, branchId: 1 };
+      for (const patch of [{ clientBirthDate: '2001-02-29' }, { durationMinutes: 375 },
+        { planEnd: '2099-09-09T15:15:00+03:00' }]) {
+        const response = await fetch(`${baseUrl}/api/bookings`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...patch }) });
+        assert.equal(response.status, 400, await response.text());
+      }
+      assert.equal(requests.some((item) => item.method === 'POST' && item.url === '/api/v4/leads/complex'), false);
+      assert.equal((await (await fetch(`${baseUrl}/api/tickets`)).json()).records.length, 0);
+      await postTestTimetable(baseUrl, { doctorId: 1904, start: body.planStart, length: 360 });
+      const response = await fetch(`${baseUrl}/api/bookings`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, clientBirthDate: '2000-02-29', createAmoLead: false }) });
+      assert.equal(response.status, 201);
+      const result = await response.json();
+      assert.equal(result.ticket.DurationMinutes, 360);
+      assert.equal(result.ticket.ClientBirthDate, '2000-02-29');
+      assert.ok(result.reservation);
+    }, { AMOCRM_BASE_URL: amoBaseUrl, AMOCRM_ACCESS_TOKEN: 'token-1', AMOCRM_LONG_LIVED_TOKEN: 'true' });
   });
 });
 

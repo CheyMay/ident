@@ -1,4 +1,5 @@
 import './amocrm-client.test.js';
+import './booking-patient.test.js';
 import './ident-db.test.js';
 import './mappers.test.js';
 import './production-flows.test.js';

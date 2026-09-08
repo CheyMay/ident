@@ -707,6 +707,7 @@ function Get-CalibrationDefinitions {
     [pscustomobject]@{ Name = 'newAppointmentButton'; Types = @('ControlType.Button', 'ControlType.MenuItem', 'ControlType.Hyperlink'); Pattern = '(нов(ый|ая).*(прием|запис)|записать\s+на\s+прием|new.*appointment)' },
     [pscustomobject]@{ Name = 'patientPhoneInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(телефон|мобильн|phone|mobile)' },
     [pscustomobject]@{ Name = 'patientNameInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(фио|фамили|пациент|patient|surname|fullname|full.?name)' },
+    [pscustomobject]@{ Name = 'patientBirthDateInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(дата.?рожд|день.?рожд|birth.?date|birth.?day|date.?of.?birth)' },
     [pscustomobject]@{ Name = 'doctorInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.ListItem'); Pattern = '(врач|доктор|специалист|doctor|physician)' },
     [pscustomobject]@{ Name = 'startTimeInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.Custom'); Pattern = '(дата.*врем|время.*прием|начал|plan.?start|start.?time|appointment.?time)' },
     [pscustomobject]@{ Name = 'endTimeInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.Custom'); Pattern = '(конец|окончан|plan.?end|end.?time)' },
@@ -937,9 +938,46 @@ function Assert-BookingContract {
   if ($minutes -le 0 -or $minutes % 15 -ne 0 -or $start.Date -ne $end.Date -or $start.Offset -ne $end.Offset) {
     throw 'Booking duration must be a positive multiple of 15 minutes within one day and timezone.'
   }
+  if ($minutes -gt 360) { throw 'Booking duration must not exceed 6 hours (360 minutes).' }
+  $declaredMinutes = Get-ObjectProperty $Task.ticket 'DurationMinutes' $null
+  if ($null -ne $declaredMinutes -and [double]$declaredMinutes -ne $minutes) {
+    throw 'DurationMinutes must match PlanStart and PlanEnd.'
+  }
+  $birthDate = Resolve-TaskValue $Task 'ticket.ClientBirthDate'
+  if (-not [string]::IsNullOrEmpty($birthDate)) {
+    $null = Convert-PatientBirthDate $birthDate
+    $birthSteps = @($steps | Where-Object { $_.action -eq 'setText' -and (Get-ObjectProperty $_ 'valueFrom' '') -eq 'ticket.ClientBirthDate' })
+    if ($birthSteps.Count -ne 1) { throw 'Booking workflow must set and verify ticket.ClientBirthDate exactly once. Calibrate the birth-date field first.' }
+    if (@($steps | Where-Object { $_.selector -eq $birthSteps[0].selector }).Count -ne 1) {
+      throw 'ClientBirthDate must use a separate patient field selector.'
+    }
+    $birthSelector = Get-ObjectProperty $Config.selectors ([string]$birthSteps[0].selector) $null
+    if ($null -eq $birthSelector -or (
+        [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $birthSelector 'name' '')) -and
+        [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $birthSelector 'automationId' '')))) {
+      throw 'ClientBirthDate selector is not configured. Calibrate the birth-date field first.'
+    }
+  }
   if ([string]$Config.workflow.successCondition.type -ne 'elementPresent') {
     throw 'A disappearing dialog is not proof of a booking. Configure a positive IDENT success indicator.'
   }
+}
+
+function Convert-PatientBirthDate {
+  param([string]$Value)
+  $date = [datetime]::MinValue
+  if (-not [datetime]::TryParseExact($Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None, [ref]$date) -or $date.Year -lt 1900 -or $date -gt [datetime]::UtcNow.Date) {
+    throw 'ClientBirthDate must be a valid YYYY-MM-DD date from 1900-01-01 through today.'
+  }
+  return $date
+}
+
+function Test-SkipEmptyBirthDateStep {
+  param([object]$Task, [object]$Step)
+  return ($Step.action -eq 'setText' -and (Get-ObjectProperty $Step 'valueFrom' '') -eq 'ticket.ClientBirthDate' -and
+    [bool](Get-ObjectProperty $Step 'skipIfEmpty' $false) -and
+    [string]::IsNullOrEmpty((Resolve-TaskValue $Task 'ticket.ClientBirthDate')))
 }
 
 function Resolve-StepValue {
@@ -947,6 +985,9 @@ function Resolve-StepValue {
   $value = Resolve-TaskValue $Task ([string]$Step.valueFrom)
   $format = [string](Get-ObjectProperty $Step 'valueFormat' '')
   if ($format) {
+    if ([string]$Step.valueFrom -eq 'ticket.ClientBirthDate') {
+      return (Convert-PatientBirthDate $value).ToString($format, [Globalization.CultureInfo]::InvariantCulture)
+    }
     if ([string]$Step.valueFrom -notin @('ticket.PlanStart', 'ticket.PlanEnd')) { throw 'valueFormat is only supported for appointment date/time.' }
     return [DateTimeOffset]::Parse($value, [Globalization.CultureInfo]::InvariantCulture).ToString($format, [Globalization.CultureInfo]::InvariantCulture)
   }
@@ -1079,6 +1120,7 @@ function Invoke-Workflow {
   $saveInvoked = $false
   $writtenValues = @{}
   foreach ($step in @($Config.workflow.steps)) {
+    if (Test-SkipEmptyBirthDateStep $Task $step) { continue }
     if (-not $saveInvoked) {
       Assert-InteractiveDesktop
       Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
@@ -1171,7 +1213,7 @@ try {
 
   if ($Mode -eq 'SelfTest') {
     $definitions = @(Get-CalibrationDefinitions)
-    if ($definitions.Count -ne 10 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 10) {
+    if ($definitions.Count -ne 11 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 11) {
       throw 'Robot self-test failed: calibration definitions are invalid.'
     }
     $sampleRows = @(
