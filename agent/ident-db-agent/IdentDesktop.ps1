@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$ConfigPath = '',
-    [switch]$StartMinimized
+    [switch]$StartMinimized,
+    [string]$PreviewPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,6 +116,7 @@ function Format-StateName {
         waiting_for_ident = 'ждет запуска IDENT'
         retrying = 'повторяет подключение к SQL'
         needs_configuration = 'нужна настройка'
+        needs_review = 'нужна проверка результата в IDENT'
         needs_mapping = 'нужна настройка расписания'
         not_available = 'структура еще не найдена'
         awaiting_confirmation = 'ожидает подтверждения сервера'
@@ -131,6 +133,7 @@ function Invoke-AgentSettings {
         [bool]$RobotEnabled
     )
 
+    if ($null -ne $script:SettingsRequest -or $null -ne $script:PendingSettings) { return }
     if ([string]::IsNullOrWhiteSpace($script:AgentKey)) {
         throw 'Ключ агента не настроен. Запустите установку повторно.'
     }
@@ -140,14 +143,42 @@ function Invoke-AgentSettings {
         scheduleEnabled = $ScheduleEnabled
         robotEnabled = $RobotEnabled
     } | ConvertTo-Json -Compress
-    [void](Invoke-RestMethod `
-        -Uri $url `
-        -Method Post `
-        -Headers @{ 'X-Agent-Key' = $script:AgentKey; Accept = 'application/json' } `
-        -ContentType 'application/json; charset=utf-8' `
-        -Body ([Text.Encoding]::UTF8.GetBytes($payload)) `
-        -TimeoutSec ([int]$script:Config.backend.timeoutSeconds) `
-        -UseBasicParsing)
+    $runner = [PowerShell]::Create()
+    [void]$runner.AddScript({
+        param($Url, $Key, $Payload)
+        $ErrorActionPreference = 'Stop'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        [void](Invoke-RestMethod -Uri $Url -Method Post -Headers @{ 'X-Agent-Key' = $Key; Accept = 'application/json' } `
+            -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($Payload)) -TimeoutSec 15 -UseBasicParsing)
+    }).AddArgument($url).AddArgument($script:AgentKey).AddArgument($payload)
+    try {
+        $script:SettingsRequest = @{ Runner = $runner; Handle = $runner.BeginInvoke(); ScheduleEnabled = $ScheduleEnabled; RobotEnabled = $RobotEnabled }
+        $scheduleCheck.Enabled = $false
+        $robotCheck.Enabled = $false
+        $script:UiError = ''
+    }
+    catch { $runner.Dispose(); throw }
+}
+
+function Update-AgentSettings {
+    if ($null -eq $script:SettingsRequest -or -not $script:SettingsRequest.Handle.IsCompleted) { return }
+    $runner = $script:SettingsRequest.Runner
+    try {
+        [void]$runner.EndInvoke($script:SettingsRequest.Handle)
+        if ($runner.HadErrors) { throw 'Сервер не подтвердил переключатель. Проверьте связь и повторите.' }
+        $script:PendingSettings = @{
+            ScheduleEnabled = $script:SettingsRequest.ScheduleEnabled
+            RobotEnabled = $script:SettingsRequest.RobotEnabled
+            Deadline = [DateTimeOffset]::Now.AddSeconds(90)
+        }
+        $script:UiError = ''
+    }
+    catch { $script:UiError = 'Настройки не подтверждены сервером. Проверьте связь и повторите.' }
+    finally {
+        $runner.Dispose()
+        $script:SettingsRequest = $null
+        $scheduleCheck.Enabled = $null -eq $script:PendingSettings
+    }
 }
 
 function New-StatusLabel {
@@ -193,6 +224,9 @@ $script:CalibrationStage = 'idle'
 $script:CalibrationStartedAt = [DateTimeOffset]::MinValue
 $script:Refreshing = $false
 $script:AllowClose = $false
+$script:SettingsRequest = $null
+$script:PendingSettings = $null
+$script:UiError = ''
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Code9 IDENT'
@@ -273,14 +307,14 @@ $form.Controls.Add($robotCheck)
 $robotStateLabel = New-StatusLabel -Parent $form -Text 'Робот: выключен' -Top 438
 $robotTimeLabel = New-StatusLabel -Parent $form -Text 'Последнее выполнение: нет' -Top 464
 
-$robotGuideLabel = New-StatusLabel -Parent $form -Text 'Откройте в IDENT окно новой записи и нажмите кнопку настройки.' -Top 491
+$robotGuideLabel = New-StatusLabel -Parent $form -Text 'Откройте календарь или новое окно приема в IDENT и нажмите проверку.' -Top 491
 $robotGuideLabel.Size = New-Object Drawing.Size(494, 42)
 $robotGuideLabel.ForeColor = [Drawing.Color]::FromArgb(74, 91, 108)
 
 $calibrateButton = New-Object System.Windows.Forms.Button
 $calibrateButton.Location = New-Object Drawing.Point(20, 536)
 $calibrateButton.Size = New-Object Drawing.Size(240, 42)
-$calibrateButton.Text = 'Настроить и включить робота'
+$calibrateButton.Text = 'Проверить окно IDENT'
 $calibrateButton.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
 $calibrateButton.FlatStyle = [Windows.Forms.FlatStyle]::Flat
 $calibrateButton.FlatAppearance.BorderSize = 0
@@ -332,7 +366,8 @@ function Set-FeatureSwitches {
         $errorLabel.Text = ''
     }
     catch {
-        $errorLabel.Text = $_.Exception.Message
+        $script:UiError = $_.Exception.Message
+        $errorLabel.Text = $script:UiError
     }
 }
 
@@ -347,6 +382,10 @@ function Start-RobotCalibration {
         return
     }
     try {
+        $state = Read-JsonFile -Path $script:StatePath
+        if ($robotCheck.Checked -or ($null -ne $state -and ([bool]$state.robot.enabled -or [string]$state.robot.state -eq 'processing'))) {
+            throw 'Сначала выключите робота и дождитесь завершения текущей заявки.'
+        }
         $robotScript = Join-Path $script:BaseDirectory 'robot\Start-IdentRobot.ps1'
         if (-not (Test-Path -LiteralPath $robotScript)) {
             throw 'Модуль робота не найден. Дождитесь обновления приложения.'
@@ -371,26 +410,40 @@ function Start-RobotCalibration {
         $calibrateButton.Text = 'IDENT проверяется...'
         $robotGuideLabel.Text = 'Не закрывайте окно IDENT. Проверка не вводит данные и ничего не сохраняет.'
         $errorLabel.Text = ''
-        $form.Hide()
+        $script:UiError = ''
     }
     catch {
         $script:CalibrationStage = 'failed'
         $calibrateButton.Enabled = $true
         $calibrateButton.Text = 'Повторить настройку робота'
-        $errorLabel.Text = $_.Exception.Message
+        $script:UiError = $_.Exception.Message
+        $errorLabel.Text = $script:UiError
     }
 }
 
 function Update-RobotCalibration {
     if ($script:CalibrationStage -eq 'scanning') {
         if ($null -eq $script:CalibrationProcess -or -not $script:CalibrationProcess.HasExited) {
+            if (([DateTimeOffset]::Now - $script:CalibrationStartedAt).TotalSeconds -gt 60) {
+                if ($null -ne $script:CalibrationProcess) {
+                    Stop-Process -Id $script:CalibrationProcess.Id -Force -ErrorAction SilentlyContinue
+                    $script:CalibrationProcess.Dispose()
+                    $script:CalibrationProcess = $null
+                }
+                $script:CalibrationStage = 'failed'
+                $calibrateButton.Enabled = $true
+                $calibrateButton.Text = 'Повторить проверку IDENT'
+                $script:UiError = 'IDENT не ответил за минуту. Агент продолжает работать. Разверните IDENT и повторите проверку.'
+                Show-MainWindow
+            }
             return
         }
+        $exitCode = $script:CalibrationProcess.ExitCode
         $script:CalibrationProcess.Dispose()
         $script:CalibrationProcess = $null
         Show-MainWindow
         $report = Read-JsonFile -Path $script:CalibrationReportPath
-        if ($null -eq $report -or -not [bool]$report.ok) {
+        if ($exitCode -ne 0 -or $null -eq $report -or -not [bool]$report.ok) {
             $issues = if ($null -ne $report -and $report.PSObject.Properties.Name -contains 'issues') {
                 @($report.issues | Select-Object -First 3) -join ' '
             } else {
@@ -399,47 +452,16 @@ function Update-RobotCalibration {
             $script:CalibrationStage = 'failed'
             $calibrateButton.Enabled = $true
             $calibrateButton.Text = 'Повторить настройку робота'
-            $robotGuideLabel.Text = 'Разверните IDENT, откройте пустое окно «Новый прием» и повторите.'
-            $errorLabel.Text = $issues
+            $robotGuideLabel.Text = 'Робот остается выключен. Результат проверки сохранен в папке robot.'
+            $script:UiError = $issues
+            $errorLabel.Text = $script:UiError
             return
         }
-
-        New-Item -ItemType Directory -Force -Path $script:CommandDirectory | Out-Null
-        New-Item -ItemType File -Force -Path $script:RestartRequestPath | Out-Null
-        $script:CalibrationStage = 'waiting_for_worker'
-        $script:CalibrationStartedAt = [DateTimeOffset]::Now
-        $calibrateButton.Text = 'Проверяется служба...'
-        $robotGuideLabel.Text = 'Элементы найдены. Приложение проверяет службу и связь с сервером.'
-        return
-    }
-
-    if ($script:CalibrationStage -ne 'waiting_for_worker') {
-        return
-    }
-    if (([DateTimeOffset]::Now - $script:CalibrationStartedAt).TotalSeconds -gt 120) {
-        $script:CalibrationStage = 'failed'
-        $calibrateButton.Enabled = $true
-        $calibrateButton.Text = 'Повторить настройку робота'
-        $robotGuideLabel.Text = 'Калибровка сохранена, но служба не подтвердила запуск.'
-        $errorLabel.Text = 'Нажмите «Перезапуск», подождите минуту и повторите настройку.'
-        return
-    }
-    $state = Read-JsonFile -Path $script:StatePath
-    if ($null -eq $state -or -not [bool]$state.robot.configured -or -not [bool]$state.worker.backendOnline) {
-        return
-    }
-    try {
-        Invoke-AgentSettings -ScheduleEnabled ([bool]$state.schedule.enabled) -RobotEnabled $true
         $script:CalibrationStage = 'ready'
-        $script:Refreshing = $true
-        try { $robotCheck.Checked = $true } finally { $script:Refreshing = $false }
         $calibrateButton.Enabled = $true
-        $calibrateButton.Text = 'Повторно проверить робота'
-        $robotGuideLabel.Text = 'Готово. Робот включен и будет обрабатывать только новые заявки.'
-        $errorLabel.Text = ''
-    }
-    catch {
-        # The backend may receive the calibration heartbeat a few seconds later.
+        $calibrateButton.Text = 'Проверить другое окно IDENT'
+        $robotGuideLabel.Text = 'Снимок окна сохранен. Настройки не изменены, робот не включен. Нужна проверка полного пути записи.'
+        $script:UiError = ''
     }
 }
 
@@ -452,7 +474,7 @@ function Refresh-Status {
     if ($null -ne $state) {
         $updated = [DateTimeOffset]::MinValue
         if ([DateTimeOffset]::TryParse([string]$state.updatedAt, [ref]$updated)) {
-            $workerOnline = (([DateTimeOffset]::Now - $updated).TotalSeconds -le 15)
+            $workerOnline = (([DateTimeOffset]::Now - $updated).TotalSeconds -le 90)
         }
     }
     if ($null -ne $supervisorState) {
@@ -484,6 +506,12 @@ function Refresh-Status {
     }
 
     if ($null -eq $state) {
+        if ($null -ne $script:PendingSettings -and [DateTimeOffset]::Now -gt $script:PendingSettings.Deadline) {
+            $script:PendingSettings = $null
+            $script:UiError = 'Сервер принял команду, но состояние агента недоступно. Проверьте службу.'
+        }
+        $scheduleCheck.Enabled = $null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings
+        $errorLabel.Text = $script:UiError
         $backendLabel.Text = 'Сервер Code9: нет данных'
         $tray.Icon = [Drawing.SystemIcons]::Warning
         return
@@ -498,16 +526,30 @@ function Refresh-Status {
         ''
     })
 
+    if ($null -ne $script:PendingSettings) {
+        if ($workerOnline -and [bool]$state.schedule.enabled -eq $script:PendingSettings.ScheduleEnabled -and
+            [bool]$state.robot.enabled -eq $script:PendingSettings.RobotEnabled) {
+            $script:PendingSettings = $null
+        }
+        elseif ([DateTimeOffset]::Now -gt $script:PendingSettings.Deadline) {
+            $script:PendingSettings = $null
+            $script:UiError = 'Сервер принял команду, но агент пока не подтвердил переключатели. Проверьте состояние службы.'
+        }
+        else { $workerLabel.Text = 'Фоновая служба: ожидается применение переключателей...' }
+    }
+    $scheduleCheck.Enabled = $null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings
     $script:Refreshing = $true
     try {
-        $scheduleCheck.Checked = [bool]$state.schedule.enabled
-        $robotCheck.Checked = [bool]$state.robot.enabled
+        if ($null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings) {
+            $scheduleCheck.Checked = [bool]$state.schedule.enabled
+            $robotCheck.Checked = [bool]$state.robot.enabled
+        }
     }
     finally {
         $script:Refreshing = $false
     }
 
-    $backendLabel.Text = 'Сервер Code9: ' + $(if ([bool]$state.worker.backendOnline) { 'на связи' } else { 'нет связи' })
+    $backendLabel.Text = 'Сервер Code9: ' + $(if ($workerOnline -and [bool]$state.worker.backendOnline) { 'на связи' } else { 'нет актуального подтверждения' })
     $scheduleStateLabel.Text = 'Состояние: ' + (Format-StateName -Value ([string]$state.schedule.state))
     $scheduleTimeLabel.Text = 'Последняя отправка: ' + (Format-DateValue -Value $state.schedule.lastSuccessAt)
     $serviceCount = if ($state.schedule.PSObject.Properties.Name -contains 'services') { [int]$state.schedule.services } else { 0 }
@@ -516,12 +558,12 @@ function Refresh-Status {
     $robotStateLabel.Text = 'Робот: ' + (Format-StateName -Value ([string]$state.robot.state)) +
         $(if ([bool]$state.robot.configured) { '' } else { ' (не откалиброван)' })
     $robotTimeLabel.Text = 'Последнее выполнение: ' + (Format-DateValue -Value $state.robot.lastSuccessAt)
-    $robotCheck.Enabled = [bool]$state.robot.configured -and $script:CalibrationStage -notin @('scanning', 'waiting_for_worker')
+    $robotCheck.Enabled = ([bool]$state.robot.configured -or $robotCheck.Checked) -and $null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings -and $script:CalibrationStage -ne 'scanning'
     if ($script:CalibrationStage -eq 'idle' -and [bool]$state.robot.configured) {
         $robotGuideLabel.Text = $(if ([bool]$state.robot.enabled) {
             'Робот настроен и ожидает новые заявки.'
         } else {
-            'Робот настроен. Нажмите кнопку, чтобы повторно проверить и включить его.'
+            'Робот настроен. Для запуска используйте переключатель после контрольного приема.'
         })
     }
     $schemaState = if ($state.PSObject.Properties.Name -contains 'schema') { $state.schema } else { $null }
@@ -540,7 +582,7 @@ function Refresh-Status {
         $(if ($null -ne $schemaState) { [string]$schemaState.lastError } else { '' }),
         [string]$state.robot.lastError
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-    $errorLabel.Text = ($errors -join ' | ')
+    $errorLabel.Text = $(if ($script:UiError) { $script:UiError } else { $errors -join ' | ' })
 
     if (-not $workerOnline -or -not [bool]$state.worker.backendOnline -or [string]$state.schedule.state -eq 'error') {
         $tray.Icon = [Drawing.SystemIcons]::Error
@@ -557,10 +599,11 @@ function Refresh-Status {
     else {
         $tray.Icon = [Drawing.SystemIcons]::Information
     }
-    $tray.Text = ('Code9 IDENT: {0}, расписание {1}' -f `
+    $trayText = ('Code9 IDENT: {0}, расписание {1}' -f `
         $(if ($workerOnline) { 'работает' } else { 'остановлен' }), `
         (Format-StateName -Value ([string]$state.schedule.state))
     )
+    $tray.Text = $trayText.Substring(0, [Math]::Min(63, $trayText.Length))
 }
 
 $scheduleCheck.Add_CheckedChanged({ Set-FeatureSwitches })
@@ -630,6 +673,7 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 3000
 $timer.Add_Tick({
     try {
+        Update-AgentSettings
         Refresh-Status
         Update-RobotCalibration
     }
@@ -644,8 +688,29 @@ if ($StartMinimized) {
     $form.Add_Shown({ $form.Hide() })
 }
 
-[Windows.Forms.Application]::Run($form)
+if ($PreviewPath) {
+    # Render only this form for isolated visual tests, without displaying a desktop window.
+    $form.Opacity = 0
+    $form.ShowInTaskbar = $false
+    $form.Show()
+    [Windows.Forms.Application]::DoEvents()
+    $bitmap = New-Object Drawing.Bitmap($form.Width, $form.Height)
+    try {
+        $form.DrawToBitmap($bitmap, (New-Object Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
+        $bitmap.Save([IO.Path]::GetFullPath($PreviewPath), [Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally { $bitmap.Dispose() }
+}
+else { [Windows.Forms.Application]::Run($form) }
 $timer.Stop()
+if ($null -ne $script:SettingsRequest) {
+    $script:SettingsRequest.Runner.Stop()
+    $script:SettingsRequest.Runner.Dispose()
+}
+if ($null -ne $script:CalibrationProcess) {
+    if (-not $script:CalibrationProcess.HasExited) { Stop-Process -Id $script:CalibrationProcess.Id -Force -ErrorAction SilentlyContinue }
+    $script:CalibrationProcess.Dispose()
+}
 $tray.Visible = $false
 $tray.Dispose()
 $form.Dispose()

@@ -9,12 +9,12 @@
     "windowTitleRegex": "IDENT"
   },
   "inspect": {
-    "maxDepth": 12,
+    "maxDepth": 24,
     "outputPath": "C:\\ident-rpa\\ui-tree.json"
   },
   "calibration": {
     "status": "not_configured",
-    "profileVersion": 1,
+    "profileVersion": 2,
     "calibratedAt": "",
     "reportPath": "C:\\ident-rpa\\calibration-report.json"
   },
@@ -63,6 +63,18 @@
       "className": "",
       "controlType": ""
     },
+    "endTimeInput": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
+    "bookingConfirmed": {
+      "name": "",
+      "automationId": "",
+      "className": "",
+      "controlType": ""
+    },
     "saveButton": {
       "name": "",
       "automationId": "",
@@ -75,8 +87,8 @@
     "confirmBeforeEachStep": true,
     "stepDelayMs": 600,
     "successCondition": {
-      "type": "elementMissing",
-      "selector": "saveButton",
+      "type": "elementPresent",
+      "selector": "bookingConfirmed",
       "timeoutSeconds": 15
     },
     "steps": [
@@ -113,6 +125,12 @@
         "action": "setText",
         "selector": "startTimeInput",
         "valueFrom": "ticket.PlanStart"
+      },
+      {
+        "name": "set_end_time",
+        "action": "setText",
+        "selector": "endTimeInput",
+        "valueFrom": "ticket.PlanEnd"
       },
       {
         "name": "set_comment",

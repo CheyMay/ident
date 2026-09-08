@@ -73,7 +73,7 @@ exit 0
             allowUnsafeExecution = $true
             confirmBeforeEachStep = $false
             successCondition = @{
-                type = 'elementMissing'
+                type = 'elementPresent'
                 selector = 'saveButton'
                 timeoutSeconds = 1
             }
@@ -94,6 +94,11 @@ exit 0
             }
         }
     }
+    $fields = @('ClientFullName', 'ClientPhone', 'DoctorName', 'PlanStart', 'PlanEnd')
+    $robotConfig.workflow.steps = @($fields | ForEach-Object {
+        $robotConfig.selectors[$_] = @{ name = $_; automationId = $_; className = 'TextBox'; controlType = 'Edit' }
+        @{ name = "set_$_"; action = 'setText'; selector = $_; valueFrom = "ticket.$_" }
+    }) + $robotConfig.workflow.steps
     $robotConfig |
         ConvertTo-Json -Depth 10 |
         Set-Content -LiteralPath (Join-Path $tempRoot 'robot\config.local.json') -Encoding UTF8

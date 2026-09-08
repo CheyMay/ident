@@ -296,6 +296,32 @@ test('queue summary reports expired robot leases', async () => {
   }
 });
 
+test('expired robot claims are quarantined, never reassigned, and accept same-agent proof', async () => {
+  const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
+  await mkdir(dataDir, { recursive: true });
+  const storage = createStorage(loadConfig({ DATA_DIR: dataDir }), { info() {}, warn() {}, error() {} });
+  const queue = new TicketQueue(storage);
+  try {
+    await storage.writeJson('tickets.json', { records: [{
+      id: 'uncertain-save', status: 'robot_processing', robotAgentId: 'clinic-a',
+      robotLeaseUntil: '2020-01-01T00:00:00Z', ticket: { Id: 'uncertain-save' },
+      reservation: { status: 'active', expiresAt: '2020-01-01T00:00:00Z' }
+    }] });
+    assert.equal(await queue.claimForRobot('clinic-b'), null);
+    const [held] = await queue.listRecords({ status: 'robot_failed' });
+    assert.equal(held.robotReviewReason, 'lease_expired');
+    assert.equal(held.robotAgentId, 'clinic-a');
+    assert.equal(held.reservation.status, 'awaiting_review');
+    assert.equal(await queue.completeRobot('uncertain-save', 'clinic-b', {}), null);
+    const completed = await queue.completeRobot('uncertain-save', 'clinic-a', { appointmentCreated: true });
+    assert.equal(completed.status, 'robot_completed');
+    assert.equal((await queue.completeRobot('uncertain-save', 'clinic-a', {})).robotCompletedAt, completed.robotCompletedAt);
+  } finally {
+    storage.close?.();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('robot delivery mode requires an online calibrated agent', async () => {
   const dataDir = path.join(tempRoot, String(Date.now()), String(Math.random()).slice(2));
   await mkdir(dataDir, { recursive: true });

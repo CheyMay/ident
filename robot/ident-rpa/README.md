@@ -97,6 +97,28 @@ and prints/logs what it would place into IDENT.
 
 ## Real execution gate
 
+`Calibrate` captures one screen and writes a **candidate**, never an executable
+profile. Capture the calendar, its appointment context menu, and the new
+appointment dialog separately. The clinic build may not expose these controls
+through UI Automation; a screenshot is not a substitute for that inspection.
+The shipped workflow is a template, not a tested IDENT navigation adapter.
+
+Unattended execution requires a separately verified local profile, exactly one
+final save, writable/read-back patient, doctor, start and **end** fields, and a
+positive success indicator absent before execution and present after saving.
+`valueFormat` on start/end steps may format clinic wall time (for example
+`dd.MM.yyyy HH:mm`) without converting to the workstation timezone.
+Dialogs merely disappearing are not accepted as confirmation.
+
+`execution-pending.json` is written before touching IDENT. An interrupted run
+requires operator review; never delete this marker to blindly force a retry.
+After verified success a durable outbox marker lets the agent retry only the
+server acknowledgement, including after a restart or an expired backend lease.
+
+UI actions can block in the application provider even when the action is normally
+asynchronous: [Microsoft InvokePattern documentation](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.invokepattern.invoke?view=netframework-4.8.1).
+The worker bounds the child process and the desktop bounds capture separately.
+
 Real clicking is blocked until all of these are true:
 
 1. `config.local.json` contains real selectors from `ui-tree.json`.

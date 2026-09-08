@@ -334,6 +334,7 @@ function Get-IdentWindow {
 
   $candidates = Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and
+    $_.Id -ne $PID -and $_.MainWindowTitle -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and
     ((-not $processName) -or $_.ProcessName -eq $processName) -and
     ((-not $titleRegex) -or $_.MainWindowTitle -match $titleRegex)
   }
@@ -342,6 +343,7 @@ function Get-IdentWindow {
     return $null
   }
 
+  if (@($candidates).Count -ne 1) { throw 'Several IDENT windows match. Close the extra IDENT instance before calibration.' }
   $process = $candidates | Select-Object -First 1
   $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
   if (-not $window) {
@@ -378,6 +380,7 @@ function Get-UiTreeRows {
   )
 
   $rows = New-Object System.Collections.Generic.List[object]
+  $scanStarted = [Diagnostics.Stopwatch]::StartNew()
 
   function Walk {
     param(
@@ -387,6 +390,9 @@ function Get-UiTreeRows {
       [string]$RootName
     )
 
+    if ($scanStarted.Elapsed.TotalSeconds -gt 40 -or $rows.Count -ge 5000) {
+      throw 'IDENT scan limit reached. Open only the required IDENT screen and retry.'
+    }
     if ($Depth -gt $MaxDepth) {
       return
     }
@@ -401,6 +407,8 @@ function Get-UiTreeRows {
       className = $current.ClassName
       controlType = $current.ControlType.ProgrammaticName
       isEnabled = $current.IsEnabled
+      isOffscreen = $current.IsOffscreen
+      patterns = @($Element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
       bounds = (Format-Bounds $current.BoundingRectangle)
     })
 
@@ -484,6 +492,10 @@ function Find-RobotElement {
   if (-not $Selector) {
     return $null
   }
+  if ([string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $Selector 'automationId' '')) -and
+      [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $Selector 'name' ''))) {
+    throw 'IDENT selector needs a stable name or AutomationId, not just a position or control type.'
+  }
 
   $conditions = New-Object System.Collections.Generic.List[System.Windows.Automation.Condition]
   foreach ($property in @('automationId', 'name', 'className', 'controlType')) {
@@ -502,7 +514,10 @@ function Find-RobotElement {
     [System.Windows.Automation.AndCondition]::new($conditions.ToArray())
   }
 
-  return $Root.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $condition)
+  $matches = $Root.FindAll([System.Windows.Automation.TreeScope]::Subtree, $condition)
+  if ($matches.Count -gt 1) { throw 'Ambiguous IDENT selector; execution stopped before choosing an element.' }
+  if ($matches.Count -eq 1) { return $matches.Item(0) }
+  return $null
 }
 
 function Test-ElementMatchesSelector {
@@ -592,6 +607,7 @@ function Find-RobotElementInIdent {
     [object]$Selector
   )
 
+  $found = $null
   foreach ($root in @(Get-IdentAutomationRoots $WindowInfo)) {
     try {
       $rootRegex = [string](Get-ObjectProperty $Selector 'rootTitleRegex' '')
@@ -599,21 +615,23 @@ function Find-RobotElementInIdent {
         continue
       }
       $path = [string](Get-ObjectProperty $Selector 'path' '')
+      $element = Find-RobotElement $root $Selector
       if ($path) {
         $pathElement = Resolve-ElementPath -Root $root -Path $path
-        if ($null -ne $pathElement -and (Test-ElementMatchesSelector $pathElement $Selector)) {
-          return $pathElement
+        # A moved anonymous control must never fall back to the first TextBox/Button.
+        if ($null -eq $element -or $null -eq $pathElement -or -not [System.Windows.Automation.AutomationElement]::Compare($element, $pathElement)) {
+          continue
         }
       }
-      $element = Find-RobotElement $root $Selector
       if ($element) {
-        return $element
+        if ($null -ne $found) { throw 'Selector matches more than one IDENT window.' }
+        $found = $element
       }
     }
     catch [System.Windows.Automation.ElementNotAvailableException] {
     }
   }
-  return $null
+  return $found
 }
 
 function Convert-BoundsText {
@@ -686,13 +704,15 @@ function Get-NearbyControlText {
 function Get-CalibrationDefinitions {
   return @(
     [pscustomobject]@{ Name = 'requestsSection'; Types = @('ControlType.Button', 'ControlType.TabItem', 'ControlType.Hyperlink'); Pattern = '(заявк|обращен|расписан|request|ticket|calendar)' },
-    [pscustomobject]@{ Name = 'newAppointmentButton'; Types = @('ControlType.Button', 'ControlType.MenuItem', 'ControlType.Hyperlink'); Pattern = '(нов(ый|ая).*(прием|запис)|записать.*(прием|пациент)|сохранить.*запис|new.*appointment)' },
+    [pscustomobject]@{ Name = 'newAppointmentButton'; Types = @('ControlType.Button', 'ControlType.MenuItem', 'ControlType.Hyperlink'); Pattern = '(нов(ый|ая).*(прием|запис)|записать\s+на\s+прием|new.*appointment)' },
     [pscustomobject]@{ Name = 'patientPhoneInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(телефон|мобильн|phone|mobile)' },
     [pscustomobject]@{ Name = 'patientNameInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(фио|фамили|пациент|patient|surname|fullname|full.?name)' },
     [pscustomobject]@{ Name = 'doctorInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.ListItem'); Pattern = '(врач|доктор|специалист|doctor|physician)' },
     [pscustomobject]@{ Name = 'startTimeInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.Custom'); Pattern = '(дата.*врем|время.*прием|начал|plan.?start|start.?time|appointment.?time)' },
+    [pscustomobject]@{ Name = 'endTimeInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.Custom'); Pattern = '(конец|окончан|plan.?end|end.?time)' },
     [pscustomobject]@{ Name = 'commentInput'; Types = @('ControlType.Edit', 'ControlType.Document'); Pattern = '(комментар|примечан|пожелан|comment|note)' },
-    [pscustomobject]@{ Name = 'saveButton'; Types = @('ControlType.Button'); Pattern = '(^|\s)(записать пациента|сохранить|создать прием|готово|save|create appointment|ok)(\s|$)' }
+    [pscustomobject]@{ Name = 'saveButton'; Types = @('ControlType.Button'); Pattern = '(^|\s)(записать пациента|сохранить|создать прием|готово|save|create appointment|ok)(\s|$)' },
+    [pscustomobject]@{ Name = 'bookingConfirmed'; Types = @('ControlType.Text'); Pattern = '(запись успешно создана|прием успешно создан|appointment successfully created)' }
   )
 }
 
@@ -711,7 +731,8 @@ function Get-CalibrationSelector {
   $candidates = New-Object System.Collections.Generic.List[object]
   foreach ($row in $Rows) {
     $rowKey = ([string]$row.rootName) + "`n" + ([string]$row.path)
-    if ([string]$row.controlType -notin @($definition.Types) -or $UsedPaths.ContainsKey($rowKey)) {
+    if ([string]$row.controlType -notin @($definition.Types) -or $UsedPaths.ContainsKey($rowKey) -or
+        -not [bool](Get-ObjectProperty $row 'isEnabled' $true) -or [bool](Get-ObjectProperty $row 'isOffscreen' $false)) {
       continue
     }
     $ownText = (([string]$row.name) + ' ' + ([string]$row.automationId) + ' ' + ([string]$row.className)).ToLowerInvariant().Replace('ё', 'е')
@@ -733,6 +754,9 @@ function Get-CalibrationSelector {
     return [pscustomobject]@{ Ok = $false; Name = $Name; Reason = 'Найдено несколько равнозначных элементов.' }
   }
   $row = $ordered[0].Row
+  if ([string]::IsNullOrWhiteSpace([string]$row.name) -and [string]::IsNullOrWhiteSpace([string]$row.automationId)) {
+    return [pscustomobject]@{ Ok = $false; Name = $Name; Reason = 'У элемента нет надежного имени или AutomationId. Один путь по индексам небезопасен.' }
+  }
   $rootPattern = if ([string]$row.rootName -match '(Новый прием|Запись на прием|Добавление комментария|Обработка заявки)') {
     [Regex]::Escape([string]$Matches[1])
   } else {
@@ -764,8 +788,10 @@ function Invoke-AutomaticCalibration {
   )
 
   $roots = @(Get-IdentAutomationRoots $WindowInfo)
-  $maxDepth = [Math]::Max(8, [Math]::Min(16, [int](Get-ObjectProperty $Config.inspect 'maxDepth' 12)))
+  $maxDepth = [Math]::Max(20, [Math]::Min(28, [int](Get-ObjectProperty $Config.inspect 'maxDepth' 24)))
   $rows = @(Get-UiTreeRows -Roots $roots -MaxDepth $maxDepth)
+  $capturePath = Join-Path (Split-Path -Parent $ConfigFile) ('ui-tree-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.json')
+  Write-JsonFileAtomic -Path $capturePath -Value @($rows)
   $visibleControls = @($rows | Where-Object { $null -ne (Convert-BoundsText ([string]$_.bounds)) })
   $required = New-Object System.Collections.Generic.List[string]
   foreach ($step in @($Config.workflow.steps)) {
@@ -788,13 +814,24 @@ function Invoke-AutomaticCalibration {
     }
   }
   $issues = @($checks | Where-Object { -not [bool]$_.Ok } | ForEach-Object { "$($_.Name): $($_.Reason)" })
+  foreach ($step in @($Config.workflow.steps)) {
+    $name = [string]$step.selector
+    $candidate = @($checks | Where-Object { $_.Name -eq $name -and $_.Ok })
+    if ($candidate.Count -eq 0) { continue }
+    $row = @($rows | Where-Object { (([string]$_.rootName) + "`n" + ([string]$_.path)) -eq $candidate[0].PathKey })[0]
+    $requiredPattern = if ([string]$step.action -eq 'setText') { 'ValuePatternIdentifiers.Pattern' } else { 'InvokePatternIdentifiers.Pattern' }
+    if (@($row.patterns) -notcontains $requiredPattern) { $issues += "$name : IDENT does not expose $requiredPattern." }
+  }
   if ($visibleControls.Count -lt 8) {
     $issues += 'Окно IDENT свернуто или элементы формы недоступны. Разверните IDENT и откройте окно новой записи.'
   }
   $report = [ordered]@{
-    ok = ($issues.Count -eq 0)
+    ok = ($visibleControls.Count -ge 8)
+    selectorsComplete = ($issues.Count -eq 0)
     generatedAt = (Get-Date).ToString('o')
     mode = 'automatic'
+    capturePath = $capturePath
+    readyForUnattendedExecution = $false
     processName = [string]$WindowInfo.process.ProcessName
     windowTitle = [string]$WindowInfo.process.MainWindowTitle
     controlsScanned = $rows.Count
@@ -811,7 +848,9 @@ function Invoke-AutomaticCalibration {
     issues = @($issues)
   }
 
-  if ($issues.Count -eq 0) {
+  if ($visibleControls.Count -ge 8) {
+    # Screen capture is evidence for calibration, never proof of a working workflow.
+    $candidatePath = Join-Path (Split-Path -Parent $ConfigFile) 'calibration-candidate.json'
     foreach ($name in $resolved.Keys) {
       if ($Config.selectors.PSObject.Properties.Name -contains $name) {
         $Config.selectors.$name = $resolved[$name]
@@ -820,8 +859,8 @@ function Invoke-AutomaticCalibration {
       }
     }
     $calibration = [pscustomobject]@{
-      status = 'verified'
-      profileVersion = 1
+      status = 'selectors_detected'
+      profileVersion = 2
       calibratedAt = (Get-Date).ToString('o')
       processName = [string]$WindowInfo.process.ProcessName
       windowTitle = [string]$WindowInfo.process.MainWindowTitle
@@ -833,9 +872,9 @@ function Invoke-AutomaticCalibration {
     } else {
       $Config | Add-Member -NotePropertyName calibration -NotePropertyValue $calibration
     }
-    $Config.workflow.allowUnsafeExecution = $true
+    $Config.workflow.allowUnsafeExecution = $false
     $Config.workflow.confirmBeforeEachStep = $false
-    Write-JsonFileAtomic -Path $ConfigFile -Value $Config
+    Write-JsonFileAtomic -Path $candidatePath -Value $Config
   }
   Write-JsonFileAtomic -Path $OutputReportPath -Value ([pscustomobject]$report)
   return [pscustomobject]$report
@@ -844,6 +883,7 @@ function Invoke-AutomaticCalibration {
 function Invoke-Click {
   param([System.Windows.Automation.AutomationElement]$Element)
 
+  Assert-ElementUsable $Element
   $pattern = $null
   if ($Element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
     $pattern.Invoke()
@@ -859,13 +899,58 @@ function Set-ElementValue {
     [string]$Value
   )
 
+  Assert-ElementUsable $Element
   $pattern = $null
   if ($Element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+    if ($pattern.Current.IsReadOnly) { throw 'IDENT field is read-only.' }
     $pattern.SetValue($Value)
+    if ([string]$pattern.Current.Value -cne $Value) { throw 'IDENT field did not retain the requested value; save cancelled.' }
     return
   }
 
   throw 'Element does not support ValuePattern; add a safer selector or implement a deliberate keyboard fallback.'
+}
+
+function Assert-ElementUsable {
+  param([System.Windows.Automation.AutomationElement]$Element)
+  if ($null -eq $Element -or -not $Element.Current.IsEnabled -or $Element.Current.IsOffscreen) {
+    throw 'IDENT control is hidden or disabled; no action was performed.'
+  }
+}
+
+function Assert-BookingContract {
+  param([object]$Config, [object]$Task)
+  $steps = @($Config.workflow.steps)
+  $saves = @($steps | Where-Object { $_.selector -eq 'saveButton' -or $_.name -eq 'save' })
+  if ($saves.Count -ne 1 -or $steps[-1] -ne $saves[0] -or $saves[0].action -ne 'click') {
+    throw 'Exactly one save action must be the final workflow step.'
+  }
+  foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
+    if (@($steps | Where-Object { $_.action -eq 'setText' -and (Get-ObjectProperty $_ 'valueFrom' '') -eq $field }).Count -ne 1) {
+      throw "Booking workflow must set and verify $field exactly once."
+    }
+    if ([string]::IsNullOrWhiteSpace((Resolve-TaskValue $Task $field))) { throw "Required booking value is missing: $field" }
+  }
+  $start = [DateTimeOffset]::Parse([string]$Task.ticket.PlanStart, [Globalization.CultureInfo]::InvariantCulture)
+  $end = [DateTimeOffset]::Parse([string]$Task.ticket.PlanEnd, [Globalization.CultureInfo]::InvariantCulture)
+  $minutes = ($end - $start).TotalMinutes
+  if ($minutes -le 0 -or $minutes % 15 -ne 0 -or $start.Date -ne $end.Date -or $start.Offset -ne $end.Offset) {
+    throw 'Booking duration must be a positive multiple of 15 minutes within one day and timezone.'
+  }
+  if ([string]$Config.workflow.successCondition.type -ne 'elementPresent') {
+    throw 'A disappearing dialog is not proof of a booking. Configure a positive IDENT success indicator.'
+  }
+}
+
+function Resolve-StepValue {
+  param([object]$Task, [object]$Step)
+  $value = Resolve-TaskValue $Task ([string]$Step.valueFrom)
+  $format = [string](Get-ObjectProperty $Step 'valueFormat' '')
+  if ($format) {
+    if ([string]$Step.valueFrom -notin @('ticket.PlanStart', 'ticket.PlanEnd')) { throw 'valueFormat is only supported for appointment date/time.' }
+    return [DateTimeOffset]::Parse($value, [Globalization.CultureInfo]::InvariantCulture).ToString($format, [Globalization.CultureInfo]::InvariantCulture)
+  }
+  return $value
 }
 
 function Resolve-TaskValue {
@@ -928,6 +1013,8 @@ function Wait-WorkflowSuccess {
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
   $stableSince = $null
   do {
+    Assert-InteractiveDesktop
+    if ($WindowInfo.process.HasExited) { throw 'IDENT exited before confirming the booking.' }
     $present = [bool](Find-RobotElementInIdent $WindowInfo $selector)
     $matched = (
       ($conditionType -eq 'elementPresent' -and $present) -or
@@ -978,10 +1065,19 @@ function Invoke-Workflow {
   if ($null -eq $calibration -or [string](Get-ObjectProperty $calibration 'status' '') -ne 'verified') {
     throw 'Robot calibration profile is not verified.'
   }
+  Assert-BookingContract $Config $Task
+  $pendingPath = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))) 'execution-pending.json'
+  if (Test-Path -LiteralPath $pendingPath) {
+    throw 'ROBOT_REVIEW_REQUIRED: previous UI execution has no confirmed outcome. Check IDENT before clearing execution-pending.json.'
+  }
+  if ([bool](Find-RobotElementInIdent $WindowInfo $Config.selectors.($Config.workflow.successCondition.selector))) {
+    throw 'Success indicator already exists before execution; cannot distinguish this booking.'
+  }
 
   Assert-InteractiveDesktop
   Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
   $saveInvoked = $false
+  $writtenValues = @{}
   foreach ($step in @($Config.workflow.steps)) {
     if (-not $saveInvoked) {
       Assert-InteractiveDesktop
@@ -1002,15 +1098,33 @@ function Invoke-Workflow {
 
     $isSaveStep = ([string]$step.selector -eq 'saveButton' -or [string]$step.name -eq 'save')
     if ($isSaveStep) {
+      foreach ($name in $writtenValues.Keys) {
+        $field = Find-RobotElementInIdent $WindowInfo $Config.selectors.$name
+        Assert-ElementUsable $field
+        $pattern = $null
+        if (-not $field.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern) -or
+            [string]$pattern.Current.Value -cne [string]$writtenValues[$name]) {
+          throw "IDENT value changed before save: $name. Save cancelled."
+        }
+      }
+      Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
       $script:SaveInvoked = $true
     }
+    # Persist intent before touching IDENT, including before Invoke can block or crash.
+    Write-JsonFileAtomic -Path $pendingPath -Value ([pscustomobject]@{
+      id = [string]$Task.id
+      fingerprint = [string](Get-ObjectProperty $Task 'fingerprint' '')
+      stage = $(if ($isSaveStep) { 'saving' } else { 'editing' })
+      updatedAt = (Get-Date).ToString('o')
+    })
     switch ($step.action) {
       'click' {
         Invoke-Click $element
       }
       'setText' {
-        $value = Resolve-TaskValue $Task ([string]$step.valueFrom)
+        $value = Resolve-StepValue $Task $step
         Set-ElementValue $element $value
+        $writtenValues[[string]$step.selector] = $value
       }
       default {
         throw "Unsupported workflow action: $($step.action)"
@@ -1034,6 +1148,7 @@ function Invoke-Workflow {
       completedAt = (Get-Date).ToString('o')
       verifiedBy = 'ident-ui-success-condition'
     })
+    Remove-Item -LiteralPath $pendingPath -Force
   }
   Write-RobotLog $Config 'info' 'IDENT save operation verified' @{ id = $Task.id }
 }
@@ -1056,7 +1171,7 @@ try {
 
   if ($Mode -eq 'SelfTest') {
     $definitions = @(Get-CalibrationDefinitions)
-    if ($definitions.Count -ne 8 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 8) {
+    if ($definitions.Count -ne 10 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 10) {
       throw 'Robot self-test failed: calibration definitions are invalid.'
     }
     $sampleRows = @(

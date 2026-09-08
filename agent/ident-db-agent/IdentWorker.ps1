@@ -307,10 +307,12 @@ function Invoke-PowerShellChildProcess {
     $processInfo.RedirectStandardError = $true
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $processInfo
+    $started = $false
     try {
         if (-not $process.Start()) {
             throw "$Label could not be started."
         }
+        $started = $true
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
@@ -349,6 +351,10 @@ function Invoke-PowerShellChildProcess {
         }
     }
     finally {
+        if ($started -and -not $process.HasExited) {
+            # Telemetry or file I/O failures must not leave a child editing IDENT unattended.
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
         $process.Dispose()
     }
 }
@@ -356,7 +362,7 @@ function Invoke-PowerShellChildProcess {
 function Test-TransientScheduleFailure {
     param([string]$Message)
 
-    return [string]$Message -match '(?i)(timed?\s*out|network-related|server\s+was\s+not\s+found|not\s+accessible|tcp\s+provider|connection\s+(failed|closed|refused)|transport-level|wait\s+operation\s+timed\s+out)'
+    return [string]$Message -match '(?i)(timed?\s*out|network-related|server\s+was\s+not\s+found|not\s+accessible|tcp\s+provider|connection\s+(failed|closed|refused)|transport-level|wait\s+operation\s+timed\s+out|время ожидания.*истекло|сервер не найден или недоступен)'
 }
 
 function Write-RuntimeState {
@@ -1025,7 +1031,9 @@ function Get-RobotSuccessMarker {
         $completedAt = ([string]$marker.completedAt).Trim()
         $idMatches = [string]::Equals($actualId, $expectedId, [StringComparison]::Ordinal)
         $fingerprintMatches = [string]::Equals($actualFingerprint, $expectedFingerprint, [StringComparison]::Ordinal)
-        $completionPresent = -not [string]::IsNullOrWhiteSpace($completedAt)
+        $parsedCompletion = [DateTimeOffset]::MinValue
+        $completionPresent = [DateTimeOffset]::TryParse($completedAt, [ref]$parsedCompletion) -and
+            $parsedCompletion -le [DateTimeOffset]::Now.AddMinutes(5) -and $expectedId.Length -gt 0 -and $expectedFingerprint.Length -gt 0
         if (
             $idMatches -and
             $fingerprintMatches -and
@@ -1379,6 +1387,16 @@ function Get-RobotConfigurationProblem {
         ) {
             return 'Robot automatic calibration has not been verified.'
         }
+        foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
+            $fieldSteps = @($config.workflow.steps | Where-Object {
+                $_.action -eq 'setText' -and $_.PSObject.Properties.Name -contains 'valueFrom' -and $_.valueFrom -eq $field
+            })
+            if ($fieldSteps.Count -ne 1) { return "Booking workflow must set and verify $field exactly once." }
+        }
+        $saves = @($config.workflow.steps | Where-Object { $_.selector -eq 'saveButton' -or $_.name -eq 'save' })
+        if ($saves.Count -ne 1 -or @($config.workflow.steps)[-1] -ne $saves[0] -or $saves[0].action -ne 'click') {
+            return 'Exactly one save action must be the final workflow step.'
+        }
         if (-not [bool]$config.workflow.allowUnsafeExecution) {
             return 'Real robot execution is not allowed in robot configuration.'
         }
@@ -1405,8 +1423,8 @@ function Get-RobotConfigurationProblem {
             return 'Robot success condition is missing.'
         }
         $successCondition = $config.workflow.successCondition
-        if ([string]$successCondition.type -notin @('elementPresent', 'elementMissing')) {
-            return 'Robot success condition type is invalid.'
+        if ([string]$successCondition.type -ne 'elementPresent') {
+            return 'A disappearing window is not proof of a booking. A positive IDENT success indicator is required.'
         }
         $successSelector = $config.selectors.([string]$successCondition.selector)
         if ($null -eq $successSelector) {
@@ -1434,6 +1452,34 @@ function Test-RobotConfigured {
 }
 
 function Invoke-RobotPoll {
+    $pendingPath = Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'execution-pending.json'
+    $markerPath = Get-RobotSuccessMarkerPath
+    if (Test-Path -LiteralPath $markerPath) {
+        try {
+            $raw = Read-JsonFile -Path $markerPath
+            $proof = Get-RobotSuccessMarker -Id ([string]$raw.id) -Fingerprint ([string]$raw.fingerprint)
+            if ($null -eq $proof) { throw 'Invalid local booking confirmation requires review.' }
+            $script:State.robot.lastTaskId = [string]$proof.id
+            Save-RobotReceipt -Id ([string]$proof.id) -Fingerprint ([string]$proof.fingerprint) -CompletedAt ([string]$proof.completedAt)
+            New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
+            New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
+            [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
+                id = [string]$proof.id; agentId = [string]$script:Context.Config.agent.id
+                result = @{ appointmentCreated = $true; recoveredFromLocalReceipt = $true; completedAt = [string]$proof.completedAt }
+            })
+            Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
+            Remove-RobotSuccessMarker
+            $script:State.robot.lastSuccessAt = [string]$proof.completedAt
+            $script:State.robot.state = 'idle'
+            $script:State.robot.lastError = ''
+        }
+        catch {
+            $script:State.robot.state = 'awaiting_confirmation'
+            $script:State.robot.lastError = 'Booking proof is retained locally. Waiting for server acknowledgement.'
+        }
+        Write-RuntimeState
+        return
+    }
     $configurationProblem = Get-RobotConfigurationProblem
     $configured = [string]::IsNullOrWhiteSpace($configurationProblem)
     $script:State.robot.configured = $configured
@@ -1443,6 +1489,18 @@ function Invoke-RobotPoll {
         $script:State.robot.lastError = $configurationProblem
         Write-RuntimeState
         return
+    }
+
+    if (Test-Path -LiteralPath $pendingPath) {
+        $pending = Read-JsonFile -Path $pendingPath
+        $confirmed = Get-RobotSuccessMarker -Id ([string]$pending.id) -Fingerprint ([string]$pending.fingerprint)
+        if ($null -eq $confirmed) {
+            $script:State.robot.configured = $false
+            $script:State.robot.state = 'needs_review'
+            $script:State.robot.lastError = 'Previous IDENT action requires review. No new booking will be started.'
+            Write-RuntimeState
+            return
+        }
     }
 
     $minimumIdleSeconds = Get-MinimumUserIdleSeconds
@@ -1495,6 +1553,8 @@ function Invoke-RobotPoll {
         }
         if ($null -ne $receipt) {
             $localExecutionSucceeded = $true
+            New-Item -ItemType Directory -Force -Path $script:Context.CommandDirectory | Out-Null
+            New-Item -ItemType File -Force -Path (Join-Path $script:Context.CommandDirectory 'send-now') | Out-Null
             [void](Invoke-AgentRequest -Method POST -Path '/api/robot/tasks/complete' -Body @{
                 id = [string]$record.id
                 agentId = [string]$script:Context.Config.agent.id
@@ -1509,6 +1569,7 @@ function Invoke-RobotPoll {
             $script:State.robot.lastError = ''
             Write-WorkerLog -Level 'info' -EventName 'robot_task_recovered' -Data @{ id = [string]$record.id }
             Remove-RobotSuccessMarker
+            Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
             Write-RuntimeState
             return
         }
@@ -1530,6 +1591,13 @@ function Invoke-RobotPoll {
                 -Label 'Robot execution'
             $output = [string]$processResult.Output
             $exitCode = [int]$processResult.ExitCode
+        }
+        catch {
+            # The child can persist proof and then hang while writing its last log line.
+            $successMarker = Get-RobotSuccessMarker -Id ([string]$record.id) -Fingerprint $fingerprint
+            if ($null -eq $successMarker) { throw }
+            $output = ''
+            $exitCode = 0
         }
         finally {
             if (Test-Path -LiteralPath $taskPath) {
@@ -1578,6 +1646,7 @@ function Invoke-RobotPoll {
             throw 'Robot exited without a verified local success marker.'
         }
 
+        $localExecutionSucceeded = $true
         $completedAt = [string]$successMarker.completedAt
         Save-RobotReceipt `
             -Id ([string]$record.id) `
@@ -1607,6 +1676,10 @@ function Invoke-RobotPoll {
             'ROBOT_DEFER_BUSY',
             'ROBOT_DEFER_IDENT_UNAVAILABLE'
         )
+        if (Test-Path -LiteralPath $pendingPath) {
+            $deferredForSafety = $false
+            if (-not $localExecutionSucceeded) { $message = 'ROBOT_REVIEW_REQUIRED: IDENT may contain an unfinished or saved appointment. No automatic retry. ' + $message }
+        }
         $script:State.robot.state = if ($message -eq 'ROBOT_DEFER_SESSION_LOCKED') {
             'waiting_for_session'
         } elseif ($message -eq 'ROBOT_DEFER_IDENT_UNAVAILABLE') {
@@ -1779,7 +1852,7 @@ try {
 
         if ($now -ge $nextHeartbeat) {
             Send-Heartbeat
-            $nextHeartbeat = $now.AddSeconds([Math]::Max(30, [int]$script:Context.Config.intervals.heartbeatSeconds))
+            $nextHeartbeat = (Get-Date).AddSeconds([Math]::Max(30, [int]$script:Context.Config.intervals.heartbeatSeconds))
             if ($script:StopRequested) {
                 break
             }
@@ -1792,25 +1865,26 @@ try {
             } else {
                 600
             }
-            $nextSchema = $now.AddSeconds([Math]::Max(300, $schemaSeconds))
+            $nextSchema = (Get-Date).AddSeconds([Math]::Max(300, $schemaSeconds))
             $nextHeartbeat = [DateTime]::MinValue
         }
 
         if ([bool]$script:State.schedule.enabled -and $now -ge $nextSchedule) {
             Invoke-SchedulePush
-            $nextSchedule = $now.AddSeconds([Math]::Max(60, [int]$script:Context.Config.intervals.scheduleSeconds))
+            $nextSchedule = (Get-Date).AddSeconds([Math]::Max(60, [int]$script:Context.Config.intervals.scheduleSeconds))
             $nextHeartbeat = [DateTime]::MinValue
         }
         elseif (-not [bool]$script:State.schedule.enabled) {
             $script:State.schedule.state = 'disabled'
         }
 
-        if ([bool]$script:State.robot.enabled -and $now -ge $nextRobot) {
+        $hasBookingProof = Test-Path -LiteralPath (Get-RobotSuccessMarkerPath)
+        if (([bool]$script:State.robot.enabled -or $hasBookingProof) -and $now -ge $nextRobot) {
             Invoke-RobotPoll
-            $nextRobot = $now.AddSeconds([Math]::Max(15, [int]$script:Context.Config.intervals.robotSeconds))
+            $nextRobot = (Get-Date).AddSeconds([Math]::Max(15, [int]$script:Context.Config.intervals.robotSeconds))
             $nextHeartbeat = [DateTime]::MinValue
         }
-        elseif (-not [bool]$script:State.robot.enabled) {
+        elseif (-not [bool]$script:State.robot.enabled -and -not $hasBookingProof) {
             $script:State.robot.state = 'disabled'
             $script:State.robot.lastError = ''
         }

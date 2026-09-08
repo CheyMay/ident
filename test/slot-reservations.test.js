@@ -101,3 +101,17 @@ test('rejects a booking when the IDENT timetable is stale', () => {
     TimetableStaleError
   );
 });
+
+test('uncertain saves and pending timetable refreshes do not reopen slots on a timer', () => {
+  for (const status of ['awaiting_review', 'awaiting_timetable']) {
+    const record = {
+      id: 'held', status: status === 'awaiting_review' ? 'robot_failed' : 'robot_completed',
+      reservation: createReservation(ticket(), 20, { now: new Date('2026-08-27T08:00:00Z'), holdMinutes: 1 })
+    };
+    record.reservation.status = status;
+    const later = new Date('2026-08-27T12:00:00Z');
+    reconcileReservations([record], timetable(), later);
+    assert.equal(record.reservation.status, status);
+    assert.equal(overlayReservations(timetable(), [record], later).Summary.reservedIntervals, 3);
+  }
+});

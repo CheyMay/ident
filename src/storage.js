@@ -425,23 +425,20 @@ export class TicketQueue {
   }
 
   async releaseExpiredRobotClaims() {
-    const records = await this.records();
-    const now = new Date();
-    let released = 0;
-    for (const record of records) {
-      if (record.status !== 'robot_processing') continue;
-      const leaseUntil = new Date(record.robotLeaseUntil || 0);
-      if (!Number.isNaN(leaseUntil.getTime()) && leaseUntil > now) continue;
-      record.status = 'queued';
-      record.robotAgentId = null;
-      record.robotClaimedAt = null;
-      record.robotLeaseUntil = null;
-      record.updatedAt = now.toISOString();
-      if (record.reservation) extendReservation(record.reservation, this.reservationDeadline(now), 'active');
-      released += 1;
-    }
-    if (released) await this.writeRecords(records);
-    return released;
+    return this.runExclusive(async () => {
+      const records = await this.records();
+      const now = new Date();
+      let released = 0;
+      for (const record of records) {
+        if (record.status !== 'robot_processing') continue;
+        const leaseUntil = new Date(record.robotLeaseUntil || 0);
+        if (!Number.isNaN(leaseUntil.getTime()) && leaseUntil > now) continue;
+        quarantineExpiredRobotClaim(record, now);
+        released += 1;
+      }
+      if (released) await this.writeRecords(records);
+      return released;
+    });
   }
 
   async claimForRobot(agentId, leaseSeconds = 300, timetable = null, activationCutoff = null) {
@@ -455,12 +452,7 @@ export class TicketQueue {
         if (record.status !== 'robot_processing') continue;
         const leaseUntil = new Date(record.robotLeaseUntil || 0);
         if (Number.isNaN(leaseUntil.getTime()) || leaseUntil <= now) {
-          record.status = 'queued';
-          record.robotAgentId = null;
-          record.robotClaimedAt = null;
-          record.robotLeaseUntil = null;
-          record.updatedAt = now.toISOString();
-          if (record.reservation) extendReservation(record.reservation, this.reservationDeadline(now), 'active');
+          quarantineExpiredRobotClaim(record, now);
         }
       }
 
@@ -536,7 +528,10 @@ export class TicketQueue {
     return this.runExclusive(async () => {
       const records = await this.records();
       const record = records.find((item) => item.id === String(id));
-      if (!record || record.status !== 'robot_processing' || record.robotAgentId !== String(agentId)) return null;
+      if (!record || record.robotAgentId !== String(agentId)) return null;
+      if (record.status === 'robot_completed') return record;
+      const expiredOwnedClaim = record.status === 'robot_failed' && record.robotReviewReason === 'lease_expired';
+      if (record.status !== 'robot_processing' && !expiredOwnedClaim) return null;
       const now = new Date().toISOString();
       record.status = 'robot_completed';
       record.robotCompletedAt = now;
@@ -547,6 +542,7 @@ export class TicketQueue {
       }
       record.updatedAt = now;
       record.lastError = null;
+      record.robotReviewReason = null;
       await this.writeRecords(records);
       return record;
     });
@@ -600,6 +596,16 @@ export class TicketQueue {
   reservationDeadline(now = new Date()) {
     return new Date(now.getTime() + this.reservationMinutes * 60_000);
   }
+}
+
+function quarantineExpiredRobotClaim(record, now) {
+  // A lost lease says nothing about whether IDENT accepted the save.
+  record.status = 'robot_failed';
+  record.robotLeaseUntil = null;
+  record.robotReviewReason = 'lease_expired';
+  record.updatedAt = now.toISOString();
+  record.lastError = 'Robot connection was lost. Check IDENT before retrying this appointment.';
+  if (record.reservation) record.reservation.status = 'awaiting_review';
 }
 
 function positiveNumber(value, fallback) {
@@ -1051,6 +1057,7 @@ function normalizeRecord(record) {
     robotAgentId: record.robotAgentId || null,
     robotClaimedAt: record.robotClaimedAt || null,
     robotLeaseUntil: record.robotLeaseUntil || null,
+    robotReviewReason: record.robotReviewReason || null,
     robotCompletedAt: record.robotCompletedAt || null,
     robotResult: record.robotResult && typeof record.robotResult === 'object' ? record.robotResult : null,
     reservation: record.reservation && typeof record.reservation === 'object' ? record.reservation : null

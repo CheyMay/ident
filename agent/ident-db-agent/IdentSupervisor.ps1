@@ -30,6 +30,7 @@ $script:RestartCount = 0
 $script:LastRestartAt = $null
 $script:LastError = ''
 $script:StartedAt = (Get-Date).ToString('o')
+$script:LastWorkerHeartbeat = [DateTimeOffset]::MinValue
 
 function Read-JsonFile {
     param([string]$Path)
@@ -38,7 +39,10 @@ function Read-JsonFile {
         return $null
     }
     try {
-        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        try { return $reader.ReadToEnd() | ConvertFrom-Json }
+        finally { $reader.Dispose(); $stream.Dispose() }
     }
     catch {
         return $null
@@ -48,14 +52,16 @@ function Read-JsonFile {
 function Write-SupervisorLog {
     param([string]$EventName, [hashtable]$Data = @{})
 
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
-    Invoke-LogRotation -Path $logPath
-    $entry = [ordered]@{
-        timestamp = (Get-Date).ToString('o')
-        event = $EventName
-        data = $Data
-    }
-    Add-Content -LiteralPath $logPath -Value ($entry | ConvertTo-Json -Compress -Depth 6) -Encoding UTF8
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+        Invoke-LogRotation -Path $logPath
+        $entry = [ordered]@{
+            timestamp = (Get-Date).ToString('o')
+            event = $EventName
+            data = $Data
+        }
+        Add-Content -LiteralPath $logPath -Value ($entry | ConvertTo-Json -Compress -Depth 6) -Encoding UTF8
+    } catch { Write-Warning 'Supervisor log could not be written; supervision continues.' }
 }
 
 function Invoke-LogRotation {
@@ -103,8 +109,16 @@ function Write-SupervisorState {
         updatedAt = (Get-Date).ToString('o')
     }
     $temporaryPath = "$supervisorStatePath.tmp-$PID"
-    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-    Move-Item -LiteralPath $temporaryPath -Destination $supervisorStatePath -Force
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+            Move-Item -LiteralPath $temporaryPath -Destination $supervisorStatePath -Force
+            return
+        }
+        catch { Start-Sleep -Milliseconds 100 }
+    }
+    # A locked status file must not terminate a worker in the middle of saving.
+    Write-Warning 'Supervisor status could not be written; supervision continues.'
 }
 
 function Test-UpdateInProgress {
@@ -160,6 +174,7 @@ function Start-Worker {
         -PassThru
     $script:RestartCount++
     $script:LastRestartAt = (Get-Date).ToString('o')
+    $script:LastWorkerHeartbeat = [DateTimeOffset]::Now
     $script:LastError = ''
     Write-SupervisorLog -EventName 'worker_started' -Data @{ processId = [int]$script:Worker.Id; restartCount = $script:RestartCount }
     Write-SupervisorState -State 'running'
@@ -170,7 +185,6 @@ function Test-WorkerStale {
         return $false
     }
     $runtime = Read-JsonFile -Path $runtimeStatePath
-    $started = [DateTimeOffset]$script:Worker.StartTime
     if (
         $null -eq $runtime -or
         $runtime.PSObject.Properties.Name -notcontains 'worker' -or
@@ -178,13 +192,16 @@ function Test-WorkerStale {
         $runtime.worker.PSObject.Properties.Name -notcontains 'processId' -or
         [int]$runtime.worker.processId -ne [int]$script:Worker.Id
     ) {
-        return (([DateTimeOffset]::Now - $started).TotalSeconds -gt 45)
+        return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
     }
     $updatedAt = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse([string]$runtime.updatedAt, [ref]$updatedAt)) {
-        return (([DateTimeOffset]::Now - $started).TotalSeconds -gt 45)
+        return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
     }
-    return (([DateTimeOffset]::Now - $updatedAt).TotalSeconds -gt $StaleAfterSeconds)
+    if ($updatedAt -gt $script:LastWorkerHeartbeat -and $updatedAt -le [DateTimeOffset]::Now) {
+        $script:LastWorkerHeartbeat = $updatedAt
+    }
+    return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
 }
 
 $createdNew = $false
@@ -198,7 +215,9 @@ try {
     New-Item -ItemType Directory -Force -Path $commandDirectory | Out-Null
     Write-SupervisorLog -EventName 'supervisor_started' -Data @{ processId = $PID }
     while ($true) {
-        if (Test-Path -LiteralPath $restartRequestPath) {
+        $runtime = Read-JsonFile -Path $runtimeStatePath
+        $robotBusy = $null -ne $runtime -and $runtime.PSObject.Properties.Name -contains 'robot' -and $null -ne $runtime.robot -and [string]$runtime.robot.state -eq 'processing' -and -not (Test-WorkerStale)
+        if ((Test-Path -LiteralPath $restartRequestPath) -and -not $robotBusy) {
             Remove-Item -LiteralPath $restartRequestPath -Force -ErrorAction SilentlyContinue
             if ($null -ne $script:Worker) {
                 $workerId = [int]$script:Worker.Id

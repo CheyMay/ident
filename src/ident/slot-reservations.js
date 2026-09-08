@@ -177,7 +177,7 @@ export function reconcileReservations(records, timetable, now = new Date()) {
     }
 
     const expiresAt = parseDateParam(reservation.expiresAt);
-    if (record.status !== 'robot_processing' && expiresAt && expiresAt <= now) {
+    if (record.status !== 'robot_processing' && !['awaiting_review', 'awaiting_timetable'].includes(reservation.status) && expiresAt && expiresAt <= now) {
       releaseReservation(reservation, now, 'expired');
       changed = true;
     }
@@ -190,7 +190,7 @@ export function blockingReservation(record, now = new Date()) {
   if (!reservation || !BLOCKING_RESERVATION_STATUSES.has(reservation.status)) return null;
   if (RELEASED_RECORD_STATUSES.has(record.status)) return null;
   const expiresAt = parseDateParam(reservation.expiresAt);
-  if (record.status !== 'robot_processing' && expiresAt && expiresAt <= now) return null;
+  if (record.status !== 'robot_processing' && !['awaiting_review', 'awaiting_timetable'].includes(reservation.status) && expiresAt && expiresAt <= now) return null;
   const start = parseDateParam(reservation.startAt);
   const end = parseDateParam(reservation.endAt);
   if (!start || !end) return null;
