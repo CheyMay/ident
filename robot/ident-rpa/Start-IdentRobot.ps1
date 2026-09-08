@@ -426,7 +426,8 @@ function Get-UiTreeRows {
     $rootName = [string]$Roots[$rootIndex].Current.Name
     Walk $Roots[$rootIndex] 0 ([string]$rootIndex) $rootName
   }
-  return @($rows)
+  # PowerShell's array wrapper can fail on List[object]; materialize explicitly.
+  return $rows.ToArray()
 }
 
 function Export-UiTree {
@@ -438,7 +439,7 @@ function Export-UiTree {
 
   $rows = @(Get-UiTreeRows -Roots $Roots -MaxDepth $MaxDepth)
   New-Item -ItemType Directory -Path (Split-Path -Parent $OutputPath) -Force | Out-Null
-  $rows | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
+  ConvertTo-Json -InputObject @($rows) -Depth 8 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
   return @($rows)
 }
 
@@ -598,7 +599,7 @@ function Get-IdentAutomationRoots {
       $handles[$handle] = $true
     }
   }
-  return @($roots)
+  return $roots.ToArray()
 }
 
 function Find-RobotElementInIdent {
@@ -837,7 +838,7 @@ function Invoke-AutomaticCalibration {
     windowTitle = [string]$WindowInfo.process.MainWindowTitle
     controlsScanned = $rows.Count
     visibleControls = $visibleControls.Count
-    requiredSelectors = @($required)
+    requiredSelectors = $required.ToArray()
     checks = @($checks | ForEach-Object {
       [ordered]@{
         name = [string]$_.Name
