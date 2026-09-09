@@ -45,6 +45,14 @@ try {
     if ([string]$manifest.product -ne 'code9-ident-agent' -or [string]::IsNullOrWhiteSpace([string]$manifest.version)) {
         throw 'Embedded release manifest is invalid.'
     }
+    if ([version]$manifest.version -ge [version]'2.14.8') {
+        $formBinding=@($manifest.files | Where-Object { $_.source -eq 'robot-source/IdentPatientForm.ps1' -and $_.destination -eq 'robot/IdentPatientForm.ps1' })
+        if ($formBinding.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory 'robot-source/IdentPatientForm.ps1'))) {
+            throw 'Patient-form module is missing from update manifest or payload.'
+        }
+        $setup=Get-Content -LiteralPath (Join-Path $releaseDirectory 'Setup-IdentAgent.ps1') -Raw -Encoding UTF8
+        if ($setup -notmatch "'IdentPatientForm.ps1'") { throw 'Initial setup does not copy the patient-form module.' }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })

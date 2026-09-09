@@ -102,6 +102,7 @@ namespace Code9IdentRobot {
 }
 
 . (Join-Path $PSScriptRoot 'RobotSafety.ps1')
+. (Join-Path $PSScriptRoot 'IdentPatientForm.ps1')
 
 function Read-JsonFile {
   param([string]$Path)
@@ -977,7 +978,8 @@ function Invoke-AutomaticCalibration {
   $nameParts = @('patientLastNameInput', 'patientFirstNameInput', 'patientMiddleNameInput' | ForEach-Object {
     Get-CalibrationSelector -Name $_ -Rows $rows -UsedPaths @{}
   })
-  $splitNameFieldsDetected = @($nameParts | Where-Object Ok).Count -ge 2
+  $patientForm = Get-IdentPatientFormBindings -Rows $rows
+  $splitNameFieldsDetected = $patientForm.Ok -or @($nameParts | Where-Object Ok).Count -ge 2
   $required = New-Object System.Collections.Generic.List[string]
   foreach ($step in @($Config.workflow.steps)) {
     $selectorName = [string](Get-ObjectProperty $step 'selector' '')
@@ -1026,6 +1028,7 @@ function Invoke-AutomaticCalibration {
     captureBytes = (Get-Item -LiteralPath $capturePath).Length
     splitNameFieldsDetected = $splitNameFieldsDetected
     patientNameFields = @($nameParts | Where-Object Ok)
+    patientFormBindings = $patientForm
     readyForUnattendedExecution = $false
     processName = [string]$WindowInfo.process.ProcessName
     windowTitle = [string]$WindowInfo.process.MainWindowTitle
@@ -1045,6 +1048,7 @@ function Invoke-AutomaticCalibration {
 
   if ($visibleControls.Count -ge 8) {
     # Screen capture is evidence for calibration, never proof of a working workflow.
+    Write-JsonFileAtomic -Path (Join-Path $outputDirectory 'patient-form-candidate.json') -Value $patientForm
     $candidatePath = Join-Path $outputDirectory 'calibration-candidate.json'
     foreach ($name in $required) {
       $replacement = if ($resolved.Contains($name)) { $resolved[$name] } else {

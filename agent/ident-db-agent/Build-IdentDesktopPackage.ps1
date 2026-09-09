@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.14.7'
+$releaseVersion = '2.14.8'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -48,14 +48,14 @@ foreach ($file in $payloadFiles) {
 $robotSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\robot\ident-rpa'))
 Copy-Item -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') -Destination (Join-Path $releaseStagingDirectory 'robot-source\Start-IdentRobot.ps1')
 Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destination (Join-Path $releaseStagingDirectory 'robot-source\config.example.json')
-foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'Start-IdentTraining.ps1')) {
+foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1', 'Start-IdentTraining.ps1')) {
     Copy-Item -LiteralPath (Join-Path $robotSource $file) -Destination (Join-Path $releaseStagingDirectory "robot-source\$file")
 }
 
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.14.7: passive capture of independent IDENT appointment windows via bounded same-process identity validation; exact requested HWND retained, safe target-check telemetry, no foreign app capture or robot activation; clinic verification still required'
+    notes = 'Code9 IDENT Desktop 2.14.8: passive candidate discovery for compact and expanded IDENT patient forms, scoped appointment comment and exact appointment context checks; no input, saving, verified profile or queue activation'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
@@ -68,6 +68,7 @@ $releaseManifest = [ordered]@{
         @{ source = 'robot-source/Start-IdentRobot.ps1'; destination = 'robot/Start-IdentRobot.ps1' },
         @{ source = 'robot-source/RobotSafety.ps1'; destination = 'robot/RobotSafety.ps1' },
         @{ source = 'robot-source/RobotCapture.ps1'; destination = 'robot/RobotCapture.ps1' },
+        @{ source = 'robot-source/IdentPatientForm.ps1'; destination = 'robot/IdentPatientForm.ps1' },
         @{ source = 'robot-source/Start-IdentTraining.ps1'; destination = 'robot/Start-IdentTraining.ps1' }
     )
 }

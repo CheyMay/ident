@@ -6,6 +6,8 @@ Set-StrictMode -Version Latest
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $repo 'robot\ident-rpa\RobotSafety.ps1')
 . (Join-Path $repo 'robot\ident-rpa\RobotCapture.ps1')
+. (Join-Path $repo 'robot\ident-rpa\IdentPatientForm.ps1')
+. (Join-Path $PSScriptRoot 'fixtures\ident-patient-form.ps1')
 $temp = Join-Path $env:TEMP ('ident-calibration-test-' + [guid]::NewGuid().ToString('N'))
 $temp = [IO.Path]::GetFullPath($temp)
 if (-not $temp.StartsWith([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test directory.' }
@@ -87,6 +89,18 @@ try {
     $candidate = Read-JsonFile (Join-Path $temp 'calibration-candidate.json')
     Assert-True (-not $candidate.workflow.allowUnsafeExecution -and $candidate.calibration.status -ne 'verified') 'Candidate was activated.'
     Assert-True ($candidate.selectors.patientNameInput.automationId -eq '') 'Unresolved candidate retained a stale binding.'
+    $oldRows=$script:FixtureRows
+    try {
+        $script:FixtureRows=@(New-IdentPatientFormFixture -Expanded)
+        $formReportPath=Join-Path $temp 'patient-form-report.json'
+        $formConfig=Read-JsonFile $configPath
+        $formReport=Invoke-AutomaticCalibration $window $formConfig $configPath $formReportPath 'patient-form-fixture'
+        Assert-True ($formReport.patientFormBindings.Ok -and $formReport.patientFormBindings.Fields.Count -eq 6 -and $formReport.splitNameFieldsDetected) 'Form-specific discovery missing from calibration.'
+        Assert-True (-not $formReport.selectorsComplete -and -not $formReport.readyForUnattendedExecution -and -not $formReport.patientFormBindings.ReadyForInput) 'Form discovery authorized generic execution.'
+        Assert-True ((Get-FileHash $configPath).Hash -eq $before) 'Form discovery changed active profile.'
+        $formCandidate=Read-JsonFile (Join-Path $temp 'patient-form-candidate.json')
+        Assert-True ($formCandidate.Fields.commentInput.Path -eq '0/36/5/0' -and -not $formCandidate.ReadyForInput) 'Wrong candidate comment or unsafe readiness.'
+    } finally { $script:FixtureRows=$oldRows }
     $fresh = Get-FreshRobotCapture $reportPath 'fixture-run' $started
     Assert-True ($fresh.Path -eq $report.capturePath) 'Fresh output was not selected.'
     Assert-Rejected { Get-FreshRobotCapture $reportPath 'old-run' $started }
