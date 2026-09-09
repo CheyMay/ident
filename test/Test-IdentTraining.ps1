@@ -102,15 +102,32 @@ try {
     $configPath=Join-Path $temp 'fixture.json'
     @{ behavior='success' } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
     $session=New-RobotTrainingSession $temp; $sessions.Add($session)
+    $now=[DateTimeOffset]::Now
+    Assert-True (Set-RobotTrainingCaptureDelay $session $now) 'Delayed capture could not be armed.'
+    Assert-True (-not (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(7)))) 'Delayed capture fired early.'
+    Assert-True (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(8))) 'Delayed capture did not become ready.'
+    Assert-True (-not (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(9)))) 'Delayed capture fired twice.'
+    Assert-True ($session.Attempt -eq 0 -and $session.Progress.Hotkeys -eq 0) 'Countdown was reported as a scan or a hotkey.'
+    [void](Set-RobotTrainingCaptureDelay $session)
+    $session.CaptureAt=$null
+    Assert-True (-not (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(10)))) 'Cancelled countdown fired.'
+    [void](Set-RobotTrainingCaptureDelay $session)
     Assert-Rejected { Start-RobotTrainingCapture $session $fixture $configPath }
     Assert-True (Start-RobotTrainingCapture $session $fixture $configPath 101 102) 'First capture not started.'
+    Assert-True ($null -eq $session.CaptureAt) 'Direct capture left an armed countdown.'
+    Assert-True (-not (Set-RobotTrainingCaptureDelay $session)) 'Countdown armed while scanner was active.'
     Assert-True (-not (Start-RobotTrainingCapture $session $fixture $configPath 101 102)) 'Overlapping scanner started.'
     Wait-Capture $session
     Assert-True ($session.Captures.Count -eq 1 -and -not $session.LastError) ("First capture not accepted: " + $session.LastError)
     [void](Start-RobotTrainingCapture $session $fixture $configPath 101 102)
     Wait-Capture $session
     Assert-True ($session.Captures.Count -eq 2) 'Multiple stages did not accumulate.'
+    $session.StartedAt=[DateTimeOffset]::Now.AddMinutes(-16)
+    $session.Progress.State='expired'; $session.Progress.ErrorCode='wrong_window'
+    Assert-True (-not (Set-RobotTrainingCaptureDelay $session)) 'Expired session armed a new countdown.'
     $zip=Export-RobotTrainingSession $session
+    Assert-True ($session.Progress.Captured -eq 2 -and $session.Progress.State -eq 'completed' -and
+        $session.Progress.ArchiveReady -and -not $session.Progress.ErrorCode) 'Expiry lost captures or retained a stale error after export.'
     $archive=[IO.Compression.ZipFile]::OpenRead($zip)
     try {
         $names=@($archive.Entries | ForEach-Object FullName)
@@ -122,7 +139,10 @@ try {
     } finally { $archive.Dispose() }
     Assert-Rejected { Start-RobotTrainingCapture $session $fixture $configPath 101 102 }
     $expired=New-RobotTrainingSession $temp; $sessions.Add($expired)
+    [void](Set-RobotTrainingCaptureDelay $expired)
     $expired.StartedAt=[DateTimeOffset]::Now.AddMinutes(-16)
+    Assert-True (-not (Test-RobotTrainingCaptureDue $expired ([DateTimeOffset]::Now.AddSeconds(10)))) 'Countdown fired after expiry.'
+    Assert-True ($null -eq $expired.CaptureAt) 'Expiry left an armed countdown.'
     Assert-Rejected { Start-RobotTrainingCapture $expired $fixture $configPath 101 102 }
     foreach ($behavior in @('stale','fail','wrong-window','hang')) {
         @{ behavior=$behavior } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
@@ -150,6 +170,7 @@ try {
     $recovered.Dispose()
     $limited=New-RobotTrainingSession $temp; $sessions.Add($limited)
     $limited.Attempt=12
+    Assert-True (-not (Set-RobotTrainingCaptureDelay $limited)) 'Countdown bypassed the capture limit.'
     Assert-Rejected { Start-RobotTrainingCapture $limited $fixture $configPath 101 102 }
     Write-Host 'IDENT TRAINING OK: exclusive observation, no claims, explicit split names, sequential captures, private ZIP, stale/failure/timeout/owner-crash recovery.'
 }

@@ -39,35 +39,45 @@ $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 500
 $form = New-Object IdentTrainingWindow
 $form.Text = 'Code9 IDENT: показ экранов'
-$form.ClientSize = New-Object Drawing.Size(520, 346)
+$form.ClientSize = New-Object Drawing.Size(520, 416)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI', 10)
 $guide = New-Object Windows.Forms.Label
 $guide.Location = New-Object Drawing.Point(18, 16)
-$guide.Size = New-Object Drawing.Size(484, 154)
-$guide.Text = "Откройте нужный экран IDENT и нажмите Ctrl+Alt+F8.`r`n`r`nСохраните по очереди: календарь, новый прием, выбранного пациента, настройки даты и времени.`r`n`r`nРобот ничего не вводит и не сохраняет. Для показа используйте согласованные тестовые данные."
+$guide.Size = New-Object Drawing.Size(484, 130)
+$guide.Text = "Показ экранов IDENT: календарь, выделенный интервал, меню записи, новый прием, выбранный пациент.`r`n`r`nРобот ничего не вводит и не сохраняет. Для показа используйте согласованные тестовые данные."
 $form.Controls.Add($guide)
+$counter = New-Object Windows.Forms.Label
+$counter.Location = New-Object Drawing.Point(18, 150)
+$counter.Size = New-Object Drawing.Size(484, 24)
+$counter.Text = 'Снимков: 0. Осталось: 15:00.'
+$form.Controls.Add($counter)
+$delayed = New-Object Windows.Forms.Button
+$delayed.Location = New-Object Drawing.Point(18, 181)
+$delayed.Size = New-Object Drawing.Size(236, 36)
+$delayed.Text = 'Снимок через 8 секунд'
+$form.Controls.Add($delayed)
 $status = New-Object Windows.Forms.Label
-$status.Location = New-Object Drawing.Point(18, 176)
+$status.Location = New-Object Drawing.Point(18, 228)
 $status.Size = New-Object Drawing.Size(484, 64)
-$status.Text = 'Снимков: 0. Ожидание показа.'
+$status.Text = 'Ожидание показа. Ctrl+Alt+F8 в IDENT или снимок с задержкой.'
 $form.Controls.Add($status)
 $privacy = New-Object Windows.Forms.Label
-$privacy.Location = New-Object Drawing.Point(18, 240)
+$privacy.Location = New-Object Drawing.Point(18, 294)
 $privacy.Size = New-Object Drawing.Size(484, 40)
 $privacy.Font = New-Object Drawing.Font('Segoe UI', 9)
 $privacy.Text = 'Текст IDENT остается в локальном архиве. На сервер передаются только статус показа и счетчики, без данных пациентов.'
 $form.Controls.Add($privacy)
 $finish = New-Object Windows.Forms.Button
-$finish.Location = New-Object Drawing.Point(18, 292)
+$finish.Location = New-Object Drawing.Point(18, 362)
 $finish.Size = New-Object Drawing.Size(236, 36)
 $finish.Text = 'Завершить и собрать архив'
 $finish.Enabled = $false
 $form.Controls.Add($finish)
 $cancel = New-Object Windows.Forms.Button
-$cancel.Location = New-Object Drawing.Point(266, 292)
+$cancel.Location = New-Object Drawing.Point(266, 362)
 $cancel.Size = New-Object Drawing.Size(236, 36)
 $cancel.Text = 'Закрыть показ'
 $form.Controls.Add($cancel)
@@ -75,10 +85,39 @@ $script:TrainingFinished = $false
 
 function Stop-TrainingSession {
     if ($null -ne $session -and $null -ne $session.Current) { return }
+    if ($null -ne $session) { $session.CaptureAt = $null }
+    $delayed.Enabled = $false
     $timer.Stop()
     $form.ReleaseCapture()
     if ($null -ne $script:TrainingLease) { $script:TrainingLease.Dispose(); $script:TrainingLease = $null }
     $script:TrainingFinished = $true
+}
+
+function Invoke-TrainingCapture {
+    try {
+        if ($script:TrainingFinished -or $null -ne $session.Current) { return }
+        $session.CaptureAt = $null
+        $target = $form.ForegroundTarget()
+        $foregroundPid = [int]$target[1]
+        $verifiedTarget = Get-RobotCaptureTarget $config $target[0] $foregroundPid
+        if ($null -eq $verifiedTarget) {
+            $status.Text = 'Скан не начат: активное окно не распознано как IDENT. Предыдущие снимки сохранены.'
+            $session.Progress.State = 'waiting'; $session.Progress.ErrorCode = 'wrong_window'
+            [void](Write-RobotCaptureProgress $session.Progress -Force)
+            [System.Media.SystemSounds]::Exclamation.Play()
+            return
+        }
+        if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath $target[0] $foregroundPid) {
+            $status.Text = 'Сохраняется состояние IDENT. Дождитесь сигнала; затем переходите к следующему экрану.'
+            $finish.Enabled = $false
+            $delayed.Enabled = $false
+        }
+    } catch {
+        $status.Text = 'Скан не получен. Предыдущие снимки сохранены. Повторите показ нужного экрана IDENT.'
+        $session.Progress.State = 'failed'; $session.Progress.ErrorCode = 'scan_failed'
+        [void](Write-RobotCaptureProgress $session.Progress -Force)
+        [System.Media.SystemSounds]::Exclamation.Play()
+    }
 }
 
 try {
@@ -109,34 +148,32 @@ try {
     if (-not $form.RegisterCapture()) { throw 'Ctrl+Alt+F8 уже используется другой программой. Закройте предыдущий показ и повторите запуск.' }
     [void](Write-RobotCaptureProgress $session.Progress -Force)
     $form.add_CaptureRequested({
-        try {
-            if ($script:TrainingFinished -or $null -ne $session.Current) { return }
-            $session.Progress.Hotkeys = [Math]::Min(10000, $session.Progress.Hotkeys + 1)
-            $target = $form.ForegroundTarget()
-            $foregroundPid = [int]$target[1]
-            $process = Get-Process -Id $foregroundPid -ErrorAction Stop
-            if ($process.Id -eq $PID -or $process.MainWindowTitle -match 'Code9 IDENT|PowerShell|Windows Terminal' -or
-                ([string]$config.ident.processName -and $process.ProcessName -ne [string]$config.ident.processName) -or
-                ([string]$config.ident.windowTitleRegex -and $process.MainWindowTitle -notmatch [string]$config.ident.windowTitleRegex)) {
-                $status.Text = 'Перейдите в IDENT и нажмите Ctrl+Alt+F8 там.'
-                $session.Progress.State = 'waiting'; $session.Progress.ErrorCode = 'wrong_window'
-                [void](Write-RobotCaptureProgress $session.Progress -Force)
-                return
-            }
-            if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath $target[0] $foregroundPid) {
-                $status.Text = 'Сохраняется состояние IDENT. Дождитесь сигнала; затем переходите к следующему экрану.'
-                $finish.Enabled = $false
-            }
-        } catch {
-            $status.Text = $_.Exception.Message
-            $session.Progress.State = 'failed'; $session.Progress.ErrorCode = 'scan_failed'
-            [void](Write-RobotCaptureProgress $session.Progress -Force)
+        if ($script:TrainingFinished -or $null -ne $session.Current) { return }
+        $session.Progress.Hotkeys = [Math]::Min(10000, $session.Progress.Hotkeys + 1)
+        Invoke-TrainingCapture
+    })
+    $delayed.Add_Click({
+        if ($script:TrainingFinished) { return }
+        if ($null -ne $session.CaptureAt) {
+            $session.CaptureAt = $null
+            $status.Text = 'Отсчет отменен. Снимки сохранены.'
+        } elseif (Set-RobotTrainingCaptureDelay $session) {
+            $status.Text = 'Скан через 8 секунд. Перейдите в IDENT, откройте меню ПКМ и оставьте его открытым.'
         }
     })
     $timer.Add_Tick({
         try {
             $wasCapturing = $null -ne $session.Current
             Update-RobotTrainingCapture $session
+            if (Test-RobotTrainingCaptureDue $session) { Invoke-TrainingCapture }
+            $remaining = [Math]::Max(0, [int][Math]::Ceiling(900 - ([DateTimeOffset]::Now - $session.StartedAt).TotalSeconds))
+            $counter.Text = 'Снимков: {0}. Осталось: {1:00}:{2:00}.' -f $session.Captures.Count, [int][Math]::Floor($remaining / 60), ($remaining % 60)
+            $delayed.Text = if ($null -ne $session.CaptureAt) { 'Отменить отсчет' } else { 'Снимок через 8 секунд' }
+            $delayed.Enabled = -not $script:TrainingFinished -and $null -eq $session.Current -and $remaining -gt 0 -and $session.Attempt -lt 12
+            if ($null -ne $session.CaptureAt) {
+                $seconds = [Math]::Max(0, [int][Math]::Ceiling(($session.CaptureAt - [DateTimeOffset]::Now).TotalSeconds))
+                $status.Text = "Скан через $seconds сек. Оставьте нужное окно или меню IDENT открытым."
+            }
             [void](Write-RobotCaptureProgress $session.Progress)
             if ($wasCapturing -and $null -eq $session.Current) {
                 $status.Text = if ($session.LastError) { 'Скан не получен. Повторите Ctrl+Alt+F8 на нужном экране IDENT.' } else {
@@ -164,7 +201,11 @@ try {
             Stop-TrainingSession
             $status.Text = "Архив готов: $($session.Captures.Count) снимков. Робот не включен. Передайте архив специалисту."
             $finish.Text = 'Показать готовый архив'
-            Start-Process -FilePath 'explorer.exe' -WindowStyle Hidden -ArgumentList "/select,`"$($session.Archive)`""
+            try {
+                Start-Process -FilePath 'explorer.exe' -ArgumentList "/select,`"$($session.Archive)`""
+            } catch {
+                $status.Text = 'Архив сохранен, но Проводник не открылся. Исходные снимки также сохранены.'
+            }
         } catch {
             $status.Text = $_.Exception.Message
             $session.Progress.State = 'failed'; $session.Progress.ErrorCode = 'export_failed'

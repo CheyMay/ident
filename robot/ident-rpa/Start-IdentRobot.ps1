@@ -1398,7 +1398,13 @@ try {
     Start-Sleep -Seconds $StartDelaySeconds
   }
   $config = Read-JsonFile $ConfigPath
-  $windowInfo = Get-IdentWindow $config
+  $windowInfo = $null
+  if ($Mode -eq 'Observe') {
+    . (Join-Path $PSScriptRoot 'RobotCapture.ps1')
+    $windowInfo = Get-RobotCaptureTarget (Read-RobotTrainingConfiguration $ConfigPath) $ObservedWindowHandle $ObservedProcessId
+  } else {
+    $windowInfo = Get-IdentWindow $config
+  }
 
 if ($Mode -eq 'Observe') {
   if ([string]::IsNullOrWhiteSpace($ReportPath)) { throw 'Observation report path is required.' }

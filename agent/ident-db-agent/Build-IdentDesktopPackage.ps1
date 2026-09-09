@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.14.4'
+$releaseVersion = '2.14.5'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -55,7 +55,7 @@ foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'Start-IdentTraining.
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.14.4: metadata-only live training and calibration status, bounded active heartbeat, stale-window detection; no automatic UI archive upload or robot activation; supervised IDENT booking verification is still required'
+    notes = 'Code9 IDENT Desktop 2.14.5: cancellable delayed passive capture, persistent capture count and expiry countdown, same-process owner validation for observed dialogs, visible archive folder, exact surname ID recognition; no robot activation or automatic booking; clinic menu capture and supervised booking still require verification'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },

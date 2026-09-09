@@ -47,6 +47,65 @@ public sealed class IdentCaptureJob : IDisposable {
 '@
 }
 
+function Get-RobotCaptureWindowMetadata {
+    param([long]$WindowHandle)
+    if (-not ('IdentCaptureWindowMetadata' -as [type])) {
+        # https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getancestor
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public sealed class IdentCaptureWindowMetadata {
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
+    public long Handle, OwnerHandle;
+    public uint ProcessId, OwnerProcessId;
+    public bool Visible;
+    public string Title, OwnerTitle;
+    static string TitleOf(IntPtr hwnd) {
+        var text = new StringBuilder(1024);
+        GetWindowText(hwnd, text, text.Capacity);
+        return text.ToString();
+    }
+    public static IdentCaptureWindowMetadata Read(long handle) {
+        var window = new IntPtr(handle);
+        var owner = GetAncestor(window, 3);
+        var result = new IdentCaptureWindowMetadata();
+        result.Handle = handle; result.OwnerHandle = owner.ToInt64();
+        GetWindowThreadProcessId(window, out result.ProcessId);
+        GetWindowThreadProcessId(owner, out result.OwnerProcessId);
+        result.Visible = IsWindowVisible(window) && !IsIconic(window);
+        result.Title = TitleOf(window); result.OwnerTitle = TitleOf(owner);
+        return result;
+    }
+}
+'@
+    }
+    return [IdentCaptureWindowMetadata]::Read($WindowHandle)
+}
+
+function Get-RobotCaptureTarget {
+    param([object]$Config, [long]$WindowHandle, [int]$ProcessId)
+    if ($WindowHandle -eq 0 -or $ProcessId -le 0 -or $ProcessId -eq $PID) { return $null }
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    if ($process.ProcessName -match '^(powershell|pwsh|cmd|WindowsTerminal|explorer|AnyDesk)$') { return $null }
+    $processName = [string]$Config.ident.processName
+    $titleRegex = [string]$Config.ident.windowTitleRegex
+    if ((-not $processName -and -not $titleRegex) -or ($processName -and $process.ProcessName -ne $processName)) { return $null }
+    $window = Get-RobotCaptureWindowMetadata $WindowHandle
+    if ($null -eq $window -or $window.Handle -ne $WindowHandle -or
+        $window.ProcessId -ne $ProcessId -or -not $window.Visible) { return $null }
+    $ownTitleMatches = $window.Title -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and $window.Title -match $titleRegex
+    $ownerTitleMatches = $window.OwnerHandle -ne 0 -and $window.OwnerProcessId -eq $ProcessId -and
+        $window.OwnerTitle -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and $window.OwnerTitle -match $titleRegex
+    if ($titleRegex -and -not $ownTitleMatches -and -not $ownerTitleMatches) { return $null }
+    # Verify ownership only; the scanner still captures the exact requested HWND, never its owner as a fallback.
+    return [pscustomobject]@{ process = $process; handle = $WindowHandle }
+}
+
 function Get-VerifiedRobotCapture {
     param([string]$ReportPath, [string]$CaptureId, [DateTimeOffset]$StartedAfter)
     $reportFile = Get-Item -LiteralPath $ReportPath -ErrorAction Stop
@@ -191,9 +250,34 @@ function New-RobotTrainingSession {
     return [pscustomobject]@{
         Id = $sessionId; Directory = $path; StartedAt = [DateTimeOffset]::Now
         Captures = (New-Object 'System.Collections.Generic.List[object]')
-        Attempt = 0; Current = $null; Archive = ''; LastError = ''
+        Attempt = 0; Current = $null; Archive = ''; LastError = ''; CaptureAt = $null
         Progress = $progress
     }
+}
+
+function Set-RobotTrainingCaptureDelay {
+    param([object]$Session, [DateTimeOffset]$Now = [DateTimeOffset]::Now)
+    if ($null -ne $Session.Current -or $Session.Archive -or $Session.Attempt -ge 12 -or
+        $Session.Progress.State -in @('closed','completed','expired') -or
+        ($Now - $Session.StartedAt).TotalMinutes -ge 15) { return $false }
+    $Session.CaptureAt = $Now.AddSeconds(8)
+    $Session.Progress.State = 'waiting'; $Session.Progress.ErrorCode = ''
+    [void](Write-RobotCaptureProgress $Session.Progress -Force)
+    return $true
+}
+
+function Test-RobotTrainingCaptureDue {
+    param([object]$Session, [DateTimeOffset]$Now = [DateTimeOffset]::Now)
+    if ($null -eq $Session.CaptureAt) { return $false }
+    if ($null -ne $Session.Current -or $Session.Archive -or $Session.Attempt -ge 12 -or
+        $Session.Progress.State -in @('closed','completed','expired') -or
+        ($Now - $Session.StartedAt).TotalMinutes -ge 15) {
+        $Session.CaptureAt = $null
+        return $false
+    }
+    if ($Now -lt $Session.CaptureAt) { return $false }
+    $Session.CaptureAt = $null
+    return $true
 }
 
 function Start-RobotTrainingCapture {
@@ -204,6 +288,7 @@ function Start-RobotTrainingCapture {
         throw 'This observation session has ended. Finish it and start a new session.'
     }
     if ($Session.Attempt -ge 12) { throw 'Capture limit reached. Finish this session.' }
+    $Session.CaptureAt = $null
     $Session.Attempt++
     $Session.Progress.Attempt = $Session.Attempt
     $Session.Progress.State = 'scanning'; $Session.Progress.ErrorCode = ''
@@ -288,6 +373,7 @@ function Export-RobotTrainingSession {
     param([object]$Session)
     if ($null -ne $Session.Current) { throw 'Wait for the current capture to finish.' }
     if ($Session.Captures.Count -eq 0) { throw 'There are no successful captures in this session.' }
+    $Session.CaptureAt = $null
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $archivePath = Join-Path $Session.Directory 'IDENT-training.zip'
     $archive = [IO.Compression.ZipFile]::Open($archivePath, [IO.Compression.ZipArchiveMode]::Create)
@@ -331,7 +417,7 @@ function Export-RobotTrainingSession {
     }
     finally { $archive.Dispose() }
     $Session.Archive = $archivePath
-    $Session.Progress.State = 'completed'; $Session.Progress.ArchiveReady = $true
+    $Session.Progress.State = 'completed'; $Session.Progress.ArchiveReady = $true; $Session.Progress.ErrorCode = ''
     [void](Write-RobotCaptureProgress $Session.Progress -Force)
     return $archivePath
 }
