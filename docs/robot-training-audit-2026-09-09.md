@@ -108,3 +108,38 @@ Primary API references: [AutomationElement.FromPoint](https://learn.microsoft.co
 [TreeWalker.GetParent](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.treewalker.getparent).
 Unit tests do not establish live IDENT menu accessibility; a controlled menu-only
 capture on the clinic computer is still required. Autonomous booking remains unverified.
+
+## Third Supplied Archive: Menu Confirmed
+
+Received the menu-only archive produced by clinic release 2.14.6. ZIP size:
+1864 bytes. SHA256:
+`28478d02ea69cbf6e59821b7d4bb7787b2fea86f0c7b176bab82c5d5e6c90965`.
+Session `5f9d6a17e40f43dca2695d908cfd4532`; capture time
+`2026-09-09T20:14:20.4077136+03:00`, export time
+`2026-09-09T20:14:53.9115344+03:00`. Verified the three-file allowlist,
+IDs, SHA256 values, byte counts and row count. No files were executed or extracted.
+
+The captured root is ControlType.Menu / ContextMenu. The 18 rows contain six
+MenuItems, three Separators and eight Text nodes. Summary observedSurface=menu
+and menuItemsScanned=6 agree with the actual tree. This is now positive evidence
+of live popup accessibility, not another calendar-only capture.
+
+- New appointment: enabled, visible MenuItem with InvokePattern.
+- Split interval: enabled, visible MenuItem with InvokePattern; operator confirmed
+  it immediately changes the interval. Do not invoke it just to collect evidence.
+- Add reserve and make nonworking: enabled MenuItems with InvokePattern; neither
+  is a safe substitute for opening a new appointment.
+- Change doctor: ExpandCollapsePattern, not InvokePattern.
+- Command text also appears in TextBlock descendants. Match MenuItem, not the
+  duplicate label. These entries have no AutomationId.
+
+Ran the existing Get-CalibrationSelector(newAppointmentButton) locally against
+this exact tree. It resolved the actual first new-appointment MenuItem, not a
+TextBlock or adjacent command. No profile was uploaded or activated. No menu
+command was invoked. The manifest records actionsExecuted=0 and profileActivated=false.
+
+Remaining transition evidence: the new-appointment form opened from the intended
+selected interval, with matching doctor/date/start/end in its title. Do not
+repeat splitting or save a patient for this check. Existing patient-form captures
+remain available; a menu binding alone does not implement calendar selection,
+patient identity validation, or verified unattended booking.
