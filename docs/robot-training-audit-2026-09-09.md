@@ -172,3 +172,27 @@ targetCheck=accepted_sibling. The operator also confirmed capture saved.
 This verifies the new identity path and capture completion on the clinic PC;
 the new archive is still required to inspect its actual form and interval.
 The previously verified menu archive and four patient-form captures are retained.
+
+## Fourth Supplied Archive: Independent Form Confirmed
+
+ZIP SHA256 `0c66154f61c647f27382637cea265061b30285d31c17232913e4d06cd393acd7`,
+2755 bytes, three allowlisted entries. Session bf92247c6c3b45b1a4c8d3714e7037e7;
+capture 7ff12ba8f6a9465790ba07c11319183f at 20:44:41 +03:00, exported
+20:45:11 +03:00. Verified session/summary IDs, tree SHA256, byte count and row
+count without executing or extracting entries. There are 37 visible controls;
+the root is the independent WPF Window, not the main calendar or training UI.
+
+The exact appointment title matches the supplied screenshot: the intended
+doctor, 2026-09-20, 09:00-09:45 (45 minutes). The separate
+_receptionTimeTextBlock agrees with the title and has no ValuePattern. This
+supports the operator's observation that the interval is chosen in the calendar.
+It proves the displayed result of the manual selection, not automated dragging
+or splitting. _surnameTextBox and MaskedTextBox (birth date) have ValuePattern.
+The save-patient Button has InvokePattern but is disabled in this empty form.
+
+Manifest actionsExecuted=0 and profileActivated=false. The Observe summary
+reports selectorsComplete=false and readyForUnattendedExecution=false: observation
+does not calibrate or activate a booking profile. No additional repeat of this
+empty form is needed. Remaining work is reliable calendar control, verified
+patient lookup/selection and clarification of the new-patient creation command,
+then one supervised end-to-end booking before any unattended queue activation.
