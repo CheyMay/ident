@@ -11,6 +11,7 @@ if (-not (Test-Path -LiteralPath $robotSafetyPath)) {
     $robotSafetyPath = Join-Path $PSScriptRoot '..\..\robot\ident-rpa\RobotSafety.ps1'
 }
 . $robotSafetyPath
+. (Join-Path (Split-Path -Parent $robotSafetyPath) 'RobotCapture.ps1')
 
 if (-not ('Code9IdentAgent.NativeInput' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -313,11 +314,14 @@ function Invoke-PowerShellChildProcess {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $processInfo
     $started = $false
+    Initialize-RobotCaptureJob
+    $childJob = New-Object IdentCaptureJob
     try {
         if (-not $process.Start()) {
             throw "$Label could not be started."
         }
         $started = $true
+        $childJob.Attach($process)
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
@@ -333,21 +337,13 @@ function Invoke-PowerShellChildProcess {
             }
         }
         if (-not $process.HasExited) {
-            try {
-                $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-                [void](Start-Process `
-                    -FilePath $taskkill `
-                    -ArgumentList @('/PID', [string]$process.Id, '/T', '/F') `
-                    -WindowStyle Hidden `
-                    -Wait `
-                    -PassThru)
-            }
-            catch {
-                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-            }
+            $childJob.Dispose()
+            [void]$process.WaitForExit(1500)
             throw "$Label exceeded $TimeoutSeconds seconds and was stopped."
         }
         $process.WaitForExit()
+        # A descendant must not hold output pipes open after the main child exits.
+        $childJob.Dispose()
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         $stderr = $stderrTask.GetAwaiter().GetResult()
         return [pscustomobject]@{
@@ -356,6 +352,7 @@ function Invoke-PowerShellChildProcess {
         }
     }
     finally {
+        $childJob.Dispose()
         if ($started -and -not $process.HasExited) {
             # Telemetry or file I/O failures must not leave a child editing IDENT unattended.
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

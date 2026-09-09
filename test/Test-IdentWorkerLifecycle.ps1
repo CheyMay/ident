@@ -37,6 +37,7 @@ try {
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $tempRoot 'robot') | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\robot\ident-rpa\RobotSafety.ps1') -Destination (Join-Path $tempRoot 'robot\RobotSafety.ps1')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\robot\ident-rpa\RobotCapture.ps1') -Destination (Join-Path $tempRoot 'robot\RobotCapture.ps1')
     New-Item -ItemType Directory -Force -Path (Join-Path $tempRoot 'commands') | Out-Null
 
     $fakeRobot = @'

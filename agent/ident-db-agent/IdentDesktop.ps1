@@ -345,9 +345,16 @@ $trainingButton.Add_Click({
         if ($robotCheck.Checked -or ($null -ne $state -and [bool]$state.robot.enabled)) { throw 'Сначала выключите робота.' }
         $path = Join-Path $script:BaseDirectory 'robot\Start-IdentTraining.ps1'
         if (-not (Test-Path -LiteralPath $path)) { throw 'Дождитесь завершения обновления агента.' }
+        try { $null = Read-RobotTrainingConfiguration $script:RobotConfigPath }
+        catch { throw 'Показ не запущен: профиль робота отсутствует или поврежден. Нужна проверка специалиста.' }
         if ($null -ne $script:TrainingProcess) { $script:TrainingProcess.Dispose() }
-        $script:TrainingProcess = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList (
+        $launchId = [guid]::NewGuid().ToString('N')
+        $outputPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) "training-$launchId-output.log"
+        $errorPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) "training-$launchId-error.log"
+        $script:TrainingProcess = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -ArgumentList (
             "-NoProfile -STA -ExecutionPolicy Bypass -File `"$path`" -ConfigPath `"$script:RobotConfigPath`"")
+        $null = $script:TrainingProcess.Handle
         $script:UiError = ''
     } catch { $script:UiError = $_.Exception.Message }
 })
@@ -516,6 +523,17 @@ function Update-RobotCalibration {
         $robotGuideLabel.Text = ('Свежий скан: {0} элементов, {1}. Профиль не активирован.' -f $capture.Report.controlsScanned, ([DateTimeOffset]::Parse($capture.Report.generatedAt).ToLocalTime().ToString('HH:mm:ss')))
         $script:UiError = ''
     }
+}
+
+function Update-RobotTrainingProcess {
+    if ($null -eq $script:TrainingProcess -or -not $script:TrainingProcess.HasExited) { return }
+    try {
+        [void]$script:TrainingProcess.WaitForExit(0)
+        if ($null -eq $script:TrainingProcess.ExitCode -or $script:TrainingProcess.ExitCode -ne 0) {
+            $script:UiError = 'Показ завершился с ошибкой. Журнал training сохранен в папке робота. Можно повторить запуск.'
+        }
+    }
+    finally { $script:TrainingProcess.Dispose(); $script:TrainingProcess = $null }
 }
 
 function Refresh-Status {
@@ -737,6 +755,7 @@ $timer.Interval = 3000
 $timer.Add_Tick({
     try {
         Update-AgentSettings
+        Update-RobotTrainingProcess
         Refresh-Status
         Update-RobotCalibration
     }

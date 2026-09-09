@@ -59,6 +59,24 @@ try {
         'Get-ObjectProperty','Assert-BookingContract','Resolve-TaskValue','Resolve-StepValue','Convert-PatientBirthDate'
     )
     $config=Get-Content (Join-Path $repo 'robot\ident-rpa\config.example.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $trainingConfigPath=Join-Path $temp 'training-config.json'
+    $config | ConvertTo-Json -Depth 20 | Set-Content $trainingConfigPath -Encoding UTF8
+    [void](Read-RobotTrainingConfiguration $trainingConfigPath)
+    Assert-Rejected { Read-RobotTrainingConfiguration (Join-Path $temp 'not-found.json') }
+    foreach ($invalid in @('{}','{broken', '{"ident":{"processName":"","windowTitleRegex":""}}', '{"ident":{"windowTitleRegex":"["}}')) {
+        $invalid | Set-Content $trainingConfigPath -Encoding UTF8
+        Assert-Rejected { Read-RobotTrainingConfiguration $trainingConfigPath }
+    }
+    Import-Functions (Join-Path $repo 'agent\ident-db-agent\IdentDesktop.ps1') @('Update-RobotTrainingProcess')
+    foreach ($code in @(0,1)) {
+        $fake=[pscustomobject]@{HasExited=$true;ExitCode=$code;Disposed=$false}
+        $fake | Add-Member ScriptMethod WaitForExit { param($timeout) return $true }
+        $fake | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+        $script:TrainingProcess=$fake; $script:UiError=''
+        Update-RobotTrainingProcess
+        Assert-True ($fake.Disposed -and $null -eq $script:TrainingProcess) 'Exited training process was retained.'
+        Assert-True (([bool]$script:UiError) -eq ($code -ne 0)) 'Training exit status was hidden or misreported.'
+    }
     $split=New-SplitNameCandidate $config @()
     $task=[pscustomobject]@{ ticket=[pscustomobject]@{
         ClientSurname='Test'; ClientName='Patient'; ClientPatronymic=''; ClientPhone='+79990000000'; DoctorName='Fixture'

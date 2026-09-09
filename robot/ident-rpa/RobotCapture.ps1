@@ -79,6 +79,29 @@ function Get-VerifiedRobotCapture {
     return [pscustomobject]@{ Path = $path; Report = $report }
 }
 
+function Read-RobotTrainingConfiguration {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'ROBOT_TRAINING_CONFIG_MISSING' }
+    try {
+        if ((Get-Item -LiteralPath $Path).Length -gt 1MB) { throw 'Profile size limit.' }
+        $config = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -eq $config -or $null -eq $config.ident) { throw 'IDENT target missing.' }
+        foreach ($field in @('processName', 'windowTitleRegex')) {
+            if ($config.ident.PSObject.Properties.Name -notcontains $field) {
+                $config.ident | Add-Member -NotePropertyName $field -NotePropertyValue ''
+            }
+            if ($config.ident.$field -isnot [string]) { throw 'Target must be a string.' }
+        }
+        if ([string]::IsNullOrWhiteSpace($config.ident.processName) -and [string]::IsNullOrWhiteSpace($config.ident.windowTitleRegex)) {
+            throw 'Unrestricted desktop capture is not allowed.'
+        }
+        if ($config.ident.windowTitleRegex) { $null = [regex]::new($config.ident.windowTitleRegex) }
+        if ($null -eq $config.workflow -or $null -eq $config.selectors -or $null -eq $config.workflow.steps) { throw 'Incomplete profile.' }
+        return $config
+    }
+    catch { throw 'ROBOT_TRAINING_CONFIG_INVALID' }
+}
+
 function New-RobotTrainingSession {
     param([string]$Directory)
     $sessionId = [guid]::NewGuid().ToString('N')

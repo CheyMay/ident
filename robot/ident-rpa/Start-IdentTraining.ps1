@@ -28,7 +28,7 @@ public class IdentTrainingWindow : Form {
 [Windows.Forms.Application]::EnableVisualStyles()
 $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
 $directory = Split-Path -Parent $ConfigPath
-$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$config = $null
 $lease = $null
 $session = $null
 $timer = New-Object Windows.Forms.Timer
@@ -78,6 +78,7 @@ function Stop-TrainingSession {
 }
 
 try {
+    $config = Read-RobotTrainingConfiguration $ConfigPath
     if ($PreviewPath) {
         $form.Opacity = 0
         $form.ShowInTaskbar = $false
@@ -156,7 +157,15 @@ try {
     $timer.Start()
     [Windows.Forms.Application]::Run($form)
 }
-catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Показ не запущен', 'OK', 'Warning') }
+catch {
+    $message = switch -Exact ($_.Exception.Message) {
+        'ROBOT_TRAINING_CONFIG_MISSING' { 'Не найден профиль робота. Дождитесь завершения обновления агента и повторите показ.' }
+        'ROBOT_TRAINING_CONFIG_INVALID' { 'Профиль робота поврежден или неполон. Показ не запущен; передайте ошибку специалисту.' }
+        default { $_.Exception.Message }
+    }
+    [void][Windows.Forms.MessageBox]::Show($message, 'Показ не запущен', 'OK', 'Warning')
+    exit 1
+}
 finally {
     $timer.Stop()
     $timer.Dispose()

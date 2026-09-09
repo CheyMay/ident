@@ -62,6 +62,14 @@ namespace Code9IdentRobot {
     [DllImport("user32.dll")]
     private static extern bool SwitchDesktop(IntPtr desktop);
 
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    public static int ForegroundProcessId() {
+      uint processId;
+      GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+      return (int)processId;
+    }
+
     public static int IdleSeconds() {
       var input = new LASTINPUTINFO();
       input.cbSize = (uint)Marshal.SizeOf(input);
@@ -221,14 +229,15 @@ function Save-FailureScreenshot {
   )
 
   try {
+    if ($null -eq $WindowInfo -or $null -eq $WindowInfo.element -or
+        $WindowInfo.element.Current.IsOffscreen -or
+        [Code9IdentRobot.NativeInput]::ForegroundProcessId() -ne [int]$WindowInfo.process.Id) {
+      return ''
+    }
     $logDir = if ($Config.logDir) { [string]$Config.logDir } else { Join-Path $PSScriptRoot 'logs' }
     $directory = Join-Path $logDir 'screenshots'
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $bounds = if ($null -ne $WindowInfo -and $null -ne $WindowInfo.element) {
-      $WindowInfo.element.Current.BoundingRectangle
-    } else {
-      [System.Windows.Forms.SystemInformation]::VirtualScreen
-    }
+    $bounds = $WindowInfo.element.Current.BoundingRectangle
     if (
       $bounds.IsEmpty -or $bounds.Width -lt 2 -or $bounds.Height -lt 2 -or
       [double]::IsNaN([double]$bounds.X) -or [double]::IsInfinity([double]$bounds.X)
@@ -1428,7 +1437,10 @@ if (-not $windowInfo) {
 }
 catch {
   if ($null -ne $config) {
-    $screenshot = Save-FailureScreenshot -Config $config -WindowInfo $windowInfo -Prefix $(if ($script:SaveInvoked) { 'ambiguous-after-save' } else { 'robot-error' })
+    $screenshot = ''
+    if ($Execute -and $Mode -in @('RunOnce', 'Loop')) {
+      $screenshot = Save-FailureScreenshot -Config $config -WindowInfo $windowInfo -Prefix $(if ($script:SaveInvoked) { 'ambiguous-after-save' } else { 'robot-error' })
+    }
     Write-RobotLog $config 'error' $_.Exception.Message @{
       taskId = $script:CurrentTaskId
       saveInvoked = $script:SaveInvoked
