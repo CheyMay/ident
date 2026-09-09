@@ -9,6 +9,12 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+foreach ($existingFile in @('config.local.json', 'secrets.local.json')) {
+    if (Test-Path -LiteralPath (Join-Path $InstallDirectory $existingFile)) {
+        throw 'IDENT_ALREADY_INSTALLED: Initial setup cannot overwrite an existing installation. Use the Code9 administrator update workflow; existing settings have not been changed.'
+    }
+}
+
 function Read-WithDefault {
     param(
         [string]$Prompt,

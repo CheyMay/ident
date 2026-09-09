@@ -96,6 +96,7 @@ try {
     Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentSupervisor.ps1') @('Write-SupervisorState', 'Write-SupervisorLog', 'Invoke-LogRotation', 'Read-JsonFile')
     $script:Worker = $null; $script:StartedAt = (Get-Date).ToString('o'); $script:LastRestartAt = $null
     $script:RestartCount = 1; $script:LastError = ''
+    $script:SupervisorCodeHash = 'fixture-hash'
     $supervisorStatePath = Join-Path $temp 'state.json'; $logPath = Join-Path $temp 'log.json'
     Write-SupervisorState 'running'
     $lock = [IO.File]::Open($supervisorStatePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)

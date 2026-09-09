@@ -22,7 +22,7 @@ if (
 
 $workerArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$supervisorPath`" -ConfigPath `"$configPath`" -WorkerScriptPath `"$workerPath`""
 $workerAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $workerArguments
-$desktopArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$desktopPath`" -ConfigPath `"$configPath`" -StartMinimized"
+$desktopArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$desktopPath`" -ConfigPath `"$configPath`" -StartMinimized"
 $desktopAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $desktopArguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
 $principal = New-ScheduledTaskPrincipal `

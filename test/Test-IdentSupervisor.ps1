@@ -7,12 +7,16 @@ Set-StrictMode -Version 2.0
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $supervisorSource = Join-Path $repositoryRoot 'agent\ident-db-agent\IdentSupervisor.ps1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ident-supervisor-' + [Guid]::NewGuid().ToString('N'))
+$testRoot = [IO.Path]::GetFullPath($testRoot)
+if (-not $testRoot.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test directory.' }
 $supervisorProcess = $null
 
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $testRoot 'commands') | Out-Null
     Copy-Item -LiteralPath $supervisorSource -Destination (Join-Path $testRoot 'IdentSupervisor.ps1')
+    New-Item -ItemType Directory -Force -Path (Join-Path $testRoot 'robot') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'robot\ident-rpa\RobotCapture.ps1') -Destination (Join-Path $testRoot 'robot')
     Set-Content -LiteralPath (Join-Path $testRoot 'config.local.json') -Value '{}' -Encoding UTF8
 
     $fakeWorker = @'
@@ -66,6 +70,7 @@ while ($true) {
     if ([int]$supervisorState.restartCount -lt 2 -or [string]$supervisorState.state -ne 'running') {
         throw 'Supervisor state does not report a recovered worker.'
     }
+    if ($supervisorState.codeSha256 -ne (Get-FileHash -LiteralPath $supervisorSource).Hash) { throw 'Loaded supervisor code was not identified.' }
     Write-Host 'IDENT supervisor recovery check OK' -ForegroundColor Green
 }
 finally {

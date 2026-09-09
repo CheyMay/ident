@@ -450,9 +450,20 @@ function Get-AutostartSummary {
     }
     catch {}
     $startupDirectory = [Environment]::GetFolderPath('Startup')
+    $supervisorHash = ''
+    $supervisorStartedAt = ''
+    try {
+        $supervisor = Read-JsonFile -Path (Join-Path $script:Context.BaseDirectory 'supervisor-state.json')
+        if ($null -ne $supervisor -and $supervisor.PSObject.Properties.Name -contains 'codeSha256') {
+            $supervisorHash = [string]$supervisor.codeSha256
+            $supervisorStartedAt = [string]$supervisor.startedAt
+        }
+    } catch {}
     return [ordered]@{
         workerTask = $workerTask
         desktopTask = $desktopTask
+        supervisorCodeSha256 = $supervisorHash
+        supervisorStartedAt = $supervisorStartedAt
         workerShortcut = Test-Path -LiteralPath (Join-Path $startupDirectory 'Code9 IDENT Agent.lnk')
         desktopShortcut = Test-Path -LiteralPath (Join-Path $startupDirectory 'Code9 IDENT Agent Status.lnk')
     }

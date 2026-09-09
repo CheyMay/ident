@@ -47,9 +47,17 @@ function Resume-AgentTask {
             -WorkerTaskName $WorkerTaskName
         return
     }
-    if ([string]$workerTask.State -ne 'Running') {
-        Start-ScheduledTask -TaskName $WorkerTaskName
+    if ([string]$workerTask.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $WorkerTaskName -ErrorAction Stop
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            $workerTask = Get-ScheduledTask -TaskName $WorkerTaskName -ErrorAction Stop
+            if ([string]$workerTask.State -ne 'Running') { break }
+            if ((Get-Date) -ge $deadline) { throw 'Supervisor task did not stop for reload.' }
+            Start-Sleep -Milliseconds 250
+        } while ($true)
     }
+    Start-ScheduledTask -TaskName $WorkerTaskName -ErrorAction Stop
 }
 
 function Resolve-SafeChildPath {
@@ -193,9 +201,10 @@ try {
     $temporaryConfig = "$configPath.update-$PID"
     $updatedConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporaryConfig -Encoding UTF8
     Move-Item -LiteralPath $temporaryConfig -Destination $configPath -Force
-    Write-UpdateStatus -Status 'succeeded' -Message 'Update installed successfully.' -CurrentVersion $ExpectedVersion
-
+    # Keep supervision paused until the new supervisor is loaded; otherwise it can
+    # start a booking between publishing success and stopping the old task.
     Resume-AgentTask
+    Write-UpdateStatus -Status 'succeeded' -Message 'Update installed successfully.' -CurrentVersion $ExpectedVersion
 }
 catch {
     $failure = $_.Exception.Message

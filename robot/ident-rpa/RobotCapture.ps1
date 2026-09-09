@@ -26,11 +26,15 @@ public sealed class IdentCaptureJob : IDisposable {
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(SafeFileHandle job, int type, ref ExtendedLimits info, uint size);
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
     readonly SafeFileHandle handle;
-    public IdentCaptureJob() {
+    public IdentCaptureJob() : this(false) {}
+    public IdentCaptureJob(bool independentChildren) {
         handle = CreateJobObject(IntPtr.Zero, null);
         if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
         var limits = new ExtendedLimits();
         limits.Basic.Flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        // Supervisor owns the worker, while the worker owns execution jobs.
+        // The separately launched updater must survive the worker's exit.
+        if (independentChildren) limits.Basic.Flags |= 0x1000; // JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
         if (!SetInformationJobObject(handle, 9, ref limits, (uint)Marshal.SizeOf(limits))) {
             int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new Win32Exception(error);
         }

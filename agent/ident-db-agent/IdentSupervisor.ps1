@@ -8,6 +8,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+$captureHelpers = Join-Path $PSScriptRoot 'robot\RobotCapture.ps1'
+if (-not (Test-Path -LiteralPath $captureHelpers)) {
+    $captureHelpers = Join-Path $PSScriptRoot '..\..\robot\ident-rpa\RobotCapture.ps1'
+}
+. $captureHelpers
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'config.local.json'
@@ -26,10 +31,12 @@ $commandDirectory = Join-Path $baseDirectory 'commands'
 $restartRequestPath = Join-Path $commandDirectory 'restart-worker'
 $logPath = Join-Path $baseDirectory 'logs\supervisor.log'
 $script:Worker = $null
+$script:WorkerJob = $null
 $script:RestartCount = 0
 $script:LastRestartAt = $null
 $script:LastError = ''
 $script:StartedAt = (Get-Date).ToString('o')
+$script:SupervisorCodeHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
 $script:LastWorkerHeartbeat = [DateTimeOffset]::MinValue
 
 function Read-JsonFile {
@@ -103,6 +110,7 @@ function Write-SupervisorState {
         processId = $PID
         workerProcessId = $workerId
         startedAt = $script:StartedAt
+        codeSha256 = $script:SupervisorCodeHash
         lastRestartAt = $script:LastRestartAt
         restartCount = $script:RestartCount
         lastError = $script:LastError
@@ -139,6 +147,11 @@ function Stop-WorkerTree {
     if ($ProcessId -le 0) {
         return
     }
+    if ($null -ne $script:WorkerJob -and $null -ne $script:Worker -and $script:Worker.Id -eq $ProcessId) {
+        $script:WorkerJob.Dispose()
+        $script:WorkerJob = $null
+        return
+    }
     try {
         $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId)
         $pending = New-Object Collections.Generic.Queue[int]
@@ -167,11 +180,18 @@ function Start-Worker {
         throw "Worker script not found: $WorkerScriptPath"
     }
     $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$WorkerScriptPath`" -ConfigPath `"$ConfigPath`""
+    Initialize-RobotCaptureJob
+    $script:WorkerJob = New-Object IdentCaptureJob($true)
     $script:Worker = Start-Process `
         -FilePath 'powershell.exe' `
         -ArgumentList $arguments `
         -WindowStyle Hidden `
         -PassThru
+    try { $script:WorkerJob.Attach($script:Worker) }
+    catch {
+        if (-not $script:Worker.HasExited) { $script:Worker.Kill() }
+        throw
+    }
     $script:RestartCount++
     $script:LastRestartAt = (Get-Date).ToString('o')
     $script:LastWorkerHeartbeat = [DateTimeOffset]::Now
@@ -236,6 +256,7 @@ try {
                 try { $exitCode = $script:Worker.ExitCode } catch {}
                 $script:LastError = "Worker exited with code $exitCode."
                 Write-SupervisorLog -EventName 'worker_exited' -Data @{ exitCode = $exitCode }
+                if ($null -ne $script:WorkerJob) { $script:WorkerJob.Dispose(); $script:WorkerJob = $null }
                 $script:Worker.Dispose()
                 $script:Worker = $null
             }
@@ -281,6 +302,7 @@ finally {
         catch {}
         $script:Worker.Dispose()
     }
+    if ($null -ne $script:WorkerJob) { $script:WorkerJob.Dispose(); $script:WorkerJob = $null }
     $mutex.ReleaseMutex()
     $mutex.Dispose()
 }
