@@ -34,7 +34,8 @@ try {
         'Get-CalibrationDefinitions', 'Get-CalibrationSelector', 'Invoke-AutomaticCalibration',
         'Assert-BookingContract', 'Resolve-TaskValue', 'Convert-PatientBirthDate', 'Select-CalibrationRoots'
     )
-    Import-Functions (Join-Path $repo 'agent\ident-db-agent\IdentDesktop.ps1') @('Read-JsonFile', 'Get-FreshRobotCapture', 'Update-RobotCalibration')
+    Import-Functions (Join-Path $repo 'agent\ident-db-agent\IdentDesktop.ps1') @('Read-JsonFile', 'Get-FreshRobotCapture', 'Update-RobotCalibration', 'Update-CalibrationLiveStatus')
+    $script:CalibrationProgress = $null
     $calendar = [pscustomobject]@{ Current = [pscustomobject]@{ Name='IDENT calendar'; IsOffscreen=$false } }
     $dialog = [pscustomobject]@{ Current = [pscustomobject]@{ Name='New appointment - fixture'; IsOffscreen=$false } }
     $chosen = @(Select-CalibrationRoots @($calendar, $dialog))

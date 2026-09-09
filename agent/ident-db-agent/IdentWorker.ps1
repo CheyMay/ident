@@ -12,6 +12,7 @@ if (-not (Test-Path -LiteralPath $robotSafetyPath)) {
 }
 . $robotSafetyPath
 . (Join-Path (Split-Path -Parent $robotSafetyPath) 'RobotCapture.ps1')
+$script:LastHeartbeatAttempt = [DateTimeOffset]::MinValue
 
 if (-not ('Code9IdentAgent.NativeInput' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -330,7 +331,7 @@ function Invoke-PowerShellChildProcess {
             if ($null -ne $script:State -and $null -ne $script:Context) {
                 Write-RuntimeState
                 $now = Get-Date
-                if ($now -ge $nextHeartbeatAt) {
+                if ($now -ge $nextHeartbeatAt -or (Test-LiveCaptureHeartbeatDue)) {
                     Send-Heartbeat -HeartbeatOnly
                     $nextHeartbeatAt = $now.AddSeconds(25)
                 }
@@ -1215,9 +1216,34 @@ function Apply-DesiredState {
     }
 }
 
+function Get-LiveCaptureTelemetry {
+    $telemetry = [ordered]@{}
+    try {
+        $directory = Split-Path -Parent $script:Context.RobotConfigPath
+        foreach ($kind in @('training','calibration')) {
+            $progress = Read-RobotCaptureProgress $directory $kind
+            foreach ($entry in $progress.GetEnumerator()) { $telemetry[$kind + $entry.Key] = $entry.Value }
+        }
+    }
+    catch {
+        $telemetry['trainingState'] = 'unavailable'; $telemetry['calibrationState'] = 'unavailable'
+        $telemetry['trainingActive'] = $false; $telemetry['trainingRecent'] = $false
+        $telemetry['calibrationActive'] = $false; $telemetry['calibrationRecent'] = $false
+    }
+    return $telemetry
+}
+
+function Test-LiveCaptureHeartbeatDue {
+    if (([DateTimeOffset]::Now - $script:LastHeartbeatAttempt).TotalSeconds -lt 5) { return $false }
+    $telemetry = Get-LiveCaptureTelemetry
+    return $telemetry.trainingActive -or $telemetry.trainingRecent -or $telemetry.calibrationActive -or $telemetry.calibrationRecent
+}
+
 function Send-Heartbeat {
     param([switch]$HeartbeatOnly)
 
+    $script:LastHeartbeatAttempt = [DateTimeOffset]::Now
+    foreach ($entry in (Get-LiveCaptureTelemetry).GetEnumerator()) { $script:State.diagnostics[$entry.Key] = $entry.Value }
     $payload = [ordered]@{
         agentId = [string]$script:Context.Config.agent.id
         deviceName = $env:COMPUTERNAME
@@ -1916,7 +1942,7 @@ try {
             $refreshSchema = $true
         }
 
-        if ($now -ge $nextHeartbeat) {
+        if ($now -ge $nextHeartbeat -or (Test-LiveCaptureHeartbeatDue)) {
             Send-Heartbeat
             $nextHeartbeat = (Get-Date).AddSeconds([Math]::Max(30, [int]$script:Context.Config.intervals.heartbeatSeconds))
             if ($script:StopRequested) {

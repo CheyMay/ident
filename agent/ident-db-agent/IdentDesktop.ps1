@@ -229,6 +229,7 @@ $script:CalibrationJob = $null
 $script:CalibrationStage = 'idle'
 $script:CalibrationStartedAt = [DateTimeOffset]::MinValue
 $script:CalibrationCaptureId = ''
+$script:CalibrationProgress = $null
 $script:LastCapturePath = ''
 $script:CalibrationErrorPath = ''
 $script:Refreshing = $false
@@ -425,6 +426,9 @@ function Start-RobotCalibration {
         return
     }
     $script:CalibrationCaptureId = [guid]::NewGuid().ToString('N')
+    $script:CalibrationProgress = New-RobotCaptureProgress (Split-Path -Parent $script:RobotConfigPath) 'calibration'
+    $script:CalibrationProgress.Id = $script:CalibrationCaptureId
+    $script:CalibrationProgress.Attempt = 1
     $script:LastCapturePath = ''
     $inspectButton.Enabled = $false
     try {
@@ -460,6 +464,7 @@ function Start-RobotCalibration {
         $robotGuideLabel.Text = 'Через 8 секунд начнется скан. Вернитесь в нужное окно IDENT. Запись не сохраняется.'
         $errorLabel.Text = ''
         $script:UiError = ''
+        Update-CalibrationLiveStatus
     }
     catch {
         if ($null -ne $script:CalibrationJob) { $script:CalibrationJob.Dispose(); $script:CalibrationJob = $null }
@@ -472,10 +477,27 @@ function Start-RobotCalibration {
         $calibrateButton.Text = 'Повторить проверку IDENT'
         $script:UiError = $_.Exception.Message
         $errorLabel.Text = $script:UiError
+        Update-CalibrationLiveStatus
     }
 }
 
+function Update-CalibrationLiveStatus {
+    $variable = Get-Variable -Name CalibrationProgress -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $variable -or $null -eq $variable.Value) { return }
+    $progress = $variable.Value
+    $previous = "$($progress.State)|$($progress.Captured)|$($progress.ErrorCode)"
+    switch ($script:CalibrationStage) {
+        'scanning' { $progress.State = 'scanning' }
+        'failed' { $progress.State = 'failed'; $progress.ErrorCode = 'scan_failed' }
+        'ready' { $progress.State = 'completed'; $progress.Captured = 1; $progress.ErrorCode = '' }
+        default { return }
+    }
+    if ($progress.State -in @('completed','failed') -and $previous -eq "$($progress.State)|$($progress.Captured)|$($progress.ErrorCode)") { return }
+    [void](Write-RobotCaptureProgress $progress -Force)
+}
+
 function Update-RobotCalibration {
+    Update-CalibrationLiveStatus
     if ($script:CalibrationStage -eq 'scanning') {
         if ($null -eq $script:CalibrationProcess -or -not $script:CalibrationProcess.HasExited) {
             if (([DateTimeOffset]::Now - $script:CalibrationStartedAt).TotalSeconds -gt 60) {
@@ -489,6 +511,7 @@ function Update-RobotCalibration {
                 $calibrateButton.Enabled = $true
                 $calibrateButton.Text = 'Повторить проверку IDENT'
                 $script:UiError = 'IDENT не ответил за минуту. Агент продолжает работать. Разверните IDENT и повторите проверку.'
+                Update-CalibrationLiveStatus
             }
             return
         }
@@ -513,6 +536,7 @@ function Update-RobotCalibration {
             $robotGuideLabel.Text = 'Свежий скан не получен. Робот остается выключен. Ошибка сохранена в папке robot.'
             $script:UiError = $_.Exception.Message
             $errorLabel.Text = $script:UiError
+            Update-CalibrationLiveStatus
             return
         }
         $script:CalibrationStage = 'ready'
@@ -522,6 +546,8 @@ function Update-RobotCalibration {
         $calibrateButton.Text = 'Проверить другое окно IDENT'
         $robotGuideLabel.Text = ('Свежий скан: {0} элементов, {1}. Профиль не активирован.' -f $capture.Report.controlsScanned, ([DateTimeOffset]::Parse($capture.Report.generatedAt).ToLocalTime().ToString('HH:mm:ss')))
         $script:UiError = ''
+        if ($null -ne $script:CalibrationProgress) { $script:CalibrationProgress.Controls = [int]$capture.Report.controlsScanned }
+        Update-CalibrationLiveStatus
     }
 }
 

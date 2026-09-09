@@ -106,15 +106,93 @@ function Read-RobotTrainingConfiguration {
     catch { throw 'ROBOT_TRAINING_CONFIG_INVALID' }
 }
 
+function New-RobotCaptureProgress {
+    param([string]$Directory, [ValidateSet('training','calibration')][string]$Kind)
+    return [pscustomobject]@{
+        Directory = [IO.Path]::GetFullPath($Directory); Kind = $Kind; Id = [guid]::NewGuid().ToString('N')
+        State = 'waiting'; Captured = 0; Attempt = 0; Hotkeys = 0; Controls = 0
+        ErrorCode = ''; ArchiveReady = $false; LastWrittenAt = [DateTimeOffset]::MinValue
+    }
+}
+
+function Write-RobotCaptureProgress {
+    param([object]$Progress, [switch]$Force)
+    if ($null -eq $Progress) { return $false }
+    if (-not $Force -and ([DateTimeOffset]::Now - $Progress.LastWrittenAt).TotalSeconds -lt 3) { return $true }
+    $temporary = ''
+    try {
+        if ($Progress.Kind -notin @('training','calibration') -or $Progress.Id -cnotmatch '^[a-f0-9]{32}$') { return $false }
+        $path = Join-Path $Progress.Directory ($Progress.Kind + '-status.json')
+        $temporary = $path + '.tmp-' + [guid]::NewGuid().ToString('N')
+        # Only operational metadata; never serialize exceptions, controls or config objects.
+        $payload = [ordered]@{
+            schemaVersion = 1; sessionId = $Progress.Id; state = $Progress.State
+            updatedAt = [DateTimeOffset]::Now.ToString('o'); captured = [int]$Progress.Captured
+            attempt = [int]$Progress.Attempt; hotkeys = [int]$Progress.Hotkeys; controls = [int]$Progress.Controls
+            errorCode = [string]$Progress.ErrorCode; archiveReady = [bool]$Progress.ArchiveReady
+        }
+        $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+        $Progress.LastWrittenAt = [DateTimeOffset]::Now
+        return $true
+    }
+    catch { return $false }
+    finally {
+        if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Read-RobotCaptureProgress {
+    param([string]$Directory, [ValidateSet('training','calibration')][string]$Kind)
+    $result = [ordered]@{
+        State = 'not_started'; SessionId = ''; Captured = 0; Attempt = 0; Hotkeys = 0; Controls = 0
+        ErrorCode = ''; ArchiveReady = $false; UpdatedAt = ''; Active = $false; Recent = $false
+    }
+    try {
+        $path = Join-Path $Directory ($Kind + '-status.json')
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $result }
+        $file = Get-Item -LiteralPath $path
+        if ($file.Length -gt 16KB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid status file.' }
+        $stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        try { $data = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose(); $stream.Dispose() }
+        if ($data.schemaVersion -ne 1 -or $data.sessionId -cnotmatch '^[a-f0-9]{32}$' -or
+            $data.state -notin @('waiting','scanning','captured','failed','completed','closed','expired')) { throw 'Invalid status.' }
+        $time = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string]$data.updatedAt, [ref]$time) -or $time -gt [DateTimeOffset]::Now.AddSeconds(60)) { throw 'Invalid status time.' }
+        foreach ($field in @('captured','attempt','hotkeys','controls')) {
+            $number = 0
+            if (-not [int]::TryParse([string]$data.$field, [ref]$number) -or $number -lt 0 -or $number -gt 10000) { throw 'Invalid counter.' }
+        }
+        if ($data.archiveReady -isnot [bool]) { throw 'Invalid archive state.' }
+        $errorCode = if ([string]$data.errorCode -in @('', 'wrong_window','scan_failed','scan_timeout','capture_invalid','export_failed','start_failed','status_failed')) {
+            [string]$data.errorCode
+        } else { 'status_failed' }
+        $age = ([DateTimeOffset]::Now - $time).TotalSeconds
+        $active = $data.state -in @('waiting','scanning','captured','failed') -and -not ($Kind -eq 'calibration' -and $data.state -eq 'failed')
+        $result.State = if ($active -and $age -gt 20) { 'unresponsive' } else { [string]$data.state }
+        $result.SessionId = [string]$data.sessionId
+        foreach ($field in @('Captured','Attempt','Hotkeys','Controls')) { $result[$field] = [int]$data.$field }
+        $result.ErrorCode = $errorCode; $result.ArchiveReady = [bool]$data.archiveReady
+        $result.UpdatedAt = $time.ToString('o'); $result.Active = $active -and $age -le 20
+        $result.Recent = $age -le 30
+    }
+    catch { $result.State = 'unavailable'; $result.ErrorCode = 'status_failed' }
+    return $result
+}
+
 function New-RobotTrainingSession {
     param([string]$Directory)
     $sessionId = [guid]::NewGuid().ToString('N')
     $path = Join-Path $Directory ('training\' + $sessionId)
     New-Item -ItemType Directory -Path $path -Force | Out-Null
+    $progress = New-RobotCaptureProgress $Directory 'training'
+    $progress.Id = $sessionId
     return [pscustomobject]@{
         Id = $sessionId; Directory = $path; StartedAt = [DateTimeOffset]::Now
         Captures = (New-Object 'System.Collections.Generic.List[object]')
         Attempt = 0; Current = $null; Archive = ''; LastError = ''
+        Progress = $progress
     }
 }
 
@@ -127,6 +205,9 @@ function Start-RobotTrainingCapture {
     }
     if ($Session.Attempt -ge 12) { throw 'Capture limit reached. Finish this session.' }
     $Session.Attempt++
+    $Session.Progress.Attempt = $Session.Attempt
+    $Session.Progress.State = 'scanning'; $Session.Progress.ErrorCode = ''
+    [void](Write-RobotCaptureProgress $Session.Progress -Force)
     $directory = Join-Path $Session.Directory ('capture-{0:d2}' -f $Session.Attempt)
     New-Item -ItemType Directory -Path $directory | Out-Null
     $id = [guid]::NewGuid().ToString('N')
@@ -145,6 +226,8 @@ function Start-RobotTrainingCapture {
         $job.Attach($process)
     }
     catch {
+        $Session.Progress.State = 'failed'; $Session.Progress.ErrorCode = 'start_failed'
+        [void](Write-RobotCaptureProgress $Session.Progress -Force)
         $job.Dispose()
         if ($null -ne $process) {
             if (-not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(1500) }
@@ -186,9 +269,16 @@ function Update-RobotTrainingCapture {
             Number = $Session.Attempt; ReportPath = $capture.ReportPath; CaptureId = $capture.CaptureId
             StartedAt = $capture.StartedAt; Path = $verified.Path; Sha256 = [string]$verified.Report.captureSha256
         })
+        $Session.Progress.State = 'captured'; $Session.Progress.Captured = $Session.Captures.Count
+        $Session.Progress.Controls = [int]$verified.Report.controlsScanned; $Session.Progress.ErrorCode = ''
     }
-    catch { $Session.LastError = $_.Exception.Message }
+    catch {
+        $Session.LastError = $_.Exception.Message
+        $Session.Progress.State = 'failed'
+        $Session.Progress.ErrorCode = if ($timedOut) { 'scan_timeout' } else { 'capture_invalid' }
+    }
     finally {
+        [void](Write-RobotCaptureProgress $Session.Progress -Force)
         # Keep the handle while a provider is still stopping; never launch a second scanner.
         if ($capture.Process.HasExited) { $capture.Job.Dispose(); $capture.Process.Dispose(); $Session.Current = $null }
     }
@@ -241,5 +331,7 @@ function Export-RobotTrainingSession {
     }
     finally { $archive.Dispose() }
     $Session.Archive = $archivePath
+    $Session.Progress.State = 'completed'; $Session.Progress.ArchiveReady = $true
+    [void](Write-RobotCaptureProgress $Session.Progress -Force)
     return $archivePath
 }

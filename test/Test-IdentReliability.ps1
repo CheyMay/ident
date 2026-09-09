@@ -176,7 +176,8 @@ try {
     Invoke-RobotPoll
     Assert-True ($script:State.robot.state -eq 'needs_review' -and $script:Runs -eq 2 -and $script:Claims -eq 2 -and $script:Fails -eq 1) 'Uncertain UI action must halt subsequent bookings'
 
-    Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentDesktop.ps1') @('Invoke-AgentSettings', 'Update-AgentSettings', 'Update-RobotCalibration')
+    Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentDesktop.ps1') @('Invoke-AgentSettings', 'Update-AgentSettings', 'Update-RobotCalibration', 'Update-CalibrationLiveStatus')
+    $script:CalibrationProgress = $null
     $script:SettingsRequest = $null; $script:PendingSettings = $null; $script:AgentKey = 'test-only'; $script:UiError = ''
     $scheduleCheck = [pscustomobject]@{ Enabled=$true; Checked=$true }
     $robotCheck = [pscustomobject]@{ Enabled=$true; Checked=$false }
