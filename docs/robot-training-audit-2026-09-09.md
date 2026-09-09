@@ -143,3 +143,32 @@ selected interval, with matching doctor/date/start/end in its title. Do not
 repeat splitting or save a patient for this check. Existing patient-form captures
 remain available; a menu binding alone does not implement calendar selection,
 patient identity validation, or verified unattended booking.
+
+## Subsequent Form Rejection
+
+The next session (b200e05555d441e09c68fdd19a483cd3) reported two received
+hotkeys but zero attempts/captures and wrong_window at 17:29:40 UTC. It expired
+without a capture. The UI scan did not start; repeatedly retrying cannot prove
+that focus is wrong or that the IDENT form is unavailable.
+
+Code review found a gap introduced by 2.14.5: an independent window without
+IDENT in its native caption or a matching root owner was rejected even when
+the same process owned a visible IDENT main window. Release 2.14.7 supports
+that case using bounded top-level HWND enumeration filtered by PID before
+reading candidate titles. It retains the exact requested HWND and existing
+pre/post UIA identity checks, never captures the sibling as fallback, and
+rejects browser/terminal/remote-control hosts. A safe allowlisted targetCheck
+reason now distinguishes self-window, process/title/visibility mismatch and
+successful direct/owner/sibling identity checks. No titles enter heartbeat.
+
+API references: [EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows),
+[GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid).
+Tests cover independent titleless dialogs and foreign/hidden/reused siblings,
+exact target retention and safe/legacy progress files. Clinic diagnostics at
+17:44:00 UTC confirm 2.14.7 installed, update succeeded, schedule ok and robot
+disabled. At 17:44:58 UTC, the new session bf92247c6c3b45b1a4c8d3714e7037e7
+reported captured=1, attempt=1, hotkeys=1, controls=37, no error and
+targetCheck=accepted_sibling. The operator also confirmed capture saved.
+This verifies the new identity path and capture completion on the clinic PC;
+the new archive is still required to inspect its actual form and interval.
+The previously verified menu archive and four patient-form captures are retained.

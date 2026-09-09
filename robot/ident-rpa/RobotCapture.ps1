@@ -54,8 +54,11 @@ function Get-RobotCaptureWindowMetadata {
         Add-Type -TypeDefinition @'
 using System;
 using System.Text;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public sealed class IdentCaptureWindowMetadata {
+    delegate bool EnumWindowProc(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowProc callback, IntPtr parameter);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
@@ -81,27 +84,77 @@ public sealed class IdentCaptureWindowMetadata {
         result.Title = TitleOf(window); result.OwnerTitle = TitleOf(owner);
         return result;
     }
+    public static long[] Siblings(uint processId, long excludedHandle) {
+        var handles = new List<long>();
+        if (processId == 0) return handles.ToArray();
+        int visited = 0;
+        // Filter by PID before reading titles; bound this identity check, not a desktop UI scan.
+        EnumWindows(delegate(IntPtr window, IntPtr parameter) {
+            if (++visited > 512 || handles.Count >= 64) return false;
+            uint pid;
+            GetWindowThreadProcessId(window, out pid);
+            if (pid == processId && window.ToInt64() != excludedHandle && IsWindowVisible(window) && !IsIconic(window))
+                handles.Add(window.ToInt64());
+            return true;
+        }, IntPtr.Zero);
+        return handles.ToArray();
+    }
 }
 '@
     }
     return [IdentCaptureWindowMetadata]::Read($WindowHandle)
 }
 
+function Get-RobotCaptureSiblingHandles {
+    param([int]$ProcessId, [long]$ExcludedHandle)
+    if (-not ('IdentCaptureWindowMetadata' -as [type])) { $null = Get-RobotCaptureWindowMetadata 0 }
+    return [IdentCaptureWindowMetadata]::Siblings([uint32]$ProcessId, $ExcludedHandle)
+}
+
 function Get-RobotCaptureTarget {
-    param([object]$Config, [long]$WindowHandle, [int]$ProcessId)
-    if ($WindowHandle -eq 0 -or $ProcessId -le 0 -or $ProcessId -eq $PID) { return $null }
+    param([object]$Config, [long]$WindowHandle, [int]$ProcessId, [ref]$Reason)
+    if ($null -ne $Reason) { $Reason.Value = 'invalid_handle' }
+    if ($WindowHandle -eq 0 -or $ProcessId -le 0) { return $null }
+    if ($null -ne $Reason) { $Reason.Value = 'self_window' }
+    if ($ProcessId -eq $PID) { return $null }
+    if ($null -ne $Reason) { $Reason.Value = 'disallowed_process' }
     $process = Get-Process -Id $ProcessId -ErrorAction Stop
-    if ($process.ProcessName -match '^(powershell|pwsh|cmd|WindowsTerminal|explorer|AnyDesk)$') { return $null }
+    if ($process.ProcessName -match '^(powershell|pwsh|cmd|WindowsTerminal|explorer|AnyDesk|chrome|msedge|firefox)$') { return $null }
     $processName = [string]$Config.ident.processName
     $titleRegex = [string]$Config.ident.windowTitleRegex
+    if ($null -ne $Reason) { $Reason.Value = 'process_name' }
     if ((-not $processName -and -not $titleRegex) -or ($processName -and $process.ProcessName -ne $processName)) { return $null }
+    if ($null -ne $Reason) { $Reason.Value = 'window_process' }
     $window = Get-RobotCaptureWindowMetadata $WindowHandle
     if ($null -eq $window -or $window.Handle -ne $WindowHandle -or
-        $window.ProcessId -ne $ProcessId -or -not $window.Visible) { return $null }
+        $window.ProcessId -ne $ProcessId) { return $null }
+    if ($null -ne $Reason) { $Reason.Value = 'window_hidden' }
+    if (-not $window.Visible) { return $null }
     $ownTitleMatches = $window.Title -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and $window.Title -match $titleRegex
     $ownerTitleMatches = $window.OwnerHandle -ne 0 -and $window.OwnerProcessId -eq $ProcessId -and
         $window.OwnerTitle -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and $window.OwnerTitle -match $titleRegex
-    if ($titleRegex -and -not $ownTitleMatches -and -not $ownerTitleMatches) { return $null }
+    $accepted = if ($ownTitleMatches -or -not $titleRegex) { 'accepted_window' } else { 'accepted_owner' }
+    if ($titleRegex -and -not $ownTitleMatches -and -not $ownerTitleMatches) {
+        if ($null -ne $Reason) { $Reason.Value = 'title_mismatch' }
+        $found = $false
+        # IDENT can open an unowned appointment window without IDENT in its native title.
+        foreach ($handle in @(Get-RobotCaptureSiblingHandles $ProcessId $WindowHandle)) {
+            if ($handle -eq 0 -or $handle -eq $WindowHandle) { continue }
+            $sibling = Get-RobotCaptureWindowMetadata $handle
+            if ($null -ne $sibling -and $sibling.Handle -eq $handle -and $sibling.ProcessId -eq $ProcessId -and
+                $sibling.Visible -and $sibling.Title -notmatch 'Code9 IDENT|PowerShell|Windows Terminal' -and $sibling.Title -match $titleRegex) {
+                $found = $true; break
+            }
+        }
+        if (-not $found) { return $null }
+        $window = Get-RobotCaptureWindowMetadata $WindowHandle
+        if ($null -ne $Reason) { $Reason.Value = 'window_process' }
+        if ($null -eq $window -or $window.Handle -ne $WindowHandle -or $window.ProcessId -ne $ProcessId) { return $null }
+        if ($null -ne $Reason) { $Reason.Value = 'window_hidden' }
+        if (-not $window.Visible) { return $null }
+        $accepted = 'accepted_sibling'
+    }
+    if ($null -ne $Reason) { $Reason.Value = $accepted }
     # Verify ownership only; the scanner still captures the exact requested HWND, never its owner as a fallback.
     return [pscustomobject]@{ process = $process; handle = $WindowHandle }
 }
@@ -176,8 +229,15 @@ function New-RobotCaptureProgress {
     return [pscustomobject]@{
         Directory = [IO.Path]::GetFullPath($Directory); Kind = $Kind; Id = [guid]::NewGuid().ToString('N')
         State = 'waiting'; Captured = 0; Attempt = 0; Hotkeys = 0; Controls = 0
-        ErrorCode = ''; ArchiveReady = $false; LastWrittenAt = [DateTimeOffset]::MinValue
+        ErrorCode = ''; TargetCheck = ''; ArchiveReady = $false; LastWrittenAt = [DateTimeOffset]::MinValue
     }
+}
+
+function ConvertTo-RobotCaptureTargetCheck {
+    param([string]$Value)
+    if ($Value -in @('', 'invalid_handle','self_window','disallowed_process','process_name','window_process',
+        'window_hidden','title_mismatch','accepted_window','accepted_owner','accepted_sibling')) { return $Value }
+    return ''
 }
 
 function Write-RobotCaptureProgress {
@@ -195,6 +255,7 @@ function Write-RobotCaptureProgress {
             updatedAt = [DateTimeOffset]::Now.ToString('o'); captured = [int]$Progress.Captured
             attempt = [int]$Progress.Attempt; hotkeys = [int]$Progress.Hotkeys; controls = [int]$Progress.Controls
             errorCode = [string]$Progress.ErrorCode; archiveReady = [bool]$Progress.ArchiveReady
+            targetCheck = ConvertTo-RobotCaptureTargetCheck $Progress.TargetCheck
         }
         $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
         Move-Item -LiteralPath $temporary -Destination $path -Force
@@ -211,7 +272,7 @@ function Read-RobotCaptureProgress {
     param([string]$Directory, [ValidateSet('training','calibration')][string]$Kind)
     $result = [ordered]@{
         State = 'not_started'; SessionId = ''; Captured = 0; Attempt = 0; Hotkeys = 0; Controls = 0
-        ErrorCode = ''; ArchiveReady = $false; UpdatedAt = ''; Active = $false; Recent = $false
+        ErrorCode = ''; TargetCheck = ''; ArchiveReady = $false; UpdatedAt = ''; Active = $false; Recent = $false
     }
     try {
         $path = Join-Path $Directory ($Kind + '-status.json')
@@ -239,6 +300,9 @@ function Read-RobotCaptureProgress {
         $result.SessionId = [string]$data.sessionId
         foreach ($field in @('Captured','Attempt','Hotkeys','Controls')) { $result[$field] = [int]$data.$field }
         $result.ErrorCode = $errorCode; $result.ArchiveReady = [bool]$data.archiveReady
+        if ($data.PSObject.Properties.Name -contains 'targetCheck') {
+            $result.TargetCheck = ConvertTo-RobotCaptureTargetCheck ([string]$data.targetCheck)
+        }
         $result.UpdatedAt = $time.ToString('o'); $result.Active = $active -and $age -le 20
         $result.Recent = $age -le 30
     }

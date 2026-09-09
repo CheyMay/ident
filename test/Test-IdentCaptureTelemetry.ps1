@@ -65,7 +65,19 @@ try {
     }
     Assert-True ($script:Payload.diagnostics.trainingArchiveReady -and $script:Payload.diagnostics.trainingCaptured -eq 1) 'Archive progress lost.'
     Assert-True (-not $script:Payload.robot.enabled) 'Telemetry enabled the robot.'
+    foreach ($reason in @('self_window','invalid_handle','disallowed_process','process_name','window_process','window_hidden',
+        'title_mismatch','accepted_window','accepted_owner','accepted_sibling')) {
+        $p.TargetCheck=$reason; [void](Write-RobotCaptureProgress $p -Force)
+        Send-Heartbeat -HeartbeatOnly
+        Assert-True ($script:Payload.diagnostics.trainingTargetCheck -eq $reason) 'Safe target reason was lost.'
+    }
+    $p.TargetCheck='MUST-NOT-LEAK patient title'; [void](Write-RobotCaptureProgress $p -Force)
+    Assert-True ((Get-Content (Join-Path $temp 'training-status.json') -Raw) -notmatch 'MUST-NOT-LEAK') 'Writer persisted unsafe target reason.'
     $data=Get-Content (Join-Path $temp 'training-status.json') -Raw | ConvertFrom-Json
+    $data.targetCheck='MUST-NOT-LEAK patient title'; Write-FixtureStatus $data
+    Assert-True ((Get-LiveCaptureTelemetry | ConvertTo-Json) -notmatch 'MUST-NOT-LEAK') 'Reader transmitted unsafe target reason.'
+    $data.PSObject.Properties.Remove('targetCheck'); Write-FixtureStatus $data
+    Assert-True ((Read-RobotCaptureProgress $temp 'training').State -eq 'completed') 'Legacy progress without targetCheck was rejected.'
     $data.state='waiting'; $data.updatedAt=[DateTimeOffset]::Now.AddSeconds(-40).ToString('o')
     Write-FixtureStatus $data
     Assert-True ((Read-RobotCaptureProgress $temp 'training').State -eq 'unresponsive') 'Old active status remained live.'

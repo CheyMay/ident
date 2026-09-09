@@ -106,9 +106,15 @@ function Invoke-TrainingCapture {
         $session.CaptureAt = $null
         $target = $form.ForegroundTarget()
         $foregroundPid = [int]$target[1]
-        $verifiedTarget = Get-RobotCaptureTarget $config $target[0] $foregroundPid
+        $targetCheck = ''
+        $verifiedTarget = Get-RobotCaptureTarget $config $target[0] $foregroundPid ([ref]$targetCheck)
+        $session.Progress.TargetCheck = $targetCheck
         if ($null -eq $verifiedTarget) {
-            $status.Text = 'Скан не начат: активное окно не распознано как IDENT. Предыдущие снимки сохранены.'
+            $status.Text = if ($targetCheck -eq 'self_window') {
+                'Скан не начат: активно окно показа. Переключитесь в форму IDENT и нажмите Ctrl+Alt+F8. Предыдущие снимки сохранены.'
+            } else {
+                'Скан не начат: окно не распознано как IDENT. Код проверки: ' + $targetCheck + '. Предыдущие снимки сохранены.'
+            }
             $session.Progress.State = 'waiting'; $session.Progress.ErrorCode = 'wrong_window'
             [void](Write-RobotCaptureProgress $session.Progress -Force)
             [System.Media.SystemSounds]::Exclamation.Play()
