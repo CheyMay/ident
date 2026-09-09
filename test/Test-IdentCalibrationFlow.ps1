@@ -1,8 +1,11 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
+$script:CalibrationJob = $null
 Set-StrictMode -Version Latest
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $repo 'robot\ident-rpa\RobotSafety.ps1')
+. (Join-Path $repo 'robot\ident-rpa\RobotCapture.ps1')
 $temp = Join-Path $env:TEMP ('ident-calibration-test-' + [guid]::NewGuid().ToString('N'))
 $temp = [IO.Path]::GetFullPath($temp)
 if (-not $temp.StartsWith([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test directory.' }

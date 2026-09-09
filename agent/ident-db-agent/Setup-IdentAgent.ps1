@@ -103,10 +103,9 @@ if (-not (Test-Path -LiteralPath $robotSource)) {
 if (-not (Test-Path -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1'))) {
     throw 'Robot source files are missing from the installation package.'
 }
-Copy-Item `
-    -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') `
-    -Destination (Join-Path $InstallDirectory 'robot\Start-IdentRobot.ps1') `
-    -Force
+foreach ($file in @('Start-IdentRobot.ps1', 'RobotSafety.ps1', 'RobotCapture.ps1', 'Start-IdentTraining.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $robotSource $file) -Destination (Join-Path $InstallDirectory "robot\$file") -Force
+}
 
 $mappingTarget = Join-Path $InstallDirectory 'mapping.local.json'
 if (-not (Test-Path -LiteralPath $mappingTarget)) {

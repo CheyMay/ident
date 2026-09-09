@@ -6,6 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$robotSafetyPath = Join-Path $PSScriptRoot 'robot\RobotSafety.ps1'
+if (-not (Test-Path -LiteralPath $robotSafetyPath)) {
+    $robotSafetyPath = Join-Path $PSScriptRoot '..\..\robot\ident-rpa\RobotSafety.ps1'
+}
+. $robotSafetyPath
 
 if (-not ('Code9IdentAgent.NativeInput' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -1408,11 +1413,14 @@ function Get-RobotConfigurationProblem {
             return 'Robot automatic calibration has not been verified.'
         }
         $boundSelectors = @{}
-        foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
+        foreach ($field in @((Get-BookingNameFields $config)) + @('ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
             $fieldSteps = @($config.workflow.steps | Where-Object {
                 $_.action -eq 'setText' -and $_.PSObject.Properties.Name -contains 'valueFrom' -and $_.valueFrom -eq $field
             })
             if ($fieldSteps.Count -ne 1) { return "Booking workflow must set and verify $field exactly once." }
+            if ($fieldSteps[0].PSObject.Properties.Name -contains 'skipIfEmpty' -and [bool]$fieldSteps[0].skipIfEmpty) {
+                return 'Required booking fields must not use skipIfEmpty.'
+            }
             $binding = [string]$fieldSteps[0].selector
             if ([string]::IsNullOrWhiteSpace($binding) -or $boundSelectors.ContainsKey($binding) -or
                 @($config.workflow.steps | Where-Object { [string]$_.selector -eq $binding }).Count -ne 1) {
@@ -1491,6 +1499,17 @@ function Test-RobotConfigured {
 }
 
 function Invoke-RobotPoll {
+    $lease = Enter-RobotInteractionLease -Directory (Split-Path -Parent $script:Context.RobotConfigPath)
+    if ($null -eq $lease) {
+        $script:State.robot.state = 'waiting_for_training'
+        $script:State.robot.lastError = ''
+        Write-RuntimeState
+        return
+    }
+    try { Invoke-RobotPollCore } finally { $lease.Dispose() }
+}
+
+function Invoke-RobotPollCore {
     $pendingPath = Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'execution-pending.json'
     $markerPath = Get-RobotSuccessMarkerPath
     if (Test-Path -LiteralPath $markerPath) {

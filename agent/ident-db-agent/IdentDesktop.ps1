@@ -114,6 +114,7 @@ function Format-StateName {
         waiting_for_idle = 'ждет 1 минуту бездействия'
         waiting_for_session = 'ждет разблокировки Windows'
         waiting_for_ident = 'ждет запуска IDENT'
+        waiting_for_training = 'показ экранов: автозапись приостановлена'
         retrying = 'повторяет подключение к SQL'
         needs_configuration = 'нужна настройка'
         needs_review = 'нужна проверка результата в IDENT'
@@ -218,8 +219,13 @@ $script:CommandDirectory = Resolve-LocalPath -BaseDirectory $script:BaseDirector
 $script:SupervisorStatePath = Join-Path $script:BaseDirectory 'supervisor-state.json'
 $script:RestartRequestPath = Join-Path $script:CommandDirectory 'restart-worker'
 $script:RobotConfigPath = Resolve-LocalPath -BaseDirectory $script:BaseDirectory -Value ([string]$script:Config.paths.robotConfig)
+$captureHelpersPath = Join-Path $PSScriptRoot 'robot\RobotCapture.ps1'
+if (-not (Test-Path -LiteralPath $captureHelpersPath)) { $captureHelpersPath = Join-Path $PSScriptRoot '..\..\robot\ident-rpa\RobotCapture.ps1' }
+. $captureHelpersPath
+$script:TrainingProcess = $null
 $script:CalibrationReportPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-report.json'
 $script:CalibrationProcess = $null
+$script:CalibrationJob = $null
 $script:CalibrationStage = 'idle'
 $script:CalibrationStartedAt = [DateTimeOffset]::MinValue
 $script:CalibrationCaptureId = ''
@@ -326,6 +332,26 @@ $calibrateButton.ForeColor = [Drawing.Color]::White
 $calibrateButton.Cursor = [Windows.Forms.Cursors]::Hand
 $form.Controls.Add($calibrateButton)
 
+$trainingButton = New-Object System.Windows.Forms.Button
+$trainingButton.Location = New-Object Drawing.Point(274, 536)
+$trainingButton.Size = New-Object Drawing.Size(240, 42)
+$trainingButton.Text = 'Начать показ экранов'
+$form.Controls.Add($trainingButton)
+$trainingButton.Add_Click({
+    try {
+        if ($null -ne $script:TrainingProcess -and -not $script:TrainingProcess.HasExited) { return }
+        if ($script:CalibrationStage -eq 'scanning') { throw 'Дождитесь завершения текущего скана.' }
+        $state = Read-JsonFile $script:StatePath
+        if ($robotCheck.Checked -or ($null -ne $state -and [bool]$state.robot.enabled)) { throw 'Сначала выключите робота.' }
+        $path = Join-Path $script:BaseDirectory 'robot\Start-IdentTraining.ps1'
+        if (-not (Test-Path -LiteralPath $path)) { throw 'Дождитесь завершения обновления агента.' }
+        if ($null -ne $script:TrainingProcess) { $script:TrainingProcess.Dispose() }
+        $script:TrainingProcess = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList (
+            "-NoProfile -STA -ExecutionPolicy Bypass -File `"$path`" -ConfigPath `"$script:RobotConfigPath`"")
+        $script:UiError = ''
+    } catch { $script:UiError = $_.Exception.Message }
+})
+
 $inspectButton = New-Object System.Windows.Forms.Button
 $inspectButton.Location = New-Object Drawing.Point(20, 588)
 $inspectButton.Size = New-Object Drawing.Size(154, 34)
@@ -383,40 +409,11 @@ function Request-SchedulePush {
 
 function Get-FreshRobotCapture {
     param([string]$ReportPath, [string]$CaptureId, [DateTimeOffset]$StartedAfter)
-    $report = Read-JsonFile -Path $ReportPath
-    if ($null -eq $report) { throw 'Отчет сканирования не создан. Проверьте журнал ошибки.' }
-    if ($report.PSObject.Properties.Name -notcontains 'captureId' -or
-        [string]$report.captureId -cne $CaptureId -or [string]::IsNullOrWhiteSpace($CaptureId)) {
-        throw 'Это отчет предыдущего запуска. Новый скан не получен.'
-    }
-    $generated = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$report.generatedAt, [ref]$generated) -or
-        $generated -lt $StartedAfter -or $generated -gt [DateTimeOffset]::Now.AddMinutes(1)) {
-        throw 'Время отчета не соответствует текущему сканированию.'
-    }
-    $directory = [IO.Path]::GetFullPath((Split-Path -Parent $ReportPath)).TrimEnd('\') + '\'
-    $path = [IO.Path]::GetFullPath([string]$report.capturePath)
-    if (-not $path.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase) -or
-        [IO.Path]::GetFileName($path) -notmatch '^ui-tree-[0-9-]+\.json$') {
-        throw 'Неверный путь файла сканирования.'
-    }
-    $file = Get-Item -LiteralPath $path -ErrorAction Stop
-    if ($file.Length -le 0 -or $file.Length -gt 5MB -or $file.Length -ne [long]$report.captureBytes -or
-        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine [string]$report.captureSha256) {
-        throw 'Файл сканирования поврежден или изменился после проверки.'
-    }
-    $decoded = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    $rows = @($decoded)
-    if ([int]$report.scanSchemaVersion -ne 2 -or $rows.Count -ne [int]$report.controlsScanned -or
-        $rows.Count -eq 0 -or $rows[0].PSObject.Properties.Name -notcontains 'rootName' -or
-        $rows[0].PSObject.Properties.Name -notcontains 'patterns') {
-        throw 'Формат скана устарел или содержит неполные данные.'
-    }
-    if (-not [bool]$report.ok) { throw 'Окно IDENT свернуто или недоступно. Откройте его и повторите проверку.' }
-    return [pscustomobject]@{ Path = $path; Report = $report }
+    return (Get-VerifiedRobotCapture $ReportPath $CaptureId $StartedAfter)
 }
 
 function Start-RobotCalibration {
+    if ($null -ne $script:TrainingProcess -and -not $script:TrainingProcess.HasExited) { return }
     if ($script:CalibrationStage -ne 'idle' -and $script:CalibrationStage -ne 'failed' -and $script:CalibrationStage -ne 'ready') {
         return
     }
@@ -439,6 +436,8 @@ function Start-RobotCalibration {
             "-Mode Calibrate -ConfigPath `"$script:RobotConfigPath`" " +
             "-ReportPath `"$script:CalibrationReportPath`" -CaptureId $($script:CalibrationCaptureId) -StartDelaySeconds 8"
         $script:CalibrationStartedAt = [DateTimeOffset]::Now
+        Initialize-RobotCaptureJob
+        $script:CalibrationJob = New-Object IdentCaptureJob
         $script:CalibrationProcess = Start-Process `
             -FilePath 'powershell.exe' `
             -ArgumentList $arguments `
@@ -446,6 +445,8 @@ function Start-RobotCalibration {
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath `
             -PassThru
+        $null = $script:CalibrationProcess.Handle
+        $script:CalibrationJob.Attach($script:CalibrationProcess)
         $script:CalibrationStage = 'scanning'
         $calibrateButton.Enabled = $false
         $calibrateButton.Text = 'IDENT проверяется...'
@@ -454,6 +455,11 @@ function Start-RobotCalibration {
         $script:UiError = ''
     }
     catch {
+        if ($null -ne $script:CalibrationJob) { $script:CalibrationJob.Dispose(); $script:CalibrationJob = $null }
+        if ($null -ne $script:CalibrationProcess) {
+            if (-not $script:CalibrationProcess.HasExited) { $script:CalibrationProcess.Kill() }
+            $script:CalibrationProcess.Dispose(); $script:CalibrationProcess = $null
+        }
         $script:CalibrationStage = 'failed'
         $calibrateButton.Enabled = $true
         $calibrateButton.Text = 'Повторить проверку IDENT'
@@ -466,6 +472,7 @@ function Update-RobotCalibration {
     if ($script:CalibrationStage -eq 'scanning') {
         if ($null -eq $script:CalibrationProcess -or -not $script:CalibrationProcess.HasExited) {
             if (([DateTimeOffset]::Now - $script:CalibrationStartedAt).TotalSeconds -gt 60) {
+                if ($null -ne $script:CalibrationJob) { $script:CalibrationJob.Dispose(); $script:CalibrationJob = $null }
                 if ($null -ne $script:CalibrationProcess) {
                     Stop-Process -Id $script:CalibrationProcess.Id -Force -ErrorAction SilentlyContinue
                     $script:CalibrationProcess.Dispose()
@@ -479,10 +486,11 @@ function Update-RobotCalibration {
             return
         }
         $exitCode = $script:CalibrationProcess.ExitCode
+        if ($null -ne $script:CalibrationJob) { $script:CalibrationJob.Dispose(); $script:CalibrationJob = $null }
         $script:CalibrationProcess.Dispose()
         $script:CalibrationProcess = $null
         try {
-            if ($exitCode -ne 0) {
+            if ($null -eq $exitCode -or $exitCode -ne 0) {
                 $detail = if (Test-Path -LiteralPath $script:CalibrationErrorPath) {
                     (Get-Content -LiteralPath $script:CalibrationErrorPath -TotalCount 3) -join ' '
                 } else { '' }
@@ -511,6 +519,9 @@ function Update-RobotCalibration {
 }
 
 function Refresh-Status {
+    $training = $null -ne $script:TrainingProcess -and -not $script:TrainingProcess.HasExited
+    $trainingButton.Enabled = -not $training -and $script:CalibrationStage -ne 'scanning'
+    $calibrateButton.Enabled = -not $training -and $script:CalibrationStage -ne 'scanning'
     $state = Read-JsonFile -Path $script:StatePath
     $currentConfig = Read-JsonFile -Path $ConfigPath
     $supervisorState = Read-JsonFile -Path $script:SupervisorStatePath
@@ -603,7 +614,7 @@ function Refresh-Status {
     $robotStateLabel.Text = 'Робот: ' + (Format-StateName -Value ([string]$state.robot.state)) +
         $(if ([bool]$state.robot.configured) { '' } else { ' (не откалиброван)' })
     $robotTimeLabel.Text = 'Последнее выполнение: ' + (Format-DateValue -Value $state.robot.lastSuccessAt)
-    $robotCheck.Enabled = ([bool]$state.robot.configured -or $robotCheck.Checked) -and $null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings -and $script:CalibrationStage -ne 'scanning'
+    $robotCheck.Enabled = ([bool]$state.robot.configured -or $robotCheck.Checked) -and $null -eq $script:SettingsRequest -and $null -eq $script:PendingSettings -and $script:CalibrationStage -ne 'scanning' -and -not $training
     if ($script:CalibrationStage -eq 'idle' -and [bool]$state.robot.configured) {
         $robotGuideLabel.Text = $(if ([bool]$state.robot.enabled) {
             'Робот настроен и ожидает новые заявки.'
@@ -704,7 +715,7 @@ $inspectButton.Add_Click({
 })
 $folderButton.Add_Click({
     $folder = Split-Path -Parent $script:RobotConfigPath
-    Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$folder`""
+    Start-Process -FilePath 'explorer.exe' -WindowStyle Hidden -ArgumentList "`"$folder`""
 })
 $openMenuItem.Add_Click({ Show-MainWindow })
 $tray.Add_DoubleClick({ Show-MainWindow })
@@ -759,6 +770,7 @@ if ($null -ne $script:SettingsRequest) {
     $script:SettingsRequest.Runner.Stop()
     $script:SettingsRequest.Runner.Dispose()
 }
+if ($null -ne $script:CalibrationJob) { $script:CalibrationJob.Dispose() }
 if ($null -ne $script:CalibrationProcess) {
     if (-not $script:CalibrationProcess.HasExited) { Stop-Process -Id $script:CalibrationProcess.Id -Force -ErrorAction SilentlyContinue }
     $script:CalibrationProcess.Dispose()

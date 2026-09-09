@@ -86,6 +86,8 @@ namespace Code9IdentRobot {
 '@
 }
 
+. (Join-Path $PSScriptRoot 'RobotSafety.ps1')
+
 function Read-JsonFile {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path)) {
@@ -812,7 +814,8 @@ function Invoke-AutomaticCalibration {
   $roots = @(Select-CalibrationRoots -Roots @(Get-IdentAutomationRoots $WindowInfo))
   $maxDepth = [Math]::Max(20, [Math]::Min(28, [int](Get-ObjectProperty $Config.inspect 'maxDepth' 24)))
   $rows = @(Get-UiTreeRows -Roots $roots -MaxDepth $maxDepth)
-  $capturePath = Join-Path (Split-Path -Parent $ConfigFile) ('ui-tree-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.json')
+  $outputDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($OutputReportPath))
+  $capturePath = Join-Path $outputDirectory ('ui-tree-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.json')
   Write-JsonFileAtomic -Path $capturePath -Value @($rows)
   $visibleControls = @($rows | Where-Object {
     -not [bool]$_.isOffscreen -and $null -ne (Convert-BoundsText ([string]$_.bounds))
@@ -888,7 +891,7 @@ function Invoke-AutomaticCalibration {
 
   if ($visibleControls.Count -ge 8) {
     # Screen capture is evidence for calibration, never proof of a working workflow.
-    $candidatePath = Join-Path (Split-Path -Parent $ConfigFile) 'calibration-candidate.json'
+    $candidatePath = Join-Path $outputDirectory 'calibration-candidate.json'
     foreach ($name in $required) {
       $replacement = if ($resolved.Contains($name)) { $resolved[$name] } else {
         [pscustomobject]@{ name = ''; automationId = ''; className = ''; controlType = '' }
@@ -916,6 +919,10 @@ function Invoke-AutomaticCalibration {
     $Config.workflow.allowUnsafeExecution = $false
     $Config.workflow.confirmBeforeEachStep = $false
     Write-JsonFileAtomic -Path $candidatePath -Value $Config
+    if ($splitNameFieldsDetected) {
+      $splitCandidate = New-SplitNameCandidate -Config $Config -NameParts $nameParts
+      Write-JsonFileAtomic -Path (Join-Path $outputDirectory 'calibration-split-candidate.json') -Value $splitCandidate
+    }
   }
   Write-JsonFileAtomic -Path $OutputReportPath -Value ([pscustomobject]$report)
   return [pscustomobject]$report
@@ -970,7 +977,11 @@ function Assert-BookingContract {
     if ([string]$step.action -notin @('click', 'setText')) { throw 'Unsupported booking workflow action.' }
   }
   $boundSelectors = @{}
-  foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
+  $nameFields = @(Get-BookingNameFields $Config)
+  if ($nameFields -contains 'ticket.ClientSurname' -and -not [string]::IsNullOrWhiteSpace((Resolve-TaskValue $Task 'ticket.ClientFullName'))) {
+    throw 'Split-name booking requires explicit name parts, not a second full-name representation.'
+  }
+  foreach ($field in $nameFields + @('ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
     $fieldSteps = @($steps | Where-Object { $_.action -eq 'setText' -and (Get-ObjectProperty $_ 'valueFrom' '') -eq $field })
     if ($fieldSteps.Count -ne 1) {
       throw "Booking workflow must set and verify $field exactly once."
@@ -981,7 +992,15 @@ function Assert-BookingContract {
       throw 'Each required booking value must use a separate field selector.'
     }
     $boundSelectors[$binding] = $true
-    if ([string]::IsNullOrWhiteSpace((Resolve-TaskValue $Task $field))) { throw "Required booking value is missing: $field" }
+    if ($field -eq 'ticket.ClientPatronymic') {
+      # An explicit empty patronymic is valid; a missing property is not consent to guess it.
+      if ($Task.ticket.PSObject.Properties.Name -notcontains 'ClientPatronymic' -or $null -eq $Task.ticket.ClientPatronymic) {
+        throw 'ClientPatronymic must be provided explicitly, including an empty string if absent.'
+      }
+    } elseif ([string]::IsNullOrWhiteSpace((Resolve-TaskValue $Task $field))) { throw "Required booking value is missing: $field" }
+    if ($field -in @('ticket.ClientSurname', 'ticket.ClientName', 'ticket.ClientPatronymic') -and
+        (Resolve-TaskValue $Task $field) -match '[\r\n\t]') { throw 'Patient name fields must not contain control characters.' }
+    if ([bool](Get-ObjectProperty $fieldSteps[0] 'skipIfEmpty' $false)) { throw 'Required booking fields must not use skipIfEmpty.' }
   }
   $start = [DateTimeOffset]::Parse([string]$Task.ticket.PlanStart, [Globalization.CultureInfo]::InvariantCulture)
   $end = [DateTimeOffset]::Parse([string]$Task.ticket.PlanEnd, [Globalization.CultureInfo]::InvariantCulture)
@@ -1253,6 +1272,7 @@ function Invoke-Workflow {
 
 $robotMutex = New-Object Threading.Mutex($false, 'Local\Code9IdentRobotExecution')
 $ownsRobotMutex = $false
+$interactionLease = $null
 $config = $null
 $windowInfo = $null
 try {
@@ -1265,6 +1285,10 @@ try {
   if (-not $ownsRobotMutex) {
     Write-Host 'ROBOT_DEFER_BUSY'
     exit 75
+  }
+  if ($Execute -and $Mode -in @('RunOnce', 'Loop')) {
+    $interactionLease = Enter-RobotInteractionLease -Directory (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath)))
+    if ($null -eq $interactionLease) { Write-Host 'ROBOT_DEFER_BUSY'; exit 75 }
   }
 
   if ($Mode -eq 'SelfTest') {
@@ -1417,6 +1441,7 @@ catch {
   throw
 }
 finally {
+  if ($null -ne $interactionLease) { $interactionLease.Dispose() }
   if ($ownsRobotMutex) {
     $robotMutex.ReleaseMutex()
   }

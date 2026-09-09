@@ -30,6 +30,9 @@ separate clinic user so every created appointment is attributable.
 ## Files
 
 - `Start-IdentRobot.ps1` - robot runner.
+- `Start-IdentTraining.ps1` - passive multi-screen observation window, no UI writes.
+- `RobotCapture.ps1` - fresh-capture validation, isolated child lifetime and explicit private archive.
+- `RobotSafety.ps1` - observation/execution leases and explicit patient-name contracts.
 - `config.example.json` - safe config template.
 - `tasks.sample.json` - local task for dry-run without backend access.
 
@@ -56,6 +59,33 @@ This validates the task format. If IDENT is not open, the command stops before
 any UI action.
 
 ## Inspect IDENT UI
+
+For a short supervised clinic session, use **Начать показ экранов** in desktop
+2.14.0. After consent to local UI-text capture, press Ctrl+Alt+F8 while IDENT is
+foreground at each relevant state: calendar, slot menu, blank appointment,
+selected patient, date/time settings. Wait for completion before changing state.
+Finish with **Завершить и собрать архив**. No shell commands are needed.
+
+Capture is bounded to one scanner, 60 seconds per attempt, 12 attempts and 15
+minutes per session. Successful states remain separate; exports revalidate each
+ID/time/hash. The private ZIP allowlists only UI trees, technical summaries and
+a session index. It excludes configuration, credentials, logs and screenshots;
+the UI trees themselves can contain personal data. No automatic upload occurs.
+
+Observation takes an exclusive file lease. Worker and robot execution share read
+leases, so observation cannot start during a write and no ticket is claimed
+during observation. The kernel releases handles after process termination; the
+lock file is never a stale flag to delete. Both worker and robot must be updated.
+Each scanner is attached to a Windows Job with KillOnJobClose. A crash of its
+owner ends that scanner; ordinary timeouts are also enforced by the parent.
+
+The alternate `calibration-split-candidate.json` uses `patientNameMode: split`
+and requires explicit ClientSurname, ClientName, ClientPatronymic. The patronymic
+may be an explicit empty string. The robot does not split or reorder FullName.
+Each part has its own set-and-readback step; the original profile remains intact
+and the candidate cannot execute. Existing FullName-only amoCRM tickets need a
+separate form/backend contract adjustment, not a guess in the robot. Patient
+selection/creation and calendar navigation still need a real clinic adapter.
 
 For clinic operators, use the desktop's **Проверить окно IDENT** button. It starts
 after eight seconds, is bounded by a one-minute parent timeout, and does not

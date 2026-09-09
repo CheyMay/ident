@@ -1,8 +1,10 @@
 ﻿[CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
+$script:CalibrationJob = $null
 Set-StrictMode -Version 2.0
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $root 'robot\ident-rpa\RobotSafety.ps1')
 $temp = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '.tmp-reliability'))
 if (-not $temp.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test path' }
 
@@ -102,7 +104,7 @@ try {
     Write-SupervisorState 'running'
     Assert-True ((Read-JsonFile $supervisorStatePath).state -eq 'running') 'Supervisor must recover after file lock'
 
-    Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentWorker.ps1') @('Invoke-RobotPoll')
+    Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentWorker.ps1') @('Invoke-RobotPoll', 'Invoke-RobotPollCore')
     $script:Context = [pscustomobject]@{
         RobotConfigPath = Join-Path $temp 'robot\config.json'; BaseDirectory = $temp
         CommandDirectory = Join-Path $temp 'commands'
