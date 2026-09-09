@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('Inspect', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest')]
+  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest')]
   [string]$Mode = 'DryRun',
 
   [string]$ConfigPath = '',
@@ -13,6 +13,10 @@
   [string]$ReportPath = '',
 
   [string]$CaptureId = '',
+
+  [long]$ObservedWindowHandle = 0,
+
+  [int]$ObservedProcessId = 0,
 
   [ValidateRange(0, 15)]
   [int]$StartDelaySeconds = 0,
@@ -811,6 +815,75 @@ function Select-CalibrationRoots {
   return $Roots
 }
 
+function Test-ObservedWindowVisible {
+  param([long]$WindowHandle)
+  if (-not ('IdentObservationWindow' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class IdentObservationWindow {
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+}
+'@
+  }
+  $handle = [IntPtr]::new($WindowHandle)
+  return [IdentObservationWindow]::IsWindowVisible($handle) -and -not [IdentObservationWindow]::IsIconic($handle)
+}
+
+function Get-ObservedElement {
+  param([long]$WindowHandle)
+  if (-not (Test-ObservedWindowVisible $WindowHandle)) { throw 'Observed IDENT window is closed or hidden.' }
+  return [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($WindowHandle))
+}
+
+function Assert-ObservedElement {
+  param([object]$Element, [long]$WindowHandle, [int]$ProcessId, [string]$RuntimeId = '')
+  if ($null -eq $Element -or $Element.Current.ProcessId -ne $ProcessId -or
+      $Element.Current.NativeWindowHandle -ne $WindowHandle -or $Element.Current.IsOffscreen -or
+      $null -eq (Convert-BoundsText (Format-Bounds $Element.Current.BoundingRectangle))) {
+    throw 'Observed IDENT window is closed, hidden or changed. Repeat the capture on the required screen.'
+  }
+  $identity = $Element.GetRuntimeId() -join ','
+  if (-not $identity -or ($RuntimeId -and $identity -cne $RuntimeId)) {
+    throw 'Observed IDENT window changed during capture. Repeat the capture.'
+  }
+  return $identity
+}
+
+function Invoke-ObservedCapture {
+  param([object]$WindowInfo, [long]$WindowHandle, [int]$ProcessId, [string]$OutputReportPath, [string]$ScanId)
+  if ($WindowHandle -eq 0 -or $ProcessId -le 0 -or $null -eq $WindowInfo -or
+      $WindowInfo.process.Id -ne $ProcessId -or [string]::IsNullOrWhiteSpace($ScanId)) {
+    throw 'Observation must target the IDENT window selected for this attempt.'
+  }
+  $element = Get-ObservedElement $WindowHandle
+  $identity = Assert-ObservedElement $element $WindowHandle $ProcessId
+  $rows = @(Get-UiTreeRows -Roots @($element) -MaxDepth 28)
+  # Never fall back to the calendar when the demonstrated dialog has closed.
+  [void](Assert-ObservedElement $element $WindowHandle $ProcessId $identity)
+  [void](Assert-ObservedElement (Get-ObservedElement $WindowHandle) $WindowHandle $ProcessId $identity)
+  $visible = @($rows | Where-Object {
+    -not [bool]$_.isOffscreen -and $null -ne (Convert-BoundsText ([string]$_.bounds))
+  })
+  if ($visible.Count -eq 0) { throw 'No visible controls were captured. Repeat the capture.' }
+  $directory = Split-Path -Parent ([IO.Path]::GetFullPath($OutputReportPath))
+  $path = Join-Path $directory ('ui-tree-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.json')
+  Write-JsonFileAtomic -Path $path -Value @($rows)
+  $report = [ordered]@{
+    ok = $true; mode = 'observation'; captureId = $ScanId; scanSchemaVersion = 2
+    generatedAt = (Get-Date).ToString('o'); capturePath = $path
+    captureSha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    captureBytes = (Get-Item -LiteralPath $path).Length
+    controlsScanned = $rows.Count; visibleControls = $visible.Count
+    observedWindowHandle = $WindowHandle; observedProcessId = $ProcessId
+    splitNameFieldsDetected = $false; selectorsComplete = $false
+    readyForUnattendedExecution = $false; checks = @(); issues = @()
+  }
+  Write-JsonFileAtomic -Path $OutputReportPath -Value ([pscustomobject]$report)
+  return [pscustomobject]$report
+}
+
 function Invoke-AutomaticCalibration {
   param(
     [object]$WindowInfo,
@@ -1326,6 +1399,14 @@ try {
   $config = Read-JsonFile $ConfigPath
   $windowInfo = Get-IdentWindow $config
 
+if ($Mode -eq 'Observe') {
+  if ([string]::IsNullOrWhiteSpace($ReportPath)) { throw 'Observation report path is required.' }
+  $null = Invoke-ObservedCapture -WindowInfo $windowInfo -WindowHandle $ObservedWindowHandle `
+    -ProcessId $ObservedProcessId -OutputReportPath $ReportPath -ScanId $CaptureId
+  Write-Host 'ROBOT_OBSERVATION_OK profileVerified=false actionsExecuted=0'
+  return
+}
+
 if ($Mode -eq 'Inspect') {
   if (-not $windowInfo) {
     throw 'IDENT window was not found. Check ident.processName and ident.windowTitleRegex in config.'
@@ -1361,10 +1442,8 @@ if ($Mode -eq 'Calibrate') {
     -OutputReportPath $resolvedReportPath `
     -ScanId $(if ([string]::IsNullOrWhiteSpace($CaptureId)) { [guid]::NewGuid().ToString('N') } else { $CaptureId })
   if (-not [bool]$report.ok) {
-    $screenshot = Save-FailureScreenshot -Config $config -WindowInfo $windowInfo -Prefix 'calibration'
     Write-RobotLog $config 'warn' 'Automatic calibration was not accepted' @{
       reportPath = $resolvedReportPath
-      screenshotPath = $screenshot
       issues = @($report.issues)
     }
     Write-Host 'ROBOT_CALIBRATION_INCOMPLETE'

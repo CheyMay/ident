@@ -119,8 +119,12 @@ function New-RobotTrainingSession {
 }
 
 function Start-RobotTrainingCapture {
-    param([object]$Session, [string]$ScannerPath, [string]$ConfigPath)
+    param([object]$Session, [string]$ScannerPath, [string]$ConfigPath, [long]$WindowHandle = 0, [int]$ProcessId = 0)
     if ($null -ne $Session.Current) { return $false }
+    if ($WindowHandle -eq 0 -or $ProcessId -le 0) { throw 'Select an IDENT window before capturing.' }
+    if ($Session.Archive -or ([DateTimeOffset]::Now - $Session.StartedAt).TotalMinutes -ge 15) {
+        throw 'This observation session has ended. Finish it and start a new session.'
+    }
     if ($Session.Attempt -ge 12) { throw 'Capture limit reached. Finish this session.' }
     $Session.Attempt++
     $directory = Join-Path $Session.Directory ('capture-{0:d2}' -f $Session.Attempt)
@@ -128,8 +132,9 @@ function Start-RobotTrainingCapture {
     $id = [guid]::NewGuid().ToString('N')
     $reportPath = Join-Path $directory 'report.json'
     $started = [DateTimeOffset]::Now
-    $args = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScannerPath`" -Mode Calibrate " +
-        "-ConfigPath `"$ConfigPath`" -ReportPath `"$reportPath`" -CaptureId $id"
+    $args = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScannerPath`" -Mode Observe " +
+        "-ConfigPath `"$ConfigPath`" -ReportPath `"$reportPath`" -CaptureId $id " +
+        "-ObservedWindowHandle $WindowHandle -ObservedProcessId $ProcessId"
     Initialize-RobotCaptureJob
     $job = New-Object IdentCaptureJob
     $process = $null
@@ -148,7 +153,10 @@ function Start-RobotTrainingCapture {
         throw
     }
     try { $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
-    $Session.Current = [pscustomobject]@{ Process = $process; Job = $job; ReportPath = $reportPath; CaptureId = $id; StartedAt = $started }
+    $Session.Current = [pscustomobject]@{
+        Process = $process; Job = $job; ReportPath = $reportPath; CaptureId = $id; StartedAt = $started
+        WindowHandle = $WindowHandle; TargetProcessId = $ProcessId
+    }
     $Session.LastError = ''
     return $true
 }
@@ -168,6 +176,12 @@ function Update-RobotTrainingCapture {
         [void]$capture.Process.WaitForExit(0)
         if ($null -eq $capture.Process.ExitCode -or $capture.Process.ExitCode -ne 0) { throw "Scanner exited with code $($capture.Process.ExitCode). Repeat the capture." }
         $verified = Get-VerifiedRobotCapture $capture.ReportPath $capture.CaptureId $capture.StartedAt
+        if ($verified.Report.mode -ne 'observation' -or
+            $verified.Report.observedWindowHandle -ne $capture.WindowHandle -or
+            $verified.Report.observedProcessId -ne $capture.TargetProcessId -or
+            [bool]$verified.Report.readyForUnattendedExecution) {
+            throw 'The scanner returned a different window or an unexpected capture mode.'
+        }
         $Session.Captures.Add([pscustomobject]@{
             Number = $Session.Attempt; ReportPath = $capture.ReportPath; CaptureId = $capture.CaptureId
             StartedAt = $capture.StartedAt; Path = $verified.Path; Sha256 = [string]$verified.Report.captureSha256

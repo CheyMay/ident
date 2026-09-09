@@ -18,7 +18,11 @@ public class IdentTrainingWindow : Form {
     public event EventHandler CaptureRequested;
     public bool RegisterCapture() { return RegisterHotKey(Handle, 901, 0x4003, 0x77); }
     public void ReleaseCapture() { UnregisterHotKey(Handle, 901); }
-    public int ForegroundProcessId() { uint pid; GetWindowThreadProcessId(GetForegroundWindow(), out pid); return (int)pid; }
+    public long[] ForegroundTarget() {
+        IntPtr window = GetForegroundWindow(); uint pid;
+        GetWindowThreadProcessId(window, out pid);
+        return new long[] { window.ToInt64(), pid };
+    }
     protected override void WndProc(ref Message message) {
         if (message.Msg == 0x312 && message.WParam.ToInt32() == 901 && CaptureRequested != null) CaptureRequested(this, EventArgs.Empty);
         base.WndProc(ref message);
@@ -106,7 +110,8 @@ try {
     $form.add_CaptureRequested({
         try {
             if ($script:TrainingFinished -or $null -ne $session.Current) { return }
-            $foregroundPid = $form.ForegroundProcessId()
+            $target = $form.ForegroundTarget()
+            $foregroundPid = [int]$target[1]
             $process = Get-Process -Id $foregroundPid -ErrorAction Stop
             if ($process.Id -eq $PID -or $process.MainWindowTitle -match 'Code9 IDENT|PowerShell|Windows Terminal' -or
                 ([string]$config.ident.processName -and $process.ProcessName -ne [string]$config.ident.processName) -or
@@ -114,7 +119,7 @@ try {
                 $status.Text = 'Перейдите в IDENT и нажмите Ctrl+Alt+F8 там.'
                 return
             }
-            if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath) {
+            if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath $target[0] $foregroundPid) {
                 $status.Text = 'Сохраняется состояние IDENT. Дождитесь сигнала; затем переходите к следующему экрану.'
                 $finish.Enabled = $false
             }
@@ -128,7 +133,8 @@ try {
                 $status.Text = if ($session.LastError) { 'Скан не получен. Повторите Ctrl+Alt+F8 на нужном экране IDENT.' } else {
                     "Снимков: $($session.Captures.Count). Готово. Откройте следующий экран и нажмите Ctrl+Alt+F8."
                 }
-                [System.Media.SystemSounds]::Asterisk.Play()
+                if ($session.LastError) { [System.Media.SystemSounds]::Exclamation.Play() }
+                else { [System.Media.SystemSounds]::Asterisk.Play() }
             }
             $finish.Enabled = $null -eq $session.Current -and $session.Captures.Count -gt 0
             if (([DateTimeOffset]::Now - $session.StartedAt).TotalMinutes -ge 15 -and $null -eq $session.Current) {

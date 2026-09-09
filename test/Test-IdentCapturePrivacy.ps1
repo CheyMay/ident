@@ -19,10 +19,10 @@ try {
     $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding UTF8
     $before=(Get-FileHash $path).Hash
     $scriptPath=Join-Path $repository 'robot\ident-rpa\Start-IdentRobot.ps1'
-    foreach ($mode in @('Calibrate','Inspect','Verify')) {
+    foreach ($mode in @('Calibrate','Inspect','Verify','Observe')) {
         $process=Start-Process powershell.exe -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput (Join-Path $temp "$mode-output.log") -RedirectStandardError (Join-Path $temp "$mode-error.log") `
-            -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode $mode -ConfigPath `"$path`""
+            -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -Mode $mode -ConfigPath `"$path`" -ReportPath `"$temp\report.json`" -CaptureId privacy -ObservedWindowHandle 101 -ObservedProcessId 102"
         $null=$process.Handle
         if (-not $process.WaitForExit(15000)) { throw "Privacy fixture timed out: $mode" }
         if ($process.ExitCode -eq 0) { throw "Missing IDENT must not report success: $mode" }
@@ -36,6 +36,17 @@ try {
     Set-Item Function:Save-FailureScreenshot $node.Body.GetScriptBlock()
     if ((Save-FailureScreenshot $config $null) -ne '') { throw 'Missing IDENT must not fall back to desktop capture.' }
     if (@(Get-ChildItem -LiteralPath $temp -Filter '*.png' -Recurse).Count -ne 0) { throw 'Whole desktop screenshot was created.' }
+    $branch=$ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$Mode -eq ''Calibrate'''},$true)
+    if ($null -eq $branch) { throw 'Calibration entry point not found.' }
+    $script:ScreenshotCalls=0
+    function Save-FailureScreenshot { $script:ScreenshotCalls++; return 'forbidden.png' }
+    function Invoke-AutomaticCalibration { return [pscustomobject]@{ok=$false;issues=@('Fixture incomplete form')} }
+    function Write-RobotLog { }
+    $Mode='Calibrate'; $windowInfo=[pscustomobject]@{process='fixture'}
+    $ReportPath=Join-Path $temp 'incomplete.json'; $ConfigPath=$path; $CaptureId='incomplete'
+    $rejected=$false
+    try { & ([scriptblock]::Create($branch.Extent.Text)) } catch { $rejected=$true }
+    if (-not $rejected -or $script:ScreenshotCalls -ne 0) { throw 'Incomplete calibration captured a screenshot or reported success.' }
     Write-Host 'IDENT CAPTURE PRIVACY OK: read-only errors produce no screenshots; missing IDENT never captures the desktop; active profile unchanged.'
 }
 finally {

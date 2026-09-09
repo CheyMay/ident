@@ -102,11 +102,12 @@ try {
     $configPath=Join-Path $temp 'fixture.json'
     @{ behavior='success' } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
     $session=New-RobotTrainingSession $temp; $sessions.Add($session)
-    Assert-True (Start-RobotTrainingCapture $session $fixture $configPath) 'First capture not started.'
-    Assert-True (-not (Start-RobotTrainingCapture $session $fixture $configPath)) 'Overlapping scanner started.'
+    Assert-Rejected { Start-RobotTrainingCapture $session $fixture $configPath }
+    Assert-True (Start-RobotTrainingCapture $session $fixture $configPath 101 102) 'First capture not started.'
+    Assert-True (-not (Start-RobotTrainingCapture $session $fixture $configPath 101 102)) 'Overlapping scanner started.'
     Wait-Capture $session
     Assert-True ($session.Captures.Count -eq 1 -and -not $session.LastError) ("First capture not accepted: " + $session.LastError)
-    [void](Start-RobotTrainingCapture $session $fixture $configPath)
+    [void](Start-RobotTrainingCapture $session $fixture $configPath 101 102)
     Wait-Capture $session
     Assert-True ($session.Captures.Count -eq 2) 'Multiple stages did not accumulate.'
     $zip=Export-RobotTrainingSession $session
@@ -119,10 +120,14 @@ try {
         try { $manifest=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
         Assert-True ($manifest.actionsExecuted -eq 0 -and -not $manifest.profileActivated -and $manifest.captures.Count -eq 2) 'Misleading session status.'
     } finally { $archive.Dispose() }
-    foreach ($behavior in @('stale','fail','hang')) {
+    Assert-Rejected { Start-RobotTrainingCapture $session $fixture $configPath 101 102 }
+    $expired=New-RobotTrainingSession $temp; $sessions.Add($expired)
+    $expired.StartedAt=[DateTimeOffset]::Now.AddMinutes(-16)
+    Assert-Rejected { Start-RobotTrainingCapture $expired $fixture $configPath 101 102 }
+    foreach ($behavior in @('stale','fail','wrong-window','hang')) {
         @{ behavior=$behavior } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
         $failed=New-RobotTrainingSession $temp; $sessions.Add($failed)
-        [void](Start-RobotTrainingCapture $failed $fixture $configPath)
+        [void](Start-RobotTrainingCapture $failed $fixture $configPath 101 102)
         Wait-Capture $failed $(if ($behavior -eq 'hang') { 1 } else { 60 })
         Assert-True ($failed.Captures.Count -eq 0 -and $failed.LastError.Length -gt 0) "Invalid capture accepted: $behavior"
         Assert-Rejected { Export-RobotTrainingSession $failed }
@@ -143,8 +148,9 @@ try {
     $recovered=Enter-RobotInteractionLease $temp -Training; $leases.Add($recovered)
     Assert-True ($null -ne $recovered) 'Observation crash retained a stale lease.'
     $recovered.Dispose()
-    $session.Attempt=12
-    Assert-Rejected { Start-RobotTrainingCapture $session $fixture $configPath }
+    $limited=New-RobotTrainingSession $temp; $sessions.Add($limited)
+    $limited.Attempt=12
+    Assert-Rejected { Start-RobotTrainingCapture $limited $fixture $configPath 101 102 }
     Write-Host 'IDENT TRAINING OK: exclusive observation, no claims, explicit split names, sequential captures, private ZIP, stale/failure/timeout/owner-crash recovery.'
 }
 finally {
