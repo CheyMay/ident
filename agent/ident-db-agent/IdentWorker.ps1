@@ -456,6 +456,25 @@ function Get-AutostartSummary {
     }
 }
 
+function Get-RobotCalibrationSummary {
+    $summary = [ordered]@{ state = 'not_scanned' }
+    try {
+        $path = Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'calibration-report.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $summary }
+        if ((Get-Item -LiteralPath $path).Length -gt 1MB) { throw 'Calibration report exceeds size limit.' }
+        $report = Read-JsonFile -Path $path
+        if ($null -eq $report) { throw 'Calibration report is unreadable.' }
+        $summary.state = 'reported'
+        # Only diagnostic metadata; never upload captured controls or patient text.
+        foreach ($name in @('generatedAt','captureId','scanSchemaVersion','captureSha256','captureBytes',
+                'controlsScanned','visibleControls','ok','selectorsComplete','splitNameFieldsDetected','readyForUnattendedExecution')) {
+            if ($report.PSObject.Properties.Name -contains $name) { $summary[$name] = $report.$name }
+        }
+    }
+    catch { $summary.state = 'unreadable' }
+    return $summary
+}
+
 function Get-DiagnosticsStateSnapshot {
     $snapshot = [ordered]@{}
     foreach ($sectionName in @('worker', 'schedule', 'schema', 'robot', 'update', 'diagnostics')) {
@@ -476,6 +495,7 @@ function Get-DiagnosticsStateSnapshot {
         }
         $snapshot[$sectionName] = $sectionSnapshot
     }
+    $snapshot['calibration'] = Get-RobotCalibrationSummary
     return $snapshot
 }
 
@@ -1387,11 +1407,18 @@ function Get-RobotConfigurationProblem {
         ) {
             return 'Robot automatic calibration has not been verified.'
         }
+        $boundSelectors = @{}
         foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
             $fieldSteps = @($config.workflow.steps | Where-Object {
                 $_.action -eq 'setText' -and $_.PSObject.Properties.Name -contains 'valueFrom' -and $_.valueFrom -eq $field
             })
             if ($fieldSteps.Count -ne 1) { return "Booking workflow must set and verify $field exactly once." }
+            $binding = [string]$fieldSteps[0].selector
+            if ([string]::IsNullOrWhiteSpace($binding) -or $boundSelectors.ContainsKey($binding) -or
+                @($config.workflow.steps | Where-Object { [string]$_.selector -eq $binding }).Count -ne 1) {
+                return 'Each required booking value must use a separate field selector.'
+            }
+            $boundSelectors[$binding] = $true
         }
         $saves = @($config.workflow.steps | Where-Object { $_.selector -eq 'saveButton' -or $_.name -eq 'save' })
         if ($saves.Count -ne 1 -or @($config.workflow.steps)[-1] -ne $saves[0] -or $saves[0].action -ne 'click') {
@@ -1404,6 +1431,7 @@ function Get-RobotConfigurationProblem {
             return 'Interactive confirmation must be disabled for background execution.'
         }
         foreach ($step in @($config.workflow.steps)) {
+            if ([string]$step.action -notin @('click', 'setText')) { return 'Unsupported booking workflow action.' }
             $selector = $config.selectors.([string]$step.selector)
             if ($null -eq $selector) {
                 return "Selector '$($step.selector)' is missing."
@@ -1418,6 +1446,10 @@ function Get-RobotConfigurationProblem {
             if ($values.Count -eq 0) {
                 return "Selector '$($step.selector)' is empty."
             }
+            if ([string]::IsNullOrWhiteSpace([string]$selector.name) -and
+                [string]::IsNullOrWhiteSpace([string]$selector.automationId)) {
+                return "Selector '$($step.selector)' needs a stable name or AutomationId."
+            }
         }
         if ($config.workflow.PSObject.Properties.Name -notcontains 'successCondition') {
             return 'Robot success condition is missing.'
@@ -1425,6 +1457,9 @@ function Get-RobotConfigurationProblem {
         $successCondition = $config.workflow.successCondition
         if ([string]$successCondition.type -ne 'elementPresent') {
             return 'A disappearing window is not proof of a booking. A positive IDENT success indicator is required.'
+        }
+        if (@($config.workflow.steps | Where-Object { $_.selector -eq $successCondition.selector }).Count -gt 0) {
+            return 'Success indicator must be separate from editable fields and action buttons.'
         }
         $successSelector = $config.selectors.([string]$successCondition.selector)
         if ($null -eq $successSelector) {
@@ -1439,6 +1474,10 @@ function Get-RobotConfigurationProblem {
             ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($successValues.Count -eq 0) {
             return "Success selector '$($successCondition.selector)' is empty."
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$successSelector.name) -and
+            [string]::IsNullOrWhiteSpace([string]$successSelector.automationId)) {
+            return 'Success selector needs a stable name or AutomationId.'
         }
         return ''
     }

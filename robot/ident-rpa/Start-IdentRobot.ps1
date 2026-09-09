@@ -12,6 +12,11 @@
 
   [string]$ReportPath = '',
 
+  [string]$CaptureId = '',
+
+  [ValidateRange(0, 15)]
+  [int]$StartDelaySeconds = 0,
+
   [string]$SuccessMarkerPath = '',
 
   [switch]$Execute
@@ -101,7 +106,7 @@ function Write-JsonFileAtomic {
   New-Item -ItemType Directory -Path $directory -Force | Out-Null
   $temporaryPath = "$fullPath.tmp-$([Guid]::NewGuid().ToString('N'))"
   try {
-    $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+    ConvertTo-Json -InputObject $Value -Depth $Depth | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
     if (Test-Path -LiteralPath $fullPath) {
       $backupPath = "$fullPath.bak"
       Copy-Item -LiteralPath $fullPath -Destination $backupPath -Force
@@ -707,7 +712,10 @@ function Get-CalibrationDefinitions {
     [pscustomobject]@{ Name = 'requestsSection'; Types = @('ControlType.Button', 'ControlType.TabItem', 'ControlType.Hyperlink'); Pattern = '(заявк|обращен|расписан|request|ticket|calendar)' },
     [pscustomobject]@{ Name = 'newAppointmentButton'; Types = @('ControlType.Button', 'ControlType.MenuItem', 'ControlType.Hyperlink'); Pattern = '(нов(ый|ая).*(прием|запис)|записать\s+на\s+прием|new.*appointment)' },
     [pscustomobject]@{ Name = 'patientPhoneInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(телефон|мобильн|phone|mobile)' },
-    [pscustomobject]@{ Name = 'patientNameInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(фио|фамили|пациент|patient|surname|fullname|full.?name)' },
+    [pscustomobject]@{ Name = 'patientNameInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(фио|фамилия\s+имя\s+отчество|fullname|full.?name)' },
+    [pscustomobject]@{ Name = 'patientLastNameInput'; Types = @('ControlType.Edit'); Pattern = '(^|\W)(фамилия|surname|last.?name)(\W|$)' },
+    [pscustomobject]@{ Name = 'patientFirstNameInput'; Types = @('ControlType.Edit'); Pattern = '(^|\W)(имя|given.?name|first.?name)(\W|$)' },
+    [pscustomobject]@{ Name = 'patientMiddleNameInput'; Types = @('ControlType.Edit'); Pattern = '(отчество|patronymic|middle.?name)' },
     [pscustomobject]@{ Name = 'patientBirthDateInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(дата.?рожд|день.?рожд|birth.?date|birth.?day|date.?of.?birth)' },
     [pscustomobject]@{ Name = 'doctorInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.ListItem'); Pattern = '(врач|доктор|специалист|doctor|physician)' },
     [pscustomobject]@{ Name = 'startTimeInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox', 'ControlType.Custom'); Pattern = '(дата.*врем|время.*прием|начал|plan.?start|start.?time|appointment.?time)' },
@@ -734,7 +742,8 @@ function Get-CalibrationSelector {
   foreach ($row in $Rows) {
     $rowKey = ([string]$row.rootName) + "`n" + ([string]$row.path)
     if ([string]$row.controlType -notin @($definition.Types) -or $UsedPaths.ContainsKey($rowKey) -or
-        -not [bool](Get-ObjectProperty $row 'isEnabled' $true) -or [bool](Get-ObjectProperty $row 'isOffscreen' $false)) {
+        -not [bool](Get-ObjectProperty $row 'isEnabled' $true) -or [bool](Get-ObjectProperty $row 'isOffscreen' $false) -or
+        $null -eq (Convert-BoundsText ([string]$row.bounds))) {
       continue
     }
     $ownText = (([string]$row.name) + ' ' + ([string]$row.automationId) + ' ' + ([string]$row.className)).ToLowerInvariant().Replace('ё', 'е')
@@ -781,20 +790,37 @@ function Get-CalibrationSelector {
   }
 }
 
+function Select-CalibrationRoots {
+  param([object[]]$Roots)
+  # A large calendar must not consume the scan budget before an open dialog.
+  $dialogs = @($Roots | Where-Object {
+    -not $_.Current.IsOffscreen -and $_.Current.Name -match '^\s*(Новый при[её]м|New appointment)(\s|$|-)'
+  })
+  if ($dialogs.Count -gt 0) { return $dialogs }
+  return $Roots
+}
+
 function Invoke-AutomaticCalibration {
   param(
     [object]$WindowInfo,
     [object]$Config,
     [string]$ConfigFile,
-    [string]$OutputReportPath
+    [string]$OutputReportPath,
+    [string]$ScanId = ([guid]::NewGuid().ToString('N'))
   )
 
-  $roots = @(Get-IdentAutomationRoots $WindowInfo)
+  $roots = @(Select-CalibrationRoots -Roots @(Get-IdentAutomationRoots $WindowInfo))
   $maxDepth = [Math]::Max(20, [Math]::Min(28, [int](Get-ObjectProperty $Config.inspect 'maxDepth' 24)))
   $rows = @(Get-UiTreeRows -Roots $roots -MaxDepth $maxDepth)
   $capturePath = Join-Path (Split-Path -Parent $ConfigFile) ('ui-tree-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.json')
   Write-JsonFileAtomic -Path $capturePath -Value @($rows)
-  $visibleControls = @($rows | Where-Object { $null -ne (Convert-BoundsText ([string]$_.bounds)) })
+  $visibleControls = @($rows | Where-Object {
+    -not [bool]$_.isOffscreen -and $null -ne (Convert-BoundsText ([string]$_.bounds))
+  })
+  $nameParts = @('patientLastNameInput', 'patientFirstNameInput', 'patientMiddleNameInput' | ForEach-Object {
+    Get-CalibrationSelector -Name $_ -Rows $rows -UsedPaths @{}
+  })
+  $splitNameFieldsDetected = @($nameParts | Where-Object Ok).Count -ge 2
   $required = New-Object System.Collections.Generic.List[string]
   foreach ($step in @($Config.workflow.steps)) {
     $selectorName = [string](Get-ObjectProperty $step 'selector' '')
@@ -816,6 +842,10 @@ function Invoke-AutomaticCalibration {
     }
   }
   $issues = @($checks | Where-Object { -not [bool]$_.Ok } | ForEach-Object { "$($_.Name): $($_.Reason)" })
+  if ($splitNameFieldsDetected -and $required.Contains('patientNameInput')) {
+    $issues += 'В IDENT раздельные поля ФИО. Нужен отдельный профиль; полное ФИО нельзя вводить в поле фамилии.'
+    $resolved.Remove('patientNameInput')
+  }
   foreach ($step in @($Config.workflow.steps)) {
     $name = [string]$step.selector
     $candidate = @($checks | Where-Object { $_.Name -eq $name -and $_.Ok })
@@ -832,7 +862,13 @@ function Invoke-AutomaticCalibration {
     selectorsComplete = ($issues.Count -eq 0)
     generatedAt = (Get-Date).ToString('o')
     mode = 'automatic'
+    captureId = $ScanId
+    scanSchemaVersion = 2
     capturePath = $capturePath
+    captureSha256 = (Get-FileHash -LiteralPath $capturePath -Algorithm SHA256).Hash
+    captureBytes = (Get-Item -LiteralPath $capturePath).Length
+    splitNameFieldsDetected = $splitNameFieldsDetected
+    patientNameFields = @($nameParts | Where-Object Ok)
     readyForUnattendedExecution = $false
     processName = [string]$WindowInfo.process.ProcessName
     windowTitle = [string]$WindowInfo.process.MainWindowTitle
@@ -853,11 +889,14 @@ function Invoke-AutomaticCalibration {
   if ($visibleControls.Count -ge 8) {
     # Screen capture is evidence for calibration, never proof of a working workflow.
     $candidatePath = Join-Path (Split-Path -Parent $ConfigFile) 'calibration-candidate.json'
-    foreach ($name in $resolved.Keys) {
+    foreach ($name in $required) {
+      $replacement = if ($resolved.Contains($name)) { $resolved[$name] } else {
+        [pscustomobject]@{ name = ''; automationId = ''; className = ''; controlType = '' }
+      }
       if ($Config.selectors.PSObject.Properties.Name -contains $name) {
-        $Config.selectors.$name = $resolved[$name]
+        $Config.selectors.$name = $replacement
       } else {
-        $Config.selectors | Add-Member -NotePropertyName $name -NotePropertyValue $resolved[$name]
+        $Config.selectors | Add-Member -NotePropertyName $name -NotePropertyValue $replacement
       }
     }
     $calibration = [pscustomobject]@{
@@ -927,14 +966,26 @@ function Assert-BookingContract {
   if ($saves.Count -ne 1 -or $steps[-1] -ne $saves[0] -or $saves[0].action -ne 'click') {
     throw 'Exactly one save action must be the final workflow step.'
   }
+  foreach ($step in $steps) {
+    if ([string]$step.action -notin @('click', 'setText')) { throw 'Unsupported booking workflow action.' }
+  }
+  $boundSelectors = @{}
   foreach ($field in @('ticket.ClientFullName', 'ticket.ClientPhone', 'ticket.DoctorName', 'ticket.PlanStart', 'ticket.PlanEnd')) {
-    if (@($steps | Where-Object { $_.action -eq 'setText' -and (Get-ObjectProperty $_ 'valueFrom' '') -eq $field }).Count -ne 1) {
+    $fieldSteps = @($steps | Where-Object { $_.action -eq 'setText' -and (Get-ObjectProperty $_ 'valueFrom' '') -eq $field })
+    if ($fieldSteps.Count -ne 1) {
       throw "Booking workflow must set and verify $field exactly once."
     }
+    $binding = [string]$fieldSteps[0].selector
+    if ([string]::IsNullOrWhiteSpace($binding) -or $boundSelectors.ContainsKey($binding) -or
+        @($steps | Where-Object { [string]$_.selector -eq $binding }).Count -ne 1) {
+      throw 'Each required booking value must use a separate field selector.'
+    }
+    $boundSelectors[$binding] = $true
     if ([string]::IsNullOrWhiteSpace((Resolve-TaskValue $Task $field))) { throw "Required booking value is missing: $field" }
   }
   $start = [DateTimeOffset]::Parse([string]$Task.ticket.PlanStart, [Globalization.CultureInfo]::InvariantCulture)
   $end = [DateTimeOffset]::Parse([string]$Task.ticket.PlanEnd, [Globalization.CultureInfo]::InvariantCulture)
+  if ($start -le [DateTimeOffset]::Now) { throw 'Appointment start is in the past. Review the ticket; no UI action was performed.' }
   $minutes = ($end - $start).TotalMinutes
   if ($minutes -le 0 -or $minutes % 15 -ne 0 -or $start.Date -ne $end.Date -or $start.Offset -ne $end.Offset) {
     throw 'Booking duration must be a positive multiple of 15 minutes within one day and timezone.'
@@ -961,6 +1012,9 @@ function Assert-BookingContract {
   }
   if ([string]$Config.workflow.successCondition.type -ne 'elementPresent') {
     throw 'A disappearing dialog is not proof of a booking. Configure a positive IDENT success indicator.'
+  }
+  if (@($steps | Where-Object { $_.selector -eq $Config.workflow.successCondition.selector }).Count -gt 0) {
+    throw 'Success indicator must be separate from editable fields and action buttons.'
   }
 }
 
@@ -1126,6 +1180,7 @@ function Invoke-Workflow {
       Assert-InteractiveDesktop
       Assert-UserIdle -MinimumSeconds $MinUserIdleSeconds
     }
+    if ($WindowInfo.process.HasExited) { throw 'IDENT closed during the workflow. Review the pending booking before retrying.' }
     $selector = $Config.selectors.($step.selector)
     $element = Find-RobotElementInIdent $WindowInfo $selector
     if (-not $element) {
@@ -1214,7 +1269,7 @@ try {
 
   if ($Mode -eq 'SelfTest') {
     $definitions = @(Get-CalibrationDefinitions)
-    if ($definitions.Count -ne 11 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 11) {
+    if ($definitions.Count -ne 14 -or @($definitions | Select-Object -ExpandProperty Name -Unique).Count -ne 14) {
       throw 'Robot self-test failed: calibration definitions are invalid.'
     }
     $sampleRows = @(
@@ -1232,6 +1287,9 @@ try {
     return
   }
 
+  if ($StartDelaySeconds -gt 0 -and $Mode -in @('Inspect', 'Calibrate')) {
+    Start-Sleep -Seconds $StartDelaySeconds
+  }
   $config = Read-JsonFile $ConfigPath
   $windowInfo = Get-IdentWindow $config
 
@@ -1267,7 +1325,8 @@ if ($Mode -eq 'Calibrate') {
     -WindowInfo $windowInfo `
     -Config $config `
     -ConfigFile $ConfigPath `
-    -OutputReportPath $resolvedReportPath
+    -OutputReportPath $resolvedReportPath `
+    -ScanId $(if ([string]::IsNullOrWhiteSpace($CaptureId)) { [guid]::NewGuid().ToString('N') } else { $CaptureId })
   if (-not [bool]$report.ok) {
     $screenshot = Save-FailureScreenshot -Config $config -WindowInfo $windowInfo -Prefix 'calibration'
     Write-RobotLog $config 'warn' 'Automatic calibration was not accepted' @{
@@ -1278,11 +1337,11 @@ if ($Mode -eq 'Calibrate') {
     Write-Host 'ROBOT_CALIBRATION_INCOMPLETE'
     throw (@($report.issues) -join ' ')
   }
-  Write-RobotLog $config 'info' 'Automatic calibration completed' @{
+  Write-RobotLog $config 'info' 'IDENT UI capture completed; profile not activated' @{
     reportPath = $resolvedReportPath
     selectors = @($report.requiredSelectors).Count
   }
-  Write-Host 'ROBOT_CALIBRATION_OK'
+  Write-Host "ROBOT_CAPTURE_OK profileVerified=false selectorsComplete=$($report.selectorsComplete)"
   return
 }
 

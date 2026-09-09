@@ -74,7 +74,7 @@ exit 0
             confirmBeforeEachStep = $false
             successCondition = @{
                 type = 'elementPresent'
-                selector = 'saveButton'
+                selector = 'bookingConfirmed'
                 timeoutSeconds = 1
             }
             steps = @(
@@ -86,6 +86,7 @@ exit 0
             )
         }
         selectors = @{
+            bookingConfirmed = @{ name = 'Booking confirmed'; automationId = ''; className = ''; controlType = 'Text' }
             saveButton = @{
                 name = 'Save'
                 automationId = ''

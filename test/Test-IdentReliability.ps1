@@ -54,7 +54,7 @@ try {
     $config.selectors.patientBirthDateInput.automationId = 'PatientBirthDateInput'
     Assert-BookingContract $config $task
     $birthStep.selector = 'patientNameInput'
-    Assert-Throws { Assert-BookingContract $config $task } 'separate patient field selector'
+    Assert-Throws { Assert-BookingContract $config $task } 'separate.*field selector'
     $birthStep.selector = 'patientBirthDateInput'
     $task.ticket | Add-Member -NotePropertyName DurationMinutes -NotePropertyValue 375
     Assert-Throws { Assert-BookingContract $config $task } 'DurationMinutes must match'
@@ -120,8 +120,10 @@ try {
     }
     function Get-RobotConfigurationProblem { return '' }
     function Get-MinimumUserIdleSeconds { return 60 }
-    function Test-InteractiveDesktopAvailable { return $true }
-    function Get-UserIdleSeconds { return 120 }
+    $script:TestInteractiveSession = $true
+    $script:TestIdleSeconds = 120
+    function Test-InteractiveDesktopAvailable { return $script:TestInteractiveSession }
+    function Get-UserIdleSeconds { return $script:TestIdleSeconds }
     function Write-RuntimeState {}
     function Write-WorkerLog { param($Level,$EventName,$Data) }
     function Save-RobotReceipt { param($Id,$Fingerprint,$CompletedAt) }
@@ -152,6 +154,14 @@ try {
         }
         throw 'Simulated timeout after UI action'
     }
+    $script:TestIdleSeconds = 59
+    Invoke-RobotPoll
+    Assert-True ($script:State.robot.state -eq 'waiting_for_idle' -and $script:Claims -eq 0) 'Activity within the last minute must not claim a ticket'
+    $script:TestIdleSeconds = 120
+    $script:TestInteractiveSession = $false
+    Invoke-RobotPoll
+    Assert-True ($script:State.robot.state -eq 'waiting_for_session' -and $script:Claims -eq 0) 'A locked session must not claim a ticket'
+    $script:TestInteractiveSession = $true
     Invoke-RobotPoll
     Assert-True ($script:State.robot.state -eq 'awaiting_confirmation') 'Timeout after proof must retain success'
     Invoke-RobotPoll

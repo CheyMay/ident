@@ -222,6 +222,9 @@ $script:CalibrationReportPath = Join-Path (Split-Path -Parent $script:RobotConfi
 $script:CalibrationProcess = $null
 $script:CalibrationStage = 'idle'
 $script:CalibrationStartedAt = [DateTimeOffset]::MinValue
+$script:CalibrationCaptureId = ''
+$script:LastCapturePath = ''
+$script:CalibrationErrorPath = ''
 $script:Refreshing = $false
 $script:AllowClose = $false
 $script:SettingsRequest = $null
@@ -326,7 +329,8 @@ $form.Controls.Add($calibrateButton)
 $inspectButton = New-Object System.Windows.Forms.Button
 $inspectButton.Location = New-Object Drawing.Point(20, 588)
 $inspectButton.Size = New-Object Drawing.Size(154, 34)
-$inspectButton.Text = 'Тех. диагностика'
+$inspectButton.Text = 'Скопировать скан'
+$inspectButton.Enabled = $false
 $form.Controls.Add($inspectButton)
 
 $folderButton = New-Object System.Windows.Forms.Button
@@ -377,10 +381,48 @@ function Request-SchedulePush {
     $scheduleStateLabel.Text = 'Состояние: команда на отправку принята'
 }
 
+function Get-FreshRobotCapture {
+    param([string]$ReportPath, [string]$CaptureId, [DateTimeOffset]$StartedAfter)
+    $report = Read-JsonFile -Path $ReportPath
+    if ($null -eq $report) { throw 'Отчет сканирования не создан. Проверьте журнал ошибки.' }
+    if ($report.PSObject.Properties.Name -notcontains 'captureId' -or
+        [string]$report.captureId -cne $CaptureId -or [string]::IsNullOrWhiteSpace($CaptureId)) {
+        throw 'Это отчет предыдущего запуска. Новый скан не получен.'
+    }
+    $generated = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$report.generatedAt, [ref]$generated) -or
+        $generated -lt $StartedAfter -or $generated -gt [DateTimeOffset]::Now.AddMinutes(1)) {
+        throw 'Время отчета не соответствует текущему сканированию.'
+    }
+    $directory = [IO.Path]::GetFullPath((Split-Path -Parent $ReportPath)).TrimEnd('\') + '\'
+    $path = [IO.Path]::GetFullPath([string]$report.capturePath)
+    if (-not $path.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($path) -notmatch '^ui-tree-[0-9-]+\.json$') {
+        throw 'Неверный путь файла сканирования.'
+    }
+    $file = Get-Item -LiteralPath $path -ErrorAction Stop
+    if ($file.Length -le 0 -or $file.Length -gt 5MB -or $file.Length -ne [long]$report.captureBytes -or
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine [string]$report.captureSha256) {
+        throw 'Файл сканирования поврежден или изменился после проверки.'
+    }
+    $decoded = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $rows = @($decoded)
+    if ([int]$report.scanSchemaVersion -ne 2 -or $rows.Count -ne [int]$report.controlsScanned -or
+        $rows.Count -eq 0 -or $rows[0].PSObject.Properties.Name -notcontains 'rootName' -or
+        $rows[0].PSObject.Properties.Name -notcontains 'patterns') {
+        throw 'Формат скана устарел или содержит неполные данные.'
+    }
+    if (-not [bool]$report.ok) { throw 'Окно IDENT свернуто или недоступно. Откройте его и повторите проверку.' }
+    return [pscustomobject]@{ Path = $path; Report = $report }
+}
+
 function Start-RobotCalibration {
     if ($script:CalibrationStage -ne 'idle' -and $script:CalibrationStage -ne 'failed' -and $script:CalibrationStage -ne 'ready') {
         return
     }
+    $script:CalibrationCaptureId = [guid]::NewGuid().ToString('N')
+    $script:LastCapturePath = ''
+    $inspectButton.Enabled = $false
     try {
         $state = Read-JsonFile -Path $script:StatePath
         if ($robotCheck.Checked -or ($null -ne $state -and ([bool]$state.robot.enabled -or [string]$state.robot.state -eq 'processing'))) {
@@ -390,13 +432,13 @@ function Start-RobotCalibration {
         if (-not (Test-Path -LiteralPath $robotScript)) {
             throw 'Модуль робота не найден. Дождитесь обновления приложения.'
         }
-        Remove-Item -LiteralPath $script:CalibrationReportPath -Force -ErrorAction SilentlyContinue
-        $stdoutPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-output.log'
-        $stderrPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) 'calibration-error.log'
-        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        $stdoutPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) ("calibration-$($script:CalibrationCaptureId)-output.log")
+        $stderrPath = Join-Path (Split-Path -Parent $script:RobotConfigPath) ("calibration-$($script:CalibrationCaptureId)-error.log")
+        $script:CalibrationErrorPath = $stderrPath
         $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$robotScript`" " +
             "-Mode Calibrate -ConfigPath `"$script:RobotConfigPath`" " +
-            "-ReportPath `"$script:CalibrationReportPath`""
+            "-ReportPath `"$script:CalibrationReportPath`" -CaptureId $($script:CalibrationCaptureId) -StartDelaySeconds 8"
+        $script:CalibrationStartedAt = [DateTimeOffset]::Now
         $script:CalibrationProcess = Start-Process `
             -FilePath 'powershell.exe' `
             -ArgumentList $arguments `
@@ -405,17 +447,16 @@ function Start-RobotCalibration {
             -RedirectStandardError $stderrPath `
             -PassThru
         $script:CalibrationStage = 'scanning'
-        $script:CalibrationStartedAt = [DateTimeOffset]::Now
         $calibrateButton.Enabled = $false
         $calibrateButton.Text = 'IDENT проверяется...'
-        $robotGuideLabel.Text = 'Не закрывайте окно IDENT. Проверка не вводит данные и ничего не сохраняет.'
+        $robotGuideLabel.Text = 'Через 8 секунд начнется скан. Вернитесь в нужное окно IDENT. Запись не сохраняется.'
         $errorLabel.Text = ''
         $script:UiError = ''
     }
     catch {
         $script:CalibrationStage = 'failed'
         $calibrateButton.Enabled = $true
-        $calibrateButton.Text = 'Повторить настройку робота'
+        $calibrateButton.Text = 'Повторить проверку IDENT'
         $script:UiError = $_.Exception.Message
         $errorLabel.Text = $script:UiError
     }
@@ -434,33 +475,37 @@ function Update-RobotCalibration {
                 $calibrateButton.Enabled = $true
                 $calibrateButton.Text = 'Повторить проверку IDENT'
                 $script:UiError = 'IDENT не ответил за минуту. Агент продолжает работать. Разверните IDENT и повторите проверку.'
-                Show-MainWindow
             }
             return
         }
         $exitCode = $script:CalibrationProcess.ExitCode
         $script:CalibrationProcess.Dispose()
         $script:CalibrationProcess = $null
-        Show-MainWindow
-        $report = Read-JsonFile -Path $script:CalibrationReportPath
-        if ($exitCode -ne 0 -or $null -eq $report -or -not [bool]$report.ok) {
-            $issues = if ($null -ne $report -and $report.PSObject.Properties.Name -contains 'issues') {
-                @($report.issues | Select-Object -First 3) -join ' '
-            } else {
-                'IDENT или окно новой записи не найдено.'
+        try {
+            if ($exitCode -ne 0) {
+                $detail = if (Test-Path -LiteralPath $script:CalibrationErrorPath) {
+                    (Get-Content -LiteralPath $script:CalibrationErrorPath -TotalCount 3) -join ' '
+                } else { '' }
+                throw "Сканирование завершилось с кодом $exitCode. $detail"
             }
+            $capture = Get-FreshRobotCapture -ReportPath $script:CalibrationReportPath `
+                -CaptureId $script:CalibrationCaptureId -StartedAfter $script:CalibrationStartedAt
+        }
+        catch {
             $script:CalibrationStage = 'failed'
             $calibrateButton.Enabled = $true
-            $calibrateButton.Text = 'Повторить настройку робота'
-            $robotGuideLabel.Text = 'Робот остается выключен. Результат проверки сохранен в папке robot.'
-            $script:UiError = $issues
+            $calibrateButton.Text = 'Повторить проверку IDENT'
+            $robotGuideLabel.Text = 'Свежий скан не получен. Робот остается выключен. Ошибка сохранена в папке robot.'
+            $script:UiError = $_.Exception.Message
             $errorLabel.Text = $script:UiError
             return
         }
         $script:CalibrationStage = 'ready'
+        $script:LastCapturePath = $capture.Path
+        $inspectButton.Enabled = $true
         $calibrateButton.Enabled = $true
         $calibrateButton.Text = 'Проверить другое окно IDENT'
-        $robotGuideLabel.Text = 'Снимок окна сохранен. Настройки не изменены, робот не включен. Нужна проверка полного пути записи.'
+        $robotGuideLabel.Text = ('Свежий скан: {0} элементов, {1}. Профиль не активирован.' -f $capture.Report.controlsScanned, ([DateTimeOffset]::Parse($capture.Report.generatedAt).ToLocalTime().ToString('HH:mm:ss')))
         $script:UiError = ''
     }
 }
@@ -649,11 +694,18 @@ $restartButton.Add_Click({
     }
 })
 $inspectButton.Add_Click({
-    $robotScript = Join-Path $script:BaseDirectory 'robot\Start-IdentRobot.ps1'
-    $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$robotScript`" -Mode Inspect -ConfigPath `"$script:RobotConfigPath`""
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments
+    try {
+        $capture = Get-FreshRobotCapture -ReportPath $script:CalibrationReportPath `
+            -CaptureId $script:CalibrationCaptureId -StartedAfter $script:CalibrationStartedAt
+        [Windows.Forms.Clipboard]::SetText((Get-Content -LiteralPath $capture.Path -Raw -Encoding UTF8))
+        $robotGuideLabel.Text = 'Свежий скан скопирован. Передайте его специалисту. Робот не включен.'
+        $script:UiError = ''
+    } catch { $script:UiError = $_.Exception.Message }
 })
-$folderButton.Add_Click({ Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$script:BaseDirectory`"" })
+$folderButton.Add_Click({
+    $folder = Split-Path -Parent $script:RobotConfigPath
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$folder`""
+})
 $openMenuItem.Add_Click({ Show-MainWindow })
 $tray.Add_DoubleClick({ Show-MainWindow })
 $exitMenuItem.Add_Click({

@@ -57,6 +57,19 @@ any UI action.
 
 ## Inspect IDENT UI
 
+For clinic operators, use the desktop's **Проверить окно IDENT** button. It starts
+after eight seconds, is bounded by a one-minute parent timeout, and does not
+activate the robot. **Скопировать скан** accepts only the current run ID, timestamp,
+schema and matching file hash. The UI no longer opens the legacy Inspect console
+or forces IDENT to lose focus after scanning.
+
+The low-level Inspect command below remains a developer tool; its static output
+file is not evidence of a fresh desktop capture. Calibrate produces timestamped
+files and reports `ROBOT_CAPTURE_OK`, not a verified booking profile. A visible
+top-level New Appointment dialog is scanned before the large underlying calendar.
+Separate surname/given-name/patronymic roles are reported for adapter development;
+they do not make the full-name workflow compatible with a split-name form.
+
 1. Open IDENT manually.
 2. Navigate to the screen where a staff member confirms or creates a booking.
 3. Run:
