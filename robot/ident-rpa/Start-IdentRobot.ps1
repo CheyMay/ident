@@ -18,6 +18,9 @@
 
   [int]$ObservedProcessId = 0,
 
+  [ValidateSet('window','menu')]
+  [string]$ObservedSurface = 'window',
+
   [ValidateRange(0, 15)]
   [int]$StartDelaySeconds = 0,
 
@@ -396,7 +399,8 @@ function Format-Bounds {
 function Get-UiTreeRows {
   param(
     [object[]]$Roots,
-    [int]$MaxDepth
+    [int]$MaxDepth,
+    [int]$ExpectedProcessId = 0
   )
 
   $rows = New-Object System.Collections.Generic.List[object]
@@ -418,6 +422,9 @@ function Get-UiTreeRows {
     }
 
     $current = $Element.Current
+    if ($ExpectedProcessId -gt 0 -and $current.ProcessId -ne $ExpectedProcessId) {
+      throw 'Observed UI contains an element from another process.'
+    }
     $rows.Add([ordered]@{
       depth = $Depth
       path = $Path
@@ -852,18 +859,81 @@ function Assert-ObservedElement {
   return $identity
 }
 
+function Get-ObservedPointerElement {
+  # Only the operator's pointer, never an enumeration of the desktop.
+  $point = [System.Windows.Forms.Cursor]::Position
+  return [System.Windows.Automation.AutomationElement]::FromPoint([System.Windows.Point]::new($point.X, $point.Y))
+}
+
+function Get-ObservedParent {
+  param([object]$Element)
+  return [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($Element)
+}
+
+function Get-ObservedMenuContext {
+  param([int]$ProcessId)
+  $node = Get-ObservedPointerElement
+  $menu = $null
+  for ($depth = 0; $depth -lt 24 -and $null -ne $node; $depth++) {
+    if ($node.Current.ProcessId -ne $ProcessId) { break }
+    if ($node.Current.ControlType.ProgrammaticName -eq 'ControlType.Menu') { $menu = $node }
+    $handle = [long]$node.Current.NativeWindowHandle
+    if ($null -ne $menu -and $handle -ne 0) {
+      $container = Get-ObservedElement $handle
+      $identity = Assert-ObservedElement $container $handle $ProcessId
+      $context = [pscustomobject]@{
+        Element = $menu; Handle = $handle; ContainerIdentity = $identity
+        MenuIdentity = ($menu.GetRuntimeId() -join ',')
+      }
+      Assert-ObservedMenuContext $context $ProcessId
+      return $context
+    }
+    $node = Get-ObservedParent $node
+  }
+  throw 'IDENT menu was not found under the pointer. Keep the menu open and point at a menu item without clicking.'
+}
+
+function Assert-ObservedMenuContext {
+  param([object]$Context, [int]$ProcessId)
+  $menu = $Context.Element
+  if ($null -eq $menu -or $menu.Current.ProcessId -ne $ProcessId -or
+      $menu.Current.ControlType.ProgrammaticName -ne 'ControlType.Menu' -or $menu.Current.IsOffscreen -or
+      $null -eq (Convert-BoundsText (Format-Bounds $menu.Current.BoundingRectangle)) -or
+      -not $Context.MenuIdentity -or ($menu.GetRuntimeId() -join ',') -cne $Context.MenuIdentity) {
+    throw 'Observed IDENT menu closed or changed. No menu capture was saved.'
+  }
+  [void](Assert-ObservedElement (Get-ObservedElement $Context.Handle) $Context.Handle $ProcessId $Context.ContainerIdentity)
+}
+
 function Invoke-ObservedCapture {
-  param([object]$WindowInfo, [long]$WindowHandle, [int]$ProcessId, [string]$OutputReportPath, [string]$ScanId)
+  param([object]$WindowInfo, [long]$WindowHandle, [int]$ProcessId, [string]$OutputReportPath, [string]$ScanId,
+    [ValidateSet('window','menu')][string]$Surface = 'window')
   if ($WindowHandle -eq 0 -or $ProcessId -le 0 -or $null -eq $WindowInfo -or
       $WindowInfo.process.Id -ne $ProcessId -or [string]::IsNullOrWhiteSpace($ScanId)) {
     throw 'Observation must target the IDENT window selected for this attempt.'
   }
   $element = Get-ObservedElement $WindowHandle
   $identity = Assert-ObservedElement $element $WindowHandle $ProcessId
-  $rows = @(Get-UiTreeRows -Roots @($element) -MaxDepth 28)
+  $menu = $null
+  $captureRoot = $element
+  if ($Surface -eq 'menu') {
+    $menu = Get-ObservedMenuContext $ProcessId
+    $captureRoot = $menu.Element
+  }
+  $rows = @(Get-UiTreeRows -Roots @($captureRoot) -MaxDepth 28 -ExpectedProcessId $ProcessId)
   # Never fall back to the calendar when the demonstrated dialog has closed.
   [void](Assert-ObservedElement $element $WindowHandle $ProcessId $identity)
   [void](Assert-ObservedElement (Get-ObservedElement $WindowHandle) $WindowHandle $ProcessId $identity)
+  $menuItems = 0
+  if ($Surface -eq 'menu') {
+    Assert-ObservedMenuContext $menu $ProcessId
+    $currentMenu = Get-ObservedMenuContext $ProcessId
+    if ($currentMenu.MenuIdentity -cne $menu.MenuIdentity -or $currentMenu.Handle -ne $menu.Handle) {
+      throw 'Pointer or IDENT menu changed during capture.'
+    }
+    $menuItems = @($rows | Where-Object { $_.controlType -eq 'ControlType.MenuItem' -and -not $_.isOffscreen }).Count
+    if ($menuItems -eq 0) { throw 'No visible menu items were captured. The calendar is not a menu capture.' }
+  }
   $visible = @($rows | Where-Object {
     -not [bool]$_.isOffscreen -and $null -ne (Convert-BoundsText ([string]$_.bounds))
   })
@@ -878,6 +948,7 @@ function Invoke-ObservedCapture {
     captureBytes = (Get-Item -LiteralPath $path).Length
     controlsScanned = $rows.Count; visibleControls = $visible.Count
     observedWindowHandle = $WindowHandle; observedProcessId = $ProcessId
+    observedSurface = $Surface; menuItemsScanned = $menuItems
     splitNameFieldsDetected = $false; selectorsComplete = $false
     readyForUnattendedExecution = $false; checks = @(); issues = @()
   }
@@ -1409,7 +1480,7 @@ try {
 if ($Mode -eq 'Observe') {
   if ([string]::IsNullOrWhiteSpace($ReportPath)) { throw 'Observation report path is required.' }
   $null = Invoke-ObservedCapture -WindowInfo $windowInfo -WindowHandle $ObservedWindowHandle `
-    -ProcessId $ObservedProcessId -OutputReportPath $ReportPath -ScanId $CaptureId
+    -ProcessId $ObservedProcessId -OutputReportPath $ReportPath -ScanId $CaptureId -Surface $ObservedSurface
   Write-Host 'ROBOT_OBSERVATION_OK profileVerified=false actionsExecuted=0'
   return
 }

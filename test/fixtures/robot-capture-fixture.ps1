@@ -1,4 +1,4 @@
-param([string]$Mode, [string]$ConfigPath, [string]$ReportPath, [string]$CaptureId, [long]$ObservedWindowHandle, [int]$ObservedProcessId)
+param([string]$Mode, [string]$ConfigPath, [string]$ReportPath, [string]$CaptureId, [long]$ObservedWindowHandle, [int]$ObservedProcessId, [string]$ObservedSurface = 'window')
 $ErrorActionPreference = 'Stop'
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 if ($config.behavior -eq 'hang') { Start-Sleep -Seconds 120; exit }

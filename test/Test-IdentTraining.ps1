@@ -108,6 +108,8 @@ try {
     Assert-True (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(8))) 'Delayed capture did not become ready.'
     Assert-True (-not (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(9)))) 'Delayed capture fired twice.'
     Assert-True ($session.Attempt -eq 0 -and $session.Progress.Hotkeys -eq 0) 'Countdown was reported as a scan or a hotkey.'
+    [void](Set-RobotTrainingCaptureDelay $session $now -Surface menu)
+    Assert-True ($session.CaptureSurface -eq 'menu' -and (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(8)))) 'Menu countdown lost its requested surface.'
     [void](Set-RobotTrainingCaptureDelay $session)
     $session.CaptureAt=$null
     Assert-True (-not (Test-RobotTrainingCaptureDue $session ($now.AddSeconds(10)))) 'Cancelled countdown fired.'
@@ -144,6 +146,11 @@ try {
     Assert-True (-not (Test-RobotTrainingCaptureDue $expired ([DateTimeOffset]::Now.AddSeconds(10)))) 'Countdown fired after expiry.'
     Assert-True ($null -eq $expired.CaptureAt) 'Expiry left an armed countdown.'
     Assert-Rejected { Start-RobotTrainingCapture $expired $fixture $configPath 101 102 }
+    $menuSession=New-RobotTrainingSession $temp; $sessions.Add($menuSession)
+    [void](Start-RobotTrainingCapture $menuSession $fixture $configPath 101 102 -Surface menu)
+    Assert-True ($menuSession.Current.Surface -eq 'menu') 'Menu request was downgraded to a window capture.'
+    Wait-Capture $menuSession
+    Assert-True ($menuSession.Captures.Count -eq 0 -and $menuSession.LastError) 'Calendar report was accepted for an explicit menu request.'
     foreach ($behavior in @('stale','fail','wrong-window','hang')) {
         @{ behavior=$behavior } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
         $failed=New-RobotTrainingSession $temp; $sessions.Add($failed)

@@ -139,6 +139,12 @@ function Get-VerifiedRobotCapture {
         $rows.Count -eq 0 -or $rows[0].PSObject.Properties.Name -notcontains 'rootName' -or
         $rows[0].PSObject.Properties.Name -notcontains 'patterns') { throw 'Unsupported or incomplete capture schema.' }
     if (-not [bool]$report.ok) { throw 'IDENT window is hidden or unavailable. Open it and repeat the capture.' }
+    if ($report.PSObject.Properties.Name -contains 'observedSurface' -and $report.observedSurface -eq 'menu') {
+        $items = @($rows | Where-Object { $_.controlType -eq 'ControlType.MenuItem' -and -not $_.isOffscreen }).Count
+        if ($rows[0].controlType -ne 'ControlType.Menu' -or $items -eq 0 -or $items -ne $report.menuItemsScanned) {
+            throw 'The capture does not contain the requested menu.'
+        }
+    }
     return [pscustomobject]@{ Path = $path; Report = $report }
 }
 
@@ -250,17 +256,18 @@ function New-RobotTrainingSession {
     return [pscustomobject]@{
         Id = $sessionId; Directory = $path; StartedAt = [DateTimeOffset]::Now
         Captures = (New-Object 'System.Collections.Generic.List[object]')
-        Attempt = 0; Current = $null; Archive = ''; LastError = ''; CaptureAt = $null
+        Attempt = 0; Current = $null; Archive = ''; LastError = ''; CaptureAt = $null; CaptureSurface = 'window'
         Progress = $progress
     }
 }
 
 function Set-RobotTrainingCaptureDelay {
-    param([object]$Session, [DateTimeOffset]$Now = [DateTimeOffset]::Now)
+    param([object]$Session, [DateTimeOffset]$Now = [DateTimeOffset]::Now, [ValidateSet('window','menu')][string]$Surface = 'window')
     if ($null -ne $Session.Current -or $Session.Archive -or $Session.Attempt -ge 12 -or
         $Session.Progress.State -in @('closed','completed','expired') -or
         ($Now - $Session.StartedAt).TotalMinutes -ge 15) { return $false }
     $Session.CaptureAt = $Now.AddSeconds(8)
+    $Session.CaptureSurface = $Surface
     $Session.Progress.State = 'waiting'; $Session.Progress.ErrorCode = ''
     [void](Write-RobotCaptureProgress $Session.Progress -Force)
     return $true
@@ -281,7 +288,8 @@ function Test-RobotTrainingCaptureDue {
 }
 
 function Start-RobotTrainingCapture {
-    param([object]$Session, [string]$ScannerPath, [string]$ConfigPath, [long]$WindowHandle = 0, [int]$ProcessId = 0)
+    param([object]$Session, [string]$ScannerPath, [string]$ConfigPath, [long]$WindowHandle = 0, [int]$ProcessId = 0,
+        [ValidateSet('window','menu')][string]$Surface = 'window')
     if ($null -ne $Session.Current) { return $false }
     if ($WindowHandle -eq 0 -or $ProcessId -le 0) { throw 'Select an IDENT window before capturing.' }
     if ($Session.Archive -or ([DateTimeOffset]::Now - $Session.StartedAt).TotalMinutes -ge 15) {
@@ -301,6 +309,7 @@ function Start-RobotTrainingCapture {
     $args = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScannerPath`" -Mode Observe " +
         "-ConfigPath `"$ConfigPath`" -ReportPath `"$reportPath`" -CaptureId $id " +
         "-ObservedWindowHandle $WindowHandle -ObservedProcessId $ProcessId"
+    if ($Surface -eq 'menu') { $args += ' -ObservedSurface menu' }
     Initialize-RobotCaptureJob
     $job = New-Object IdentCaptureJob
     $process = $null
@@ -323,7 +332,7 @@ function Start-RobotTrainingCapture {
     try { $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
     $Session.Current = [pscustomobject]@{
         Process = $process; Job = $job; ReportPath = $reportPath; CaptureId = $id; StartedAt = $started
-        WindowHandle = $WindowHandle; TargetProcessId = $ProcessId
+        WindowHandle = $WindowHandle; TargetProcessId = $ProcessId; Surface = $Surface
     }
     $Session.LastError = ''
     return $true
@@ -349,6 +358,10 @@ function Update-RobotTrainingCapture {
             $verified.Report.observedProcessId -ne $capture.TargetProcessId -or
             [bool]$verified.Report.readyForUnattendedExecution) {
             throw 'The scanner returned a different window or an unexpected capture mode.'
+        }
+        if ($capture.Surface -eq 'menu' -and ($verified.Report.PSObject.Properties.Name -notcontains 'observedSurface' -or
+            $verified.Report.observedSurface -ne 'menu' -or $verified.Report.menuItemsScanned -le 0)) {
+            throw 'A calendar capture cannot replace the requested menu.'
         }
         $Session.Captures.Add([pscustomobject]@{
             Number = $Session.Attempt; ReportPath = $capture.ReportPath; CaptureId = $capture.CaptureId
@@ -402,6 +415,10 @@ function Export-RobotTrainingSession {
                 splitNameFieldsDetected = $verified.Report.splitNameFieldsDetected
                 selectorsComplete = $verified.Report.selectorsComplete; readyForUnattendedExecution = $false
                 checks = $verified.Report.checks; issues = $verified.Report.issues
+            }
+            if ($verified.Report.PSObject.Properties.Name -contains 'observedSurface') {
+                $summary.observedSurface = $verified.Report.observedSurface
+                $summary.menuItemsScanned = $verified.Report.menuItemsScanned
             }
             $writer = [IO.StreamWriter]::new($entry.Open(), [Text.UTF8Encoding]::new($false))
             try { $writer.Write(($summary | ConvertTo-Json -Depth 20)) } finally { $writer.Dispose() }

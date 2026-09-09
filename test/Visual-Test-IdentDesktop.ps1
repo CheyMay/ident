@@ -13,7 +13,7 @@ try {
     $secret = ConvertFrom-SecureString (ConvertTo-SecureString 'test-agent-key' -AsPlainText -Force)
     @{ agentApiKeyDpapi = $secret } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'secrets.json') -Encoding UTF8
     [ordered]@{
-        agent = @{ id = 'clinic-demo'; version = '2.14.5' }
+        agent = @{ id = 'clinic-demo'; version = '2.14.6' }
         features = @{ scheduleEnabled = $true; robotEnabled = $false }
         sql = @{ server = '192.168.0.3'; port = 15000; instanceName = ''; database = 'PZ' }
         backend = @{ baseUrl = 'https://ident.code9dev.ru'; timeoutSeconds = 5 }
@@ -23,7 +23,7 @@ try {
         }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'config.json') -Encoding UTF8
     [ordered]@{
-        updatedAt = (Get-Date).ToString('o'); version = '2.14.5'
+        updatedAt = (Get-Date).ToString('o'); version = '2.14.6'
         worker = @{ backendOnline = $true; lastError = '' }
         schedule = @{
             enabled = $true; state = 'ok'; lastSuccessAt = (Get-Date).ToString('o'); lastError = ''

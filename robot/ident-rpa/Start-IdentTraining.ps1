@@ -59,6 +59,11 @@ $delayed.Location = New-Object Drawing.Point(18, 181)
 $delayed.Size = New-Object Drawing.Size(236, 36)
 $delayed.Text = 'Снимок через 8 секунд'
 $form.Controls.Add($delayed)
+$menuDelayed = New-Object Windows.Forms.Button
+$menuDelayed.Location = New-Object Drawing.Point(266, 181)
+$menuDelayed.Size = New-Object Drawing.Size(236, 36)
+$menuDelayed.Text = 'Меню через 8 секунд'
+$form.Controls.Add($menuDelayed)
 $status = New-Object Windows.Forms.Label
 $status.Location = New-Object Drawing.Point(18, 228)
 $status.Size = New-Object Drawing.Size(484, 64)
@@ -87,6 +92,7 @@ function Stop-TrainingSession {
     if ($null -ne $session -and $null -ne $session.Current) { return }
     if ($null -ne $session) { $session.CaptureAt = $null }
     $delayed.Enabled = $false
+    $menuDelayed.Enabled = $false
     $timer.Stop()
     $form.ReleaseCapture()
     if ($null -ne $script:TrainingLease) { $script:TrainingLease.Dispose(); $script:TrainingLease = $null }
@@ -94,6 +100,7 @@ function Stop-TrainingSession {
 }
 
 function Invoke-TrainingCapture {
+    param([ValidateSet('window','menu')][string]$Surface = 'window')
     try {
         if ($script:TrainingFinished -or $null -ne $session.Current) { return }
         $session.CaptureAt = $null
@@ -107,10 +114,11 @@ function Invoke-TrainingCapture {
             [System.Media.SystemSounds]::Exclamation.Play()
             return
         }
-        if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath $target[0] $foregroundPid) {
+        if (Start-RobotTrainingCapture $session (Join-Path $PSScriptRoot 'Start-IdentRobot.ps1') $ConfigPath $target[0] $foregroundPid -Surface $Surface) {
             $status.Text = 'Сохраняется состояние IDENT. Дождитесь сигнала; затем переходите к следующему экрану.'
             $finish.Enabled = $false
             $delayed.Enabled = $false
+            $menuDelayed.Enabled = $false
         }
     } catch {
         $status.Text = 'Скан не получен. Предыдущие снимки сохранены. Повторите показ нужного экрана IDENT.'
@@ -158,25 +166,44 @@ try {
             $session.CaptureAt = $null
             $status.Text = 'Отсчет отменен. Снимки сохранены.'
         } elseif (Set-RobotTrainingCaptureDelay $session) {
-            $status.Text = 'Скан через 8 секунд. Перейдите в IDENT, откройте меню ПКМ и оставьте его открытым.'
+            $status.Text = 'Скан через 8 секунд. Перейдите в нужное окно IDENT и оставьте его открытым.'
+        }
+    })
+    $menuDelayed.Add_Click({
+        if ($script:TrainingFinished) { return }
+        if ($null -ne $session.CaptureAt) {
+            $session.CaptureAt = $null
+            $status.Text = 'Отсчет отменен. Снимки сохранены.'
+        } elseif (Set-RobotTrainingCaptureDelay $session -Surface menu) {
+            $status.Text = 'Откройте меню ПКМ в IDENT. Наведите курсор на пункт меню, не нажимая, и дождитесь сигнала.'
         }
     })
     $timer.Add_Tick({
         try {
             $wasCapturing = $null -ne $session.Current
+            $completedSurface = if ($wasCapturing) { $session.Current.Surface } else { 'window' }
             Update-RobotTrainingCapture $session
-            if (Test-RobotTrainingCaptureDue $session) { Invoke-TrainingCapture }
+            if (Test-RobotTrainingCaptureDue $session) { Invoke-TrainingCapture -Surface $session.CaptureSurface }
             $remaining = [Math]::Max(0, [int][Math]::Ceiling(900 - ([DateTimeOffset]::Now - $session.StartedAt).TotalSeconds))
             $counter.Text = 'Снимков: {0}. Осталось: {1:00}:{2:00}.' -f $session.Captures.Count, [int][Math]::Floor($remaining / 60), ($remaining % 60)
-            $delayed.Text = if ($null -ne $session.CaptureAt) { 'Отменить отсчет' } else { 'Снимок через 8 секунд' }
-            $delayed.Enabled = -not $script:TrainingFinished -and $null -eq $session.Current -and $remaining -gt 0 -and $session.Attempt -lt 12
+            $pendingWindow = $null -ne $session.CaptureAt -and $session.CaptureSurface -eq 'window'
+            $pendingMenu = $null -ne $session.CaptureAt -and $session.CaptureSurface -eq 'menu'
+            $delayed.Text = if ($pendingWindow) { 'Отменить отсчет' } else { 'Снимок через 8 секунд' }
+            $menuDelayed.Text = if ($pendingMenu) { 'Отменить отсчет' } else { 'Меню через 8 секунд' }
+            $canArm = -not $script:TrainingFinished -and $null -eq $session.Current -and $remaining -gt 0 -and $session.Attempt -lt 12
+            $delayed.Enabled = $canArm -and -not $pendingMenu
+            $menuDelayed.Enabled = $canArm -and -not $pendingWindow
             if ($null -ne $session.CaptureAt) {
                 $seconds = [Math]::Max(0, [int][Math]::Ceiling(($session.CaptureAt - [DateTimeOffset]::Now).TotalSeconds))
-                $status.Text = "Скан через $seconds сек. Оставьте нужное окно или меню IDENT открытым."
+                $status.Text = if ($pendingMenu) { "Меню через $seconds сек. Откройте ПКМ в IDENT и наведите курсор на пункт меню, не нажимая." }
+                    else { "Скан через $seconds сек. Оставьте нужное окно IDENT открытым." }
             }
             [void](Write-RobotCaptureProgress $session.Progress)
             if ($wasCapturing -and $null -eq $session.Current) {
-                $status.Text = if ($session.LastError) { 'Скан не получен. Повторите Ctrl+Alt+F8 на нужном экране IDENT.' } else {
+                $status.Text = if ($session.LastError -and $completedSurface -eq 'menu') {
+                    'Меню не получено. Откройте его в IDENT и наведите курсор на пункт, не нажимая. Предыдущие снимки сохранены.'
+                } elseif ($session.LastError) { 'Скан не получен. Повторите Ctrl+Alt+F8 на нужном экране IDENT.' }
+                elseif ($completedSurface -eq 'menu') { 'Меню сохранено. Не выбирайте пункты, меняющие расписание. Можно собрать архив.' } else {
                     "Снимков: $($session.Captures.Count). Готово. Откройте следующий экран и нажмите Ctrl+Alt+F8."
                 }
                 if ($session.LastError) { [System.Media.SystemSounds]::Exclamation.Play() }

@@ -71,8 +71,40 @@ after opening that selection. Prefer a 45-minute example. Do not save it.
 Clarify the new-patient creation command before clicking it: this archive does
 not establish whether it commits immediately or opens another form.
 
-The surname alias is a local code change, not a new deployed agent release.
+At the first audit the surname alias was only a local code change. It was later
+included in deployed release 2.14.5.
 CalibrationFlow, RobotSafety and Training tests pass. Active clinic profiles,
 queue state and booking switches were not modified. Autonomous booking remains
 unapproved pending patient selection/creation, calendar control and an independently
 verified supervised booking.
+
+## Second Supplied Archive: Menu Attempt
+
+The replacement archive received at 19:59 +03:00 contains two captures, five
+allowlisted files. ZIP SHA256:
+`8234ae25cf8113b818577555a80fd0d2c5901a14e4637cc90264faffc64007c7`.
+Session: `22eafc963af5424693f97c8b80f4c5b3`. Export time:
+`2026-09-09T19:59:17.5205078+03:00`. IDs, hashes, byte sizes and row counts match.
+
+Capture 01 has 1090 rows, capture 02 has 988. Both start at the main WinForms
+window and contain no Menu or MenuItem controls. No new-appointment or
+split-interval command was found. The successful capture count is therefore
+not proof of capturing the open popup. These files cannot bind that menu or
+prove a particular interval selection.
+
+The operator reports that choosing the split-interval command changed the
+interval immediately, without a configuration dialog. Do not replay that command
+for observation or presume it is a harmless navigation step. No agent action
+was executed; the manifest reports actionsExecuted=0 and profileActivated=false.
+
+Release 2.14.6 adds a separate menu-only mode. It reads the item under the
+operator's pointer, walks at most 24 same-process ancestors to a Menu and its
+native container, and checks identities and visibility before and after capture.
+Only that menu subtree is exported. Missing/closed/replaced menus, a foreign
+process or zero visible MenuItems cause failure instead of a successful calendar
+capture. It never moves the pointer or invokes a menu command.
+
+Primary API references: [AutomationElement.FromPoint](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.frompoint),
+[TreeWalker.GetParent](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.treewalker.getparent).
+Unit tests do not establish live IDENT menu accessibility; a controlled menu-only
+capture on the clinic computer is still required. Autonomous booking remains unverified.
