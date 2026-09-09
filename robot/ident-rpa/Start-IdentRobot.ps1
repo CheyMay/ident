@@ -728,7 +728,7 @@ function Get-CalibrationDefinitions {
     [pscustomobject]@{ Name = 'newAppointmentButton'; Types = @('ControlType.Button', 'ControlType.MenuItem', 'ControlType.Hyperlink'); Pattern = '(нов(ый|ая).*(прием|запис)|записать\s+на\s+прием|new.*appointment)' },
     [pscustomobject]@{ Name = 'patientPhoneInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(телефон|мобильн|phone|mobile)' },
     [pscustomobject]@{ Name = 'patientNameInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(фио|фамилия\s+имя\s+отчество|fullname|full.?name)' },
-    [pscustomobject]@{ Name = 'patientLastNameInput'; Types = @('ControlType.Edit'); Pattern = '(^|\W)(фамилия|surname|last.?name)(\W|$)' },
+    [pscustomobject]@{ Name = 'patientLastNameInput'; Types = @('ControlType.Edit'); Pattern = '(^|\W)(фамилия|surname|last.?name)(\W|$)'; AutomationIds = @('_surnameTextBox') },
     [pscustomobject]@{ Name = 'patientFirstNameInput'; Types = @('ControlType.Edit'); Pattern = '(^|\W)(имя|given.?name|first.?name)(\W|$)' },
     [pscustomobject]@{ Name = 'patientMiddleNameInput'; Types = @('ControlType.Edit'); Pattern = '(отчество|patronymic|middle.?name)' },
     [pscustomobject]@{ Name = 'patientBirthDateInput'; Types = @('ControlType.Edit', 'ControlType.ComboBox'); Pattern = '(дата.?рожд|день.?рожд|birth.?date|birth.?day|date.?of.?birth)' },
@@ -764,7 +764,8 @@ function Get-CalibrationSelector {
     $ownText = (([string]$row.name) + ' ' + ([string]$row.automationId) + ' ' + ([string]$row.className)).ToLowerInvariant().Replace('ё', 'е')
     $nearbyText = (Get-NearbyControlText -Row $row -Rows $Rows).ToLowerInvariant().Replace('ё', 'е')
     $score = 0
-    if ($ownText -match [string]$definition.Pattern) { $score += 140 }
+    $knownId = [string]$row.automationId -in @(Get-ObjectProperty $definition 'AutomationIds' @())
+    if ($ownText -match [string]$definition.Pattern -or $knownId) { $score += 140 }
     if ($nearbyText -match [string]$definition.Pattern) { $score += 100 }
     if (-not [string]::IsNullOrWhiteSpace([string]$row.automationId)) { $score += 15 }
     if (-not [string]::IsNullOrWhiteSpace([string]$row.name)) { $score += 5 }

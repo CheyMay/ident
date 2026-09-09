@@ -56,6 +56,21 @@ try {
     Assert-True (-not $fullName.Ok) 'Surname must never be mistaken for full name.'
     $lastName = Get-CalibrationSelector -Name 'patientLastNameInput' -Rows $script:FixtureRows -UsedPaths @{}
     Assert-True ($lastName.Ok -and $lastName.Selector.automationId -eq 'LastName') 'Separate surname role missing.'
+    $identSurname = [pscustomobject]@{
+        depth=1; path='0/3'; rootName='New appointment - fixture'; name=''; automationId='_surnameTextBox'
+        className='TextBox'; controlType='ControlType.Edit'; isEnabled=$true; isOffscreen=$false
+        patterns=@('ValuePatternIdentifiers.Pattern'); bounds='200,200,250,34'
+    }
+    $lastName = Get-CalibrationSelector -Name 'patientLastNameInput' -Rows @($identSurname) -UsedPaths @{}
+    Assert-True ($lastName.Ok -and $lastName.Selector.automationId -ceq '_surnameTextBox') 'Observed IDENT surname ID was not recognized.'
+    Assert-True (-not (Get-CalibrationSelector -Name 'patientNameInput' -Rows @($identSurname) -UsedPaths @{}).Ok) 'IDENT surname was promoted to full name.'
+    $duplicateSurname = $identSurname.PSObject.Copy()
+    $duplicateSurname.path = '0/4'
+    Assert-True (-not (Get-CalibrationSelector -Name 'patientLastNameInput' -Rows @($identSurname,$duplicateSurname) -UsedPaths @{}).Ok) 'Duplicate IDENT surname ID was accepted.'
+    $duplicateSurname.automationId = '_surnameTextBoxHistory'
+    Assert-True (-not (Get-CalibrationSelector -Name 'patientLastNameInput' -Rows @($duplicateSurname) -UsedPaths @{}).Ok) 'IDENT surname alias matched a different ID.'
+    $identSurname.isEnabled = $false
+    Assert-True (-not (Get-CalibrationSelector -Name 'patientLastNameInput' -Rows @($identSurname) -UsedPaths @{}).Ok) 'Disabled IDENT surname field was accepted.'
     $configPath = Join-Path $temp 'config.local.json'
     Copy-Item -LiteralPath (Join-Path $repo 'robot\ident-rpa\config.example.json') -Destination $configPath
     $config = Read-JsonFile $configPath
