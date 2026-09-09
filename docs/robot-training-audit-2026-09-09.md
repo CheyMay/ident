@@ -196,3 +196,55 @@ does not calibrate or activate a booking profile. No additional repeat of this
 empty form is needed. Remaining work is reliable calendar control, verified
 patient lookup/selection and clarification of the new-patient creation command,
 then one supervised end-to-end booking before any unattended queue activation.
+
+## Fifth Supplied Archive: Expanded New-Patient Form
+
+ZIP SHA256 `c4b0583db24ad26b7e0deba79646d970c8332bab136bd90e6a89f459b85be61d`,
+3291 bytes, three allowlisted entries. Session 246b0d08a3974ce28d0534511da16dab;
+capture 124a93be93674723881bbdc3b237bca0 at 20:55:24 +03:00, exported
+20:55:33 +03:00. The operator supplied this after using the add-new-patient
+command. The UI expands inside the existing appointment window. This observation
+does not establish whether the command already persisted any patient data.
+
+Verified unique entry names, manifest/summary IDs, tree SHA256, byte count and
+row count without executing or extracting entries. The tree is 37536 bytes:
+60 controls, 55 with valid bounds. All IsOffscreen flags are false, but five
+controls have empty bounds. Do not treat IsOffscreen=false alone as visibility.
+The exact title matches the screenshot: same doctor, 2026-09-20, 09:00-09:30.
+This is a 30-minute appointment, not the preceding 45-minute example.
+
+The form contains 21 Edit controls. Twelve have neither Name nor AutomationId.
+Seven controls share _textBox, including nested parent/child Edits. The screenshot
+and local bounds distinguish city/street, referral source, insurance and the
+appointment comment; the latter is not the two patient comment fields on the
+left. Do not bind the first _textBox or reuse a cached path from the short form.
+
+The appointment-settings ScrollViewer contains the unique _receptionTimeTextBlock
+and its comment Edit/inner Edit. Its local path changed from 0/15 in the empty
+short form to 0/36 in the expanded form. The time remains read-only. The surname
+_surnameTextBox and birth-date MaskedTextBox remain accessible through ValuePattern;
+that capability alone does not give the generic calibrator a verified field role.
+
+Ran the existing pure Get-CalibrationSelector functions locally on this exact
+tree, without executing the robot entry point or writing a profile:
+
+| Role | Current Generic Calibration |
+| --- | --- |
+| Surname | Resolves unique _surnameTextBox |
+| Save patient | Resolves the enabled Button, not its Text child |
+| First name, patronymic, phone, birth date, appointment comment | Unresolved |
+| Doctor and editable start/end | Unresolved; interval comes from calendar |
+| Booking confirmation | Unresolved; enabled save is not confirmation |
+
+The refusal to invent unnamed-field bindings is expected. A form-specific
+adapter must validate the current window and scope, resolve anonymous fields
+unambiguously, and keep appointment comments separate from patient-card notes.
+No new capture of this same expanded state is requested. Existing lookup and
+selected-patient captures are available for the next adapter work.
+
+The screenshot shows incomplete demographics while the save button is enabled;
+button availability is not a substitute for checking the booking contract.
+Manifest actionsExecuted=0, profileActivated=false; Observe readiness is false.
+No save/notification/menu commands, queue operations, configuration updates or
+clinic software releases were performed while analyzing this archive. Keep the
+robot disabled until a supervised booking and independent outcome verification.
