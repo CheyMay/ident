@@ -21,9 +21,14 @@ release: `F4C30C9D5872D9852B7849A3BBA4EFD75DD0581109FFA97630B518D172362ADC`.
 Important: the updater loaded from 2.14.7 restarts an existing task without
 re-registering it. The operator was therefore instructed to run the installed
 `Install-IdentAgentTask.ps1` once after the update to migrate the recurring
-recovery trigger and shortcut launch flags. Execution of that step is not yet
-confirmed. Reopening the updated panel, tray checks and real sleep/wake checks
-also remain unverified. Do not confuse installed version with completed rollout.
+recovery trigger and shortcut launch flags. The operator's terminal screenshot
+confirmed successful registration of both tasks. The operator confirmed no
+PowerShell window on panel launch, then supplied the reopened 2.14.10 panel
+after the requested X/tray check; worker, supervisor and backend were healthy.
+Heartbeat 15:26:57 UTC still reported the same worker start time, 14:58:43 UTC,
+schedule `ok`, robot disabled, and no active training/calibration. The task XML
+and actual sleep/wake behavior were not independently checked on the clinic PC.
+Do not confuse these panel checks with completed wake or autonomous-booking tests.
 
 ## Changes
 
