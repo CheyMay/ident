@@ -36,6 +36,12 @@ unverified; queue activation and patient writing are still disabled.
 2.14.14 release SHA-256: `98BE3FF4DCB2BFE7057472420CD580ED5BE8F540E0EE6FE894F367638C063707`.
 Installer SHA-256: `565DDEA3BA874DB3F154FEB678E8ED3457CBDCF448C5FF8F0B06412DDF67AB74`.
 
+Assigned only to the clinic agent on 2026-09-10 at 23:34:02 UTC. Heartbeat
+23:34:25 UTC confirmed 2.14.14, online, robot disabled. Requested diagnostics
+received at 23:34:45 UTC confirmed succeeded, worker Running, desktop task Ready
+and unchanged supervisor hash. Private rollback metadata preserves 2.14.13.
+No opening was triggered by deployment and the pending receipt was not changed.
+
 This release adds real read-only SQL availability and an **explicitly confirmed
 one-slot opening test**. It is not an unattended booking release. There is no
 patient input, Save, dragging, splitting, scrolling, or queue activation.
