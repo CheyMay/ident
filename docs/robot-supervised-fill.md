@@ -38,7 +38,7 @@ assignment metadata is retained in the private local admin directory. Agent
 heartbeat at 16:45:47 UTC reported 2.14.11; diagnostics received at 16:46:50 UTC
 confirmed `succeeded`, worker task `Running`, robot disabled, schedule `ok`.
 The supervisor hash matches the previously verified 2.14.10 lifecycle module.
-No clinic observation run has yet been performed and no queue was enabled.
+The subsequent clinic observation is recorded below. No queue was enabled.
 
 - Remote release: `ident-agent-release-2.14.11.zip`, 103409 bytes,
   SHA256 `649A2F3D8B62DAE07752F4973A907B4EF724477B0A9F01653312C21C99CEDD64`.
@@ -50,6 +50,25 @@ No clinic observation run has yet been performed and no queue was enabled.
   Archive source comparison, syntax/BOM checks and Git whitespace checks passed.
   The published 2.14.10 archive was not modified.
 
+### Clinic Observation Result
+
+On 2026-09-10 the operator supplied a screenshot of the 2.14.11 read-only
+observation result: `Ok=true`, `State=observed_change`, `BaselineCaptured=true`,
+14 accepted snapshots and 4 samples discarded for input activity. Only
+`patientFirstNameInput` appears in `ValueChangedRoles`;
+`ExpectedFirstNameObserved=true`. Identity and bounds change lists are empty.
+All write counters are zero, `SaveInvoked=false`, and no failure is reported.
+These observations concern accepted snapshots only; they do not rule out
+transient changes between samples or explain the old automatic-fill failure.
+
+The operator could not hear the ready sound through AnyDesk and counted time
+manually. The result is usable because the blank baseline was captured and the
+expected name was subsequently observed. Do not repeat this successful read-only
+check just for timing. Future checks must use the visible ready marker below,
+not a guessed delay. Manual-review and unattended-readiness flags intentionally
+remain `true` and `false`; observation does not approve another write. The test
+draft still needs explicit operator review; retain the old pending receipt.
+
 The next clinic check uses `-ObserveChanges`, **not `-Execute`**. These switches
 are mutually exclusive at the launcher, child, and runtime entry points.
 Keep the previous `fill-check-pending.json` and reports. Observation accepts
@@ -57,10 +76,12 @@ that receipt without changing it; another execution remains blocked.
 
 1. Open the matching expanded new-patient form manually with surname present,
    first name empty, and appointment notifications off. Do not save.
-2. Run the bounded launcher with the private preview request and `-ObserveChanges`.
-   Activate IDENT within eight seconds and wait without typing for the ready sound.
-3. After the sound, manually enter only the agreed first name; keep IDENT active
-   and wait about 30 seconds. If no sound is heard, do not guess readiness or save;
+2. Position PowerShell so its output is visible without switching away from IDENT.
+   Run the bounded launcher with the private preview request and `-ObserveChanges`.
+   Activate IDENT within eight seconds and wait without typing for the visible
+   `IDENT_OBSERVATION_READY` marker. Sound is optional, not a reliable AnyDesk cue.
+3. After the marker, manually enter only the agreed first name; keep IDENT active
+   and wait about 30 seconds. If readiness is not visible, do not guess or save;
    wait for the result. UIA delays remain bounded by the launcher's 180-second limit.
 4. Inspect the new run's `result.json`, not the old pending run. The result lists
    only fixed role names for value, identity, and geometry changes, plus counters
