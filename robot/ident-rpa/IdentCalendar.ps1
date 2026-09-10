@@ -65,7 +65,7 @@ function New-IdentCalendarPlan {
     param([object[]]$Rows,[object]$Request)
     $result=[ordered]@{ Ok=$false; ErrorCode='CALENDAR_INVALID_TREE'; SchemaVersion=1; ReadOnly=$true;
         ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false;
-        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint=''; ContextParts=$null }
+        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint=''; ContextParts=$null; PathParts=$null }
     try {
         if ($null -eq $Rows -or $Rows.Count -lt 8 -or $Rows.Count -gt 5000) { return [pscustomobject]$result }
         $nodes=@{}
@@ -186,14 +186,24 @@ function New-IdentCalendarPlan {
         $labelRows=@($children | Where-Object { $_.path -match ($prefix+'\d+$') -and
             $_.className -ceq 'TextBlock' -and $_.controlType -ceq 'ControlType.Text' } | Sort-Object path |
             Select-Object path,name,automationId,className,controlType,bounds,isEnabled,isOffscreen)
+        # Tree indices locate a node within one scan; they are not its cross-scan identity.
+        # Sort complete semantic records ordinally and preserve duplicates/counts.
+        [string[]]$labelContent=@($labelRows | ForEach-Object {
+            $_ | Select-Object name,automationId,className,controlType,bounds,isEnabled,isOffscreen | ConvertTo-Json -Compress
+        })
+        [Array]::Sort($labelContent,[StringComparer]::Ordinal)
         $result.ContextParts=[ordered]@{
             Grid=(Get-IdentCalendarDigest ($grid | Select-Object path,automationId,className,controlType,bounds,isEnabled,isOffscreen))
-            Labels=(Get-IdentCalendarDigest $labelRows)
+            Labels=(Get-IdentCalendarDigest $labelContent)
             Selection=(Get-IdentCalendarDigest ([ordered]@{ Date=$result.Date; Doctor=$result.DoctorCaption;
-                Duration=$result.DurationMinutes; Selection=$result.Selection }))
+                Duration=$result.DurationMinutes; Selection=($result.Selection | Select-Object X,StartY,LastY,SlotCount,RequiresDrag,ChairCaption) }))
+        }
+        $result.PathParts=[ordered]@{
+            Labels=(Get-IdentCalendarDigest $labelRows)
+            Selection=(Get-IdentCalendarDigest ($result.Selection | Select-Object ChairPath,DoctorPath,StartPath,EndPath))
         }
     } catch {
-        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint=''; $result.ContextParts=$null
+        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint=''; $result.ContextParts=$null; $result.PathParts=$null
     }
     return [pscustomobject]$result
 }

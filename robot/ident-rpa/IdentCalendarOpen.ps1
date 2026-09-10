@@ -17,7 +17,8 @@ function Get-IdentCalendarOpenError {
 
 function Compare-IdentCalendarMenuTransition {
     param([object]$Before,[object]$After)
-    $result=[ordered]@{ Ok=$false; Reason='missing_context'; ChangedParts=@(); FullTreeChanged=$false }
+    $result=[ordered]@{ Ok=$false; Reason='missing_context'; ChangedParts=@(); ReindexedParts=@();
+        SelectionChangedFields=@(); CoordinateDelta=$null; FullTreeChanged=$false }
     if ($null -eq $Before -or $null -eq $After) { return [pscustomobject]$result }
     if (-not $After.Plan.Ok) {
         $result.Reason='plan_rejected'
@@ -41,9 +42,25 @@ function Compare-IdentCalendarMenuTransition {
     }
     $result.FullTreeChanged=$Before.Plan.Fingerprint -cne $After.Plan.Fingerprint
     $result.ChangedParts=@('Grid','Labels','Selection' | Where-Object { $Before.Plan.ContextParts[$_] -cne $After.Plan.ContextParts[$_] })
+    $result.SelectionChangedFields=@('X','StartY','LastY','SlotCount','RequiresDrag','ChairCaption' | Where-Object {
+        $Before.Plan.Selection.$_ -cne $After.Plan.Selection.$_
+    })
+    $result.CoordinateDelta=[ordered]@{
+        X=($After.Plan.Selection.X-$Before.Plan.Selection.X)
+        StartY=($After.Plan.Selection.StartY-$Before.Plan.Selection.StartY)
+        LastY=($After.Plan.Selection.LastY-$Before.Plan.Selection.LastY)
+    }
     if ($result.ChangedParts.Count -gt 0) { $result.Reason='context_changed'; return [pscustomobject]$result }
+    foreach($snapshot in @($Before,$After)) {
+        if ($snapshot.Plan.PSObject.Properties.Name -notcontains 'PathParts' -or $null -eq $snapshot.Plan.PathParts) { return [pscustomobject]$result }
+        foreach($part in @('Labels','Selection')) {
+            if ([string]$snapshot.Plan.PathParts[$part] -cnotmatch '^[A-F0-9]{64}$') { return [pscustomobject]$result }
+        }
+    }
+    $result.ReindexedParts=@('Labels','Selection' | Where-Object { $Before.Plan.PathParts[$_] -cne $After.Plan.PathParts[$_] })
     $result.Ok=$true
-    $result.Reason=if ($result.FullTreeChanged) { 'incidental_tree_changed' } else { 'unchanged' }
+    $result.Reason=if ($result.ReindexedParts.Count -gt 0) { 'element_paths_changed' }
+        elseif ($result.FullTreeChanged) { 'incidental_tree_changed' } else { 'unchanged' }
     return [pscustomobject]$result
 }
 
@@ -217,7 +234,7 @@ function Invoke-IdentSupervisedCalendarOpen {
         if ($proof.Fingerprint -cne $checked.Proof.Fingerprint) { throw 'AVAILABILITY_CHANGED' }
         try { $grid=Get-IdentCalendarRuntimeSnapshot $Context }
         catch {
-            $diagnostics.CalendarRecheck=[pscustomobject]@{ Ok=$false; Reason='snapshot_failed'; ChangedParts=@(); FullTreeChanged=$false }
+            $diagnostics.CalendarRecheck=[pscustomobject]@{ Ok=$false; Reason='snapshot_failed'; ChangedParts=@(); ReindexedParts=@(); FullTreeChanged=$false }
             throw
         }
         $comparison=Compare-IdentCalendarMenuTransition $checked.Snapshot $grid

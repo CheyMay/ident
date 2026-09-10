@@ -1,5 +1,37 @@
 # Supervised Calendar Opening (2.14.13)
 
+## 2.14.15: Label Identity Across Menu Scans
+
+Clinic run `273bd3a79d24488ebf217e3375fb8497` on 2.14.14 stopped at menu_recheck:
+CALENDAR_CHANGED, context_changed, changed parts Labels and Selection,
+MenuInvokeAttempted=false. The grid proof was unchanged. The report does not
+distinguish a real movement from changed tree indices, so neither is established
+as the cause. No repeat is automatic; retain/review this exact pending receipt.
+
+The previous context hashes included ordinal UIA tree paths for every label and
+for the selected chair/doctor/time anchors. Those paths locate a node within one
+scan, not across a provider rebuild. 2.14.15 compares an ordinally sorted multiset
+of complete label records excluding only path, preserving text, IDs, class/type,
+exact bounds, enabled/offscreen flags and duplicate counts. Selection comparison
+retains exact X/StartY/LastY, slot count, drag requirement, chair caption, requested
+date/doctor/duration; path changes are recorded separately as ReindexedParts.
+Grid identity, strict full-tree preflight, live SQL, operator guard and fresh
+MenuItem resolution remain required. There is no geometry tolerance or visibility
+bypass. Label swapping at fixed positions, additions/removals, real scrolling,
+changed doctors/dates and any coordinate shift remain rejected.
+
+When a rejection changes the target, the local result records changed field names
+and coordinate deltas, not patient text. This avoids conflating path changes with
+movement on another attempt. Tests include path-only reindexing of all nodes,
+target-only reindexing, label count/association mutations, a real 10px movement,
+and production callback ordering with mock input. Live opening is still unverified.
+
+Windows PowerShell 5.1 checks passed serially: calendar 56, availability 44,
+opening sequence 45, mocked UIA 69, transition 65, launcher, installer and
+update/rollback. No tests installed hooks or sent native desktop input.
+2.14.15 release SHA-256: `9201F4F8F563E875EAF83CF6E67CD009938F7D014B751310345A2D82021B8E7C`.
+Installer SHA-256: `5DF6844CCDFD7A6AFF234AAA4AB6353B5DF27E4DB3D4EFDBC5F0B7B1DCAEA287`.
+
 ## Clinic Result And 2.14.14 Follow-Up
 
 The operator supplied a successful `available_read_only` report for the agreed

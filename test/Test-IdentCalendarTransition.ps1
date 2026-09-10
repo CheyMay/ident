@@ -27,7 +27,24 @@ foreach($kind in @('grid-name','scroll-button','scroll-thumb')) {
     Assert-Test ($after.Plan.Ok -and $result.Ok -and $result.FullTreeChanged -and $result.Reason -ceq 'incidental_tree_changed') ('Incidental transition rejected: '+$kind)
     Assert-Test ($before.Plan.Fingerprint -cne $after.Plan.Fingerprint) 'Strict preflight fingerprint was weakened.'
 }
-foreach($kind in @('grid-bounds','date','chair','doctor','other-doctor','label-path','label-bounds','label-disabled','label-hidden','scroll','target','identity','missing-proof')) {
+foreach($kind in @('label-path','target-paths','all-paths')) {
+    $rows=New-IdentCalendarFixture
+    if ($kind -eq 'label-path') { ($rows | Where-Object path -eq '0/4').path='0/90' }
+    if ($kind -eq 'target-paths') {
+        foreach($index in @(2,6,10,12)) { ($rows | Where-Object path -eq ('0/'+$index)).path='0/'+(100+$index) }
+    }
+    if ($kind -eq 'all-paths') {
+        foreach($row in $rows | Where-Object path -match '^0/') {
+            $parts=$row.path.Split('/'); $parts[1]=[string](100+[int]$parts[1]); $row.path=$parts -join '/'
+        }
+    }
+    $after=Snapshot $rows; $result=Compare-IdentCalendarMenuTransition $before $after
+    Assert-Test ($after.Plan.Ok -and $result.Ok -and $result.Reason -ceq 'element_paths_changed' -and $result.FullTreeChanged) ('Path-only transition rejected: '+$kind)
+    Assert-Test ($result.ReindexedParts -contains 'Labels' -and $result.SelectionChangedFields.Count -eq 0 -and
+        $result.CoordinateDelta.X -eq 0 -and $result.CoordinateDelta.StartY -eq 0) 'Reindexing changed the actual target.'
+    if ($kind -ne 'label-path') { Assert-Test ($result.ReindexedParts -contains 'Selection') 'Target path change not diagnosed.' }
+}
+foreach($kind in @('grid-bounds','date','chair','doctor','other-doctor','label-bounds','label-disabled','label-hidden','scroll','target','identity','missing-proof','missing-path-proof','swapped-labels','duplicate-label','missing-label')) {
     $rows=New-IdentCalendarFixture
     switch($kind) {
         'grid-bounds' { $rows[0].bounds='514,153,1406,854' }
@@ -35,7 +52,6 @@ foreach($kind in @('grid-bounds','date','chair','doctor','other-doctor','label-p
         'chair' { ($rows | Where-Object path -eq '0/2').name='Chair X' }
         'doctor' { ($rows | Where-Object path -eq '0/6').name='Doctor X' }
         'other-doctor' { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
-        'label-path' { ($rows | Where-Object path -eq '0/4').path='0/90' }
         'label-bounds' { ($rows | Where-Object path -eq '0/4').bounds='592,268,233,23' }
         'label-disabled' { ($rows | Where-Object path -eq '0/4').isEnabled=$false }
         'label-hidden' { ($rows | Where-Object path -eq '0/4').isOffscreen=$true }
@@ -44,14 +60,26 @@ foreach($kind in @('grid-bounds','date','chair','doctor','other-doctor','label-p
                 $bounds=$row.bounds.Split(','); $bounds[1]=[string]([int]$bounds[1]+10); $row.bounds=$bounds -join ','
             }
         }
+        'swapped-labels' {
+            ($rows | Where-Object path -eq '0/4').name='Doctor C'
+            ($rows | Where-Object path -eq '0/8').name='Doctor A'
+        }
+        'duplicate-label' {
+            $duplicate=($rows | Where-Object path -eq '0/4').PSObject.Copy(); $duplicate.path='0/90'; $rows+= $duplicate
+        }
+        'missing-label' { $rows=@($rows | Where-Object path -ne '0/4') }
     }
     $after=Snapshot $rows
     if ($kind -eq 'target') { $after.Plan.ContextParts.Selection='A'*64 }
     if ($kind -eq 'identity') { $after.GridIdentity='replaced-grid' }
     if ($kind -eq 'missing-proof') { $after.Plan.ContextParts=$null }
+    if ($kind -eq 'missing-path-proof') { $after.Plan.PathParts=$null }
     $result=Compare-IdentCalendarMenuTransition $before $after
     Assert-Test (-not $result.Ok) ('Unsafe transition accepted: '+$kind)
     Assert-Test ($result.Reason -cnotmatch 'Doctor |Chair |2099|1899') 'Report exposed a UI value.'
+    if ($kind -eq 'scroll') {
+        Assert-Test ($result.SelectionChangedFields -contains 'StartY' -and $result.CoordinateDelta.StartY -eq 10) 'Real coordinate change was not diagnosed.'
+    }
 }
 $after=Snapshot (New-IdentCalendarFixture); $after.Plan.Ok=$false; $after.Plan.ErrorCode='private patient text'
 $result=Compare-IdentCalendarMenuTransition $before $after
@@ -77,11 +105,12 @@ $directory=Join-Path ([IO.Path]::GetTempPath()) ('ident-calendar-transition-'+[g
 $null=New-Item -ItemType Directory -Path $directory
 $pending=Join-Path $directory 'calendar-open-pending.json'
 try {
-    foreach($kind in @('unchanged','incidental','changed','rejected')) {
+    foreach($kind in @('unchanged','incidental','reindexed','changed','rejected')) {
         $script:checked=[pscustomobject]@{ Snapshot=$before; Proof=[pscustomobject]@{ Ok=$true; AvailabilityVerified=$true;
             DoctorId=10; BranchId=1; Fingerprint='mock-availability' } }
         $rows=New-IdentCalendarFixture
         if ($kind -eq 'incidental') { ($rows | Where-Object path -eq '0/50/1').isEnabled=$false }
+        if ($kind -eq 'reindexed') { ($rows | Where-Object path -eq '0/6').path='0/90' }
         if ($kind -eq 'changed') { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
         if ($kind -eq 'rejected') { ($rows | Where-Object path -eq '0/0').name='21.09.2099' }
         $script:runtimeAfter=Snapshot $rows
@@ -96,7 +125,7 @@ try {
         $context=[pscustomobject]@{Directory=$directory;Request=$request;InputGuard=$input;InputTick=0;Handle=1;ProcessId=2}
         $result=Invoke-IdentSupervisedCalendarOpen $context $directory ([guid]::NewGuid().ToString('N')) {} {}
         Assert-Test ($input.Clicks -eq 1 -and -not $result.SaveInvoked -and -not $result.ReadyForInput) 'Wrong production input scope.'
-        if ($kind -in @('unchanged','incidental')) {
+        if ($kind -in @('unchanged','incidental','reindexed')) {
             Assert-Test ($result.Ok -and $pattern.Calls -eq 1 -and $pattern.ArmedBeforeInvoke -and $result.MenuInvokeAttempted -and
                 -not (Test-Path -LiteralPath $pending)) ('Verified callback transition failed: '+$kind+' '+$result.ErrorCode)
         } else {

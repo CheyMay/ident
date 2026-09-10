@@ -2,6 +2,15 @@
 
 ## Граница Готовности
 
+Попытка 273bd3a79d24488ebf217e3375fb8497 на 2.14.14 снова остановилась до Invoke:
+CALENDAR_CHANGED, menu_recheck, context_changed, Labels/Selection, MenuInvokeAttempted=false.
+Сетка не изменилась. Точное отличие путей от сдвига прежний отчёт не показывает.
+Подготовлен 2.14.15: строгое сравнение содержимого/количества подписей и координат
+отделено от порядковых путей UIA. Индексы не являются межскановой идентичностью.
+Реальные изменения подписей, видимости, врача/даты/времени и координат по-прежнему
+запрещают Invoke. Добавлены ReindexedParts, SelectionChangedFields, CoordinateDelta.
+Открытие на клиенте ещё не подтверждено. Новый pending не удалять автоматически.
+
 Клиентский read-only тест 2.14.13 прошёл: available_read_only, DoctorId=1904,
 BranchId=1, ChairId=2. Следующая попытка открытия e852258aaa6f4fdd8685ea51f1fab87b
 остановилась: partial CALENDAR_CHANGED, ActionsAttempted=2, ActionsReturned=1,

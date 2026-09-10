@@ -64,6 +64,12 @@ try {
     }
     if ($result.PSObject.Properties.Name -contains 'CalendarRecheck' -and $null -ne $result.CalendarRecheck) {
         Write-Host ('Calendar recheck: '+$result.CalendarRecheck.Reason+'; changed parts: '+($result.CalendarRecheck.ChangedParts -join ','))
+        if ($result.CalendarRecheck.PSObject.Properties.Name -contains 'ReindexedParts' -and $result.CalendarRecheck.ReindexedParts.Count -gt 0) {
+            Write-Host ('Reindexed only: '+($result.CalendarRecheck.ReindexedParts -join ','))
+        }
+        if ($result.CalendarRecheck.PSObject.Properties.Name -contains 'SelectionChangedFields' -and $result.CalendarRecheck.SelectionChangedFields.Count -gt 0) {
+            Write-Host ('Selection changed: '+($result.CalendarRecheck.SelectionChangedFields -join ','))
+        }
     }
     if ($result.PSObject.Properties.Name -contains 'AvailabilityVerified' -and $result.AvailabilityVerified) {
         Write-Host ('Verified SQL identity: DoctorId='+$result.DoctorId+' BranchId='+$result.BranchId+' ChairId='+$result.ChairId)
