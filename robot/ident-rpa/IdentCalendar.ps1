@@ -53,11 +53,19 @@ function New-IdentCalendarRequest {
     } catch { throw 'CALENDAR_INVALID_REQUEST' }
 }
 
+function Get-IdentCalendarDigest {
+    param([object]$Value)
+    $serialized=ConvertTo-Json -InputObject $Value -Depth 6 -Compress
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($serialized)))).Replace('-','') }
+    finally { $sha.Dispose() }
+}
+
 function New-IdentCalendarPlan {
     param([object[]]$Rows,[object]$Request)
     $result=[ordered]@{ Ok=$false; ErrorCode='CALENDAR_INVALID_TREE'; SchemaVersion=1; ReadOnly=$true;
         ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false;
-        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint='' }
+        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint=''; ContextParts=$null }
     try {
         if ($null -eq $Rows -or $Rows.Count -lt 8 -or $Rows.Count -gt 5000) { return [pscustomobject]$result }
         $nodes=@{}
@@ -172,12 +180,20 @@ function New-IdentCalendarPlan {
             DoctorPath=$column.Header.Row.path; StartPath=$selected[0].Pair[0].Row.path; EndPath=$end[0].Pair[0].Row.path }
         # Local comparison only; includes viewport and all grid rows, not a durable permission to click.
         $fingerprintRows=@($grid)+@($children | Sort-Object path)
-        $serialized=@($fingerprintRows | Select-Object path,name,automationId,className,controlType,bounds,isEnabled,isOffscreen) | ConvertTo-Json -Depth 4 -Compress
-        $sha=[Security.Cryptography.SHA256]::Create()
-        try { $result.Fingerprint=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($serialized)))).Replace('-','') }
-        finally { $sha.Dispose() }
+        $result.Fingerprint=Get-IdentCalendarDigest @($fingerprintRows | Select-Object path,name,automationId,className,controlType,bounds,isEnabled,isOffscreen)
+        # Opening a popup can change incidental grid/scrollbar state. Keep every direct text label,
+        # including unrelated/offscreen labels, and the exact input geometry in the transition proof.
+        $labelRows=@($children | Where-Object { $_.path -match ($prefix+'\d+$') -and
+            $_.className -ceq 'TextBlock' -and $_.controlType -ceq 'ControlType.Text' } | Sort-Object path |
+            Select-Object path,name,automationId,className,controlType,bounds,isEnabled,isOffscreen)
+        $result.ContextParts=[ordered]@{
+            Grid=(Get-IdentCalendarDigest ($grid | Select-Object path,automationId,className,controlType,bounds,isEnabled,isOffscreen))
+            Labels=(Get-IdentCalendarDigest $labelRows)
+            Selection=(Get-IdentCalendarDigest ([ordered]@{ Date=$result.Date; Doctor=$result.DoctorCaption;
+                Duration=$result.DurationMinutes; Selection=$result.Selection }))
+        }
     } catch {
-        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint=''
+        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint=''; $result.ContextParts=$null
     }
     return [pscustomobject]$result
 }

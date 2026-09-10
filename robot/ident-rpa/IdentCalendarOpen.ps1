@@ -15,47 +15,85 @@ function Get-IdentCalendarOpenError {
     return 'CALENDAR_OPEN_FAILED'
 }
 
+function Compare-IdentCalendarMenuTransition {
+    param([object]$Before,[object]$After)
+    $result=[ordered]@{ Ok=$false; Reason='missing_context'; ChangedParts=@(); FullTreeChanged=$false }
+    if ($null -eq $Before -or $null -eq $After) { return [pscustomobject]$result }
+    if (-not $After.Plan.Ok) {
+        $result.Reason='plan_rejected'
+        $allowed=@('CALENDAR_INVALID_TREE','CALENDAR_GRID_AMBIGUOUS','CALENDAR_COLUMNS_AMBIGUOUS','CALENDAR_DATE_UNREADABLE',
+            'CALENDAR_WRONG_DATE','CALENDAR_TIME_AXIS','CALENDAR_SCROLL_REQUIRED','CALENDAR_SPLIT_REQUIRED',
+            'CALENDAR_DOCTOR_AMBIGUOUS','CALENDAR_SHIFT_BOUNDARY')
+        if ($After.Plan.ErrorCode -cin $allowed) { $result.Reason=$After.Plan.ErrorCode }
+        return [pscustomobject]$result
+    }
+    if (-not $Before.GridIdentity -or $Before.GridIdentity -cne $After.GridIdentity) {
+        $result.Reason='grid_identity_changed'; return [pscustomobject]$result
+    }
+    foreach($snapshot in @($Before,$After)) {
+        if (-not $snapshot.Plan.Ok -or -not $snapshot.Plan.Fingerprint -or
+            $snapshot.Plan.PSObject.Properties.Name -notcontains 'ContextParts' -or $null -eq $snapshot.Plan.ContextParts) {
+            return [pscustomobject]$result
+        }
+        foreach($part in @('Grid','Labels','Selection')) {
+            if ([string]$snapshot.Plan.ContextParts[$part] -cnotmatch '^[A-F0-9]{64}$') { return [pscustomobject]$result }
+        }
+    }
+    $result.FullTreeChanged=$Before.Plan.Fingerprint -cne $After.Plan.Fingerprint
+    $result.ChangedParts=@('Grid','Labels','Selection' | Where-Object { $Before.Plan.ContextParts[$_] -cne $After.Plan.ContextParts[$_] })
+    if ($result.ChangedParts.Count -gt 0) { $result.Reason='context_changed'; return [pscustomobject]$result }
+    $result.Ok=$true
+    $result.Reason=if ($result.FullTreeChanged) { 'incidental_tree_changed' } else { 'unchanged' }
+    return [pscustomobject]$result
+}
+
 function Invoke-IdentCalendarOpenCheck {
     param([object]$Request,[scriptblock]$Preflight,[scriptblock]$Guard,[scriptblock]$RightClick,
-        [scriptblock]$ReadMenu,[scriptblock]$InvokeMenu,[scriptblock]$ReadForm,[scriptblock]$Journal,[switch]$OperatorConfirmed)
+        [scriptblock]$ReadMenu,[scriptblock]$InvokeMenu,[scriptblock]$ReadForm,[scriptblock]$Journal,[switch]$OperatorConfirmed,
+        [hashtable]$Diagnostics=@{})
     $result=[ordered]@{ Ok=$false; State='rejected'; ErrorCode=''; ReadOnly=$false; ActionsAttempted=0; ActionsReturned=0;
-        FormOpened=$false; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; RequiresManualReview=$false }
-    $intentJournaled=$false
+        FormOpened=$false; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; RequiresManualReview=$false;
+        FailurePhase=''; CalendarRecheck=$null; MenuInvokeAttempted=$false }
+    $intentJournaled=$false; $phase='consent'
     try {
         if (-not $OperatorConfirmed) { throw 'CALENDAR_CONSENT_REQUIRED' }
         if (-not $Request.CheckAvailability -or $Request.DoctorId -le 0 -or $Request.BranchId -le 0) { throw 'CALENDAR_INVALID_MODE' }
-        $checked=& $Preflight
+        $phase='preflight'; $checked=& $Preflight
         if ($null -eq $checked.Proof -or -not $checked.Proof.Ok -or -not $checked.Proof.AvailabilityVerified -or
             $checked.Proof.DoctorId -ne $Request.DoctorId -or $checked.Proof.BranchId -ne $Request.BranchId) { throw 'AVAILABILITY_INVALID_DATA' }
         $selection=$checked.Snapshot.Plan.Selection
         if (-not $checked.Snapshot.Plan.Ok -or $selection.RequiresDrag -or $selection.SlotCount -ne 1) { throw 'CALENDAR_SINGLE_SLOT_ONLY' }
-        & $Journal 'input_intent'
+        $phase='input_intent'; & $Journal 'input_intent'
         $intentJournaled=$true
         & $Guard
         $result.ActionsAttempted++
-        & $RightClick $selection
+        $phase='right_click'; & $RightClick $selection
         $result.ActionsReturned++
         & $Guard
-        $menu=& $ReadMenu
+        $phase='menu_lookup'; $menu=& $ReadMenu
         if ($null -eq $menu) { throw 'CALENDAR_MENU_AMBIGUOUS' }
         & $Journal 'menu_invocation_intent'
         & $Guard
         $result.ActionsAttempted++
-        & $InvokeMenu $menu $checked
+        $phase='menu_recheck'; & $InvokeMenu $menu $checked
         $result.ActionsReturned++
-        $form=& $ReadForm
+        $phase='form_readback'; $form=& $ReadForm
         if ($null -eq $form -or -not $form.Empty) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+        $phase='form_context'
         try { Assert-IdentPatientFormContext $form.Bindings $Request.DoctorCaption $Request.Start $Request.End }
         catch { throw 'CALENDAR_FORM_MISMATCH' }
         & $Guard
         $result.FormOpened=$true
-        & $Journal 'opened_verified'
+        $phase='completion'; & $Journal 'opened_verified'
         $result.Ok=$true; $result.State='opened_verified'
     } catch {
         $result.ErrorCode=Get-IdentCalendarOpenError $_.Exception
+        $result.FailurePhase=$phase
         $result.RequiresManualReview=$intentJournaled -or $result.ActionsAttempted -gt 0
         if ($result.ActionsAttempted -gt 0) { $result.State='partial' }
     }
+    if ($Diagnostics.ContainsKey('CalendarRecheck')) { $result.CalendarRecheck=$Diagnostics.CalendarRecheck }
+    $result.MenuInvokeAttempted=$Diagnostics['MenuInvokeAttempted'] -eq $true
     return [pscustomobject]$result
 }
 
@@ -142,6 +180,7 @@ function Read-IdentCalendarOpenedForm {
 function Invoke-IdentSupervisedCalendarOpen {
     param([object]$Context,[string]$RunDirectory,[string]$RunId,[scriptblock]$Reader,[scriptblock]$AvailabilityReader)
     $pending=Join-Path $Context.Directory 'calendar-open-pending.json'
+    $diagnostics=@{ MenuInvokeAttempted=$false }
     if (Test-Path -LiteralPath $pending) { throw 'CALENDAR_OPEN_REVIEW_PENDING' }
     $journal={
         param($stage)
@@ -176,17 +215,25 @@ function Invoke-IdentSupervisedCalendarOpen {
         $proof=Get-IdentAvailabilityProof $live $Context.Request $checked.Snapshot.Plan
         if (-not $proof.Ok) { throw $proof.ErrorCode }
         if ($proof.Fingerprint -cne $checked.Proof.Fingerprint) { throw 'AVAILABILITY_CHANGED' }
-        $grid=Get-IdentCalendarRuntimeSnapshot $Context
-        if (-not $grid.Plan.Ok -or $grid.GridIdentity -cne $checked.Snapshot.GridIdentity -or
-            $grid.Plan.Fingerprint -cne $checked.Snapshot.Plan.Fingerprint) { throw 'CALENDAR_CHANGED' }
+        try { $grid=Get-IdentCalendarRuntimeSnapshot $Context }
+        catch {
+            $diagnostics.CalendarRecheck=[pscustomobject]@{ Ok=$false; Reason='snapshot_failed'; ChangedParts=@(); FullTreeChanged=$false }
+            throw
+        }
+        $comparison=Compare-IdentCalendarMenuTransition $checked.Snapshot $grid
+        $diagnostics.CalendarRecheck=$comparison
+        if (-not $comparison.Ok) { throw 'CALENDAR_CHANGED' }
         $current=Get-IdentCalendarOpenMenu $Context
         if ($current.Identity -cne $previous.Identity -or $current.ItemIdentity -cne $previous.ItemIdentity -or
             $current.Name -cne $previous.Name -or $current.Bounds -cne $previous.Bounds) { throw 'CALENDAR_MENU_CHANGED' }
         $proof=Get-IdentAvailabilityProof $live $Context.Request $checked.Snapshot.Plan
         if (-not $proof.Ok) { throw $proof.ErrorCode }
         Assert-IdentCalendarOpenOperator $Context
+        & $journal 'menu_invoke_armed'
+        Assert-IdentCalendarOpenOperator $Context
+        $diagnostics.MenuInvokeAttempted=$true
         $current.Pattern.Invoke()
     }.GetNewClosure()
     $readForm={ Read-IdentCalendarOpenedForm $Context }.GetNewClosure()
-    return Invoke-IdentCalendarOpenCheck $Context.Request $preflight $guard $click $readMenu $invokeMenu $readForm $journal -OperatorConfirmed
+    return Invoke-IdentCalendarOpenCheck $Context.Request $preflight $guard $click $readMenu $invokeMenu $readForm $journal -OperatorConfirmed -Diagnostics $diagnostics
 }

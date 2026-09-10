@@ -34,6 +34,7 @@ function Run-Open([bool]$Consent=$true) {
     } {
         param($menu,$verified)
         $events.Add('invoke-menu')
+        if ($fail -ceq 'changed') { throw 'CALENDAR_CHANGED' }
         if ($fail -ceq 'busy') { throw 'AVAILABILITY_BUSY' }
         if ($fail -ceq 'provider') { throw 'private patient text' }
     } {
@@ -68,6 +69,7 @@ foreach($case in @(
     @('menu','CALENDAR_MENU_AMBIGUOUS',1,1),
     @('guard-3','CALENDAR_USER_ACTIVE',1,1),
     @('busy','AVAILABILITY_BUSY',2,1),
+    @('changed','CALENDAR_CHANGED',2,1),
     @('provider','CALENDAR_OPEN_FAILED',2,1),
     @('guard-4','CALENDAR_USER_ACTIVE',2,2)
 )) {
@@ -76,6 +78,8 @@ foreach($case in @(
         $result.ActionsReturned -eq $case[3] -and $result.RequiresManualReview -and -not $result.SaveInvoked -and
         @($events | Where-Object { $_ -eq 'right-click' }).Count -le 1 -and $events -notcontains 'opened_verified') ('Unsafe failure handling: '+$case[0])
 }
+Reset-Test; $script:fail='changed'; $result=Run-Open
+Assert-Test ($result.FailurePhase -ceq 'menu_recheck' -and -not $result.MenuInvokeAttempted) 'Menu precondition failure must not claim an invoked command.'
 Reset-Test; $form.Empty=$false; $result=Run-Open
 Assert-Test ($result.ErrorCode -ceq 'CALENDAR_FORM_NOT_EMPTY' -and $result.RequiresManualReview) 'Buffered patient form accepted.'
 foreach($field in @('DoctorCaption','Date','Start','End')) {

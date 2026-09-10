@@ -59,6 +59,12 @@ try {
     $result=Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Write-Host ('IDENT_CALENDAR_CHECK '+$result.State+' '+$result.ErrorCode)
     Write-Host ('Report: '+$resultPath)
+    if ($result.PSObject.Properties.Name -contains 'FailurePhase' -and $result.FailurePhase) {
+        Write-Host ('Stopped at: '+$result.FailurePhase+'; menu invoke attempted: '+$result.MenuInvokeAttempted)
+    }
+    if ($result.PSObject.Properties.Name -contains 'CalendarRecheck' -and $null -ne $result.CalendarRecheck) {
+        Write-Host ('Calendar recheck: '+$result.CalendarRecheck.Reason+'; changed parts: '+($result.CalendarRecheck.ChangedParts -join ','))
+    }
     if ($result.PSObject.Properties.Name -contains 'AvailabilityVerified' -and $result.AvailabilityVerified) {
         Write-Host ('Verified SQL identity: DoctorId='+$result.DoctorId+' BranchId='+$result.BranchId+' ChairId='+$result.ChairId)
     }

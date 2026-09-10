@@ -1,5 +1,41 @@
 # Supervised Calendar Opening (2.14.13)
 
+## Clinic Result And 2.14.14 Follow-Up
+
+The operator supplied a successful `available_read_only` report for the agreed
+30-minute test interval. SQL resolved doctor 1904, branch 1, chair 2. The following
+opening run `e852258aaa6f4fdd8685ea51f1fab87b` stopped with `partial`,
+`CALENDAR_CHANGED`, ActionsAttempted=2, ActionsReturned=1, FormOpened=false and
+SaveInvoked=false. In 2.14.13 this error after the right-click is raised by the
+calendar recheck before the MenuItem Invoke call. The exact changed tree field
+was not recorded, so an incidental popup-related change is a hypothesis, not a
+confirmed diagnosis. The pending receipt must not be silently removed or retried.
+
+2.14.14 retains the complete-tree comparison before input. After the popup opens,
+it compares the same grid runtime identity and a separate context proof covering
+grid geometry/type/visibility, **every direct TextBlock** (including unrelated and
+offscreen labels, paths, names, geometry and state), and the exact selection.
+Grid display-name and non-text descendants such as scrollbar internals are not
+part of this popup transition proof. Scrolling that changes labels/geometry,
+changed date/doctor/time/chair, ambiguous/invalid plans and different grids still
+stop before Invoke. Fresh SQL proof, input guard, exact menu identity and empty
+form readback are unchanged. A popup that makes a required label unavailable is
+still rejected; there is no visibility bypass.
+
+Reports now include FailurePhase, CalendarRecheck (allowlisted reason and changed
+part names only), and MenuInvokeAttempted, set immediately before Invoke. The
+journal advances to `menu_invoke_armed` before that call; an ambiguous/failed run
+keeps its receipt. No raw UI text is added to diagnostic reports.
+
+Windows PowerShell 5.1 tests passed serially: calendar 56, availability 44,
+opening sequence 45, mocked UIA 69, transition 48 (including production callback
+ordering with mock actions and real temporary receipts), launcher, installer and
+update/rollback. No test used native input. The real-clinic opening remains
+unverified; queue activation and patient writing are still disabled.
+
+2.14.14 release SHA-256: `98BE3FF4DCB2BFE7057472420CD580ED5BE8F540E0EE6FE894F367638C063707`.
+Installer SHA-256: `565DDEA3BA874DB3F154FEB678E8ED3457CBDCF448C5FF8F0B06412DDF67AB74`.
+
 This release adds real read-only SQL availability and an **explicitly confirmed
 one-slot opening test**. It is not an unattended booking release. There is no
 patient input, Save, dragging, splitting, scrolling, or queue activation.
