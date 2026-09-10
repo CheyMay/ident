@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest', 'PatientFillCheck')]
+  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest', 'PatientFillCheck', 'CalendarCheck')]
   [string]$Mode = 'DryRun',
 
   [string]$ConfigPath = '',
@@ -1442,6 +1442,7 @@ $interactionLease = $null
 $config = $null
 $windowInfo = $null
 $fillReportPath = ''
+$calendarReportPath = ''
 try {
   try {
     $ownsRobotMutex = $robotMutex.WaitOne(0)
@@ -1459,6 +1460,31 @@ try {
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))) 'fill-check-pending.json')) {
       throw 'FILL_REVIEW_PENDING'
     }
+  }
+
+  if ($Mode -eq 'CalendarCheck') {
+    if ($Execute -or $ObserveChanges) { throw 'CALENDAR_INVALID_MODE' }
+    . (Join-Path $PSScriptRoot 'IdentFillCheck.ps1')
+    . (Join-Path $PSScriptRoot 'IdentCalendar.ps1')
+    . (Join-Path $PSScriptRoot 'IdentCalendarRuntime.ps1')
+    . (Join-Path $PSScriptRoot 'RobotCapture.ps1')
+    $directory=Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+    if ($CaptureId -notmatch '^[a-f0-9]{32}$') { throw 'CALENDAR_LAUNCHER_REQUIRED' }
+    $runDirectory=Join-Path $directory ('calendar-checks\'+$CaptureId)
+    if ([IO.Path]::GetFullPath($ReportPath) -ine (Join-Path $runDirectory 'result.json') -or
+        [IO.Path]::GetFullPath($TaskFile) -ine (Join-Path $runDirectory 'request.json')) { throw 'CALENDAR_LAUNCHER_REQUIRED' }
+    $armPath=Join-Path $runDirectory 'armed'
+    $armDeadline=[datetime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $armPath) -and [datetime]::UtcNow -lt $armDeadline) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path -LiteralPath $armPath)) { throw 'CALENDAR_LAUNCHER_REQUIRED' }
+    $calendarReportPath=$ReportPath
+    $interactionLease=Enter-RobotInteractionLease -Directory $directory -Training
+    if ($null -eq $interactionLease) { throw 'CALENDAR_BUSY' }
+    $calendarResult=Invoke-IdentSupervisedCalendarCheck $ConfigPath $TaskFile
+    Write-JsonFileAtomic $ReportPath $calendarResult
+    Write-Host ('IDENT_CALENDAR_CHECK '+$calendarResult.State+' '+$calendarResult.ErrorCode)
+    if (-not $calendarResult.Ok) { exit 1 }
+    return
   }
 
   if ($Mode -eq 'PatientFillCheck') {
@@ -1632,6 +1658,18 @@ if (-not $windowInfo) {
   } while ($true)
 }
 catch {
+  if ($Mode -eq 'CalendarCheck') {
+    $safeCode=if ($_.Exception.Message -in @('CALENDAR_LAUNCHER_REQUIRED','CALENDAR_BUSY','CALENDAR_INVALID_REQUEST',
+        'CALENDAR_WINDOW_CHANGED','CALENDAR_INVALID_MODE','FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING')) { $_.Exception.Message } else { 'CALENDAR_CHECK_FAILED' }
+    if ($calendarReportPath) {
+      try {
+        Write-JsonFileAtomic $calendarReportPath ([pscustomobject]@{ Ok=$false; State='rejected'; ErrorCode=$safeCode;
+          ReadOnly=$true; ActionsExecuted=0; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false })
+      } catch { }
+    }
+    Write-Host ('IDENT_CALENDAR_CHECK rejected '+$safeCode)
+    exit 1
+  }
   if ($Mode -eq 'PatientFillCheck') {
     # UIA provider errors can contain field contents. Never log or rethrow them.
     $safeCode=if ($_.Exception.Message -in @('FILL_LAUNCHER_REQUIRED','FILL_BUSY','FILL_INVALID_REQUEST','FILL_REVIEW_PENDING',

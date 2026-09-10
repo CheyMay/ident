@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.14.11'
+$releaseVersion = '2.14.12'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -49,14 +49,14 @@ foreach ($file in $payloadFiles) {
 $robotSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\robot\ident-rpa'))
 Copy-Item -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1') -Destination (Join-Path $releaseStagingDirectory 'robot-source\Start-IdentRobot.ps1')
 Copy-Item -LiteralPath (Join-Path $robotSource 'config.example.json') -Destination (Join-Path $releaseStagingDirectory 'robot-source\config.example.json')
-foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1', 'IdentFillCheck.ps1', 'IdentFillRuntime.ps1', 'Start-IdentFillCheck.ps1', 'Start-IdentTraining.ps1')) {
+foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1', 'IdentFillCheck.ps1', 'IdentFillRuntime.ps1', 'Start-IdentFillCheck.ps1', 'IdentCalendar.ps1', 'IdentCalendarRuntime.ps1', 'Start-IdentCalendarCheck.ps1', 'Start-IdentTraining.ps1')) {
     Copy-Item -LiteralPath (Join-Path $robotSource $file) -Destination (Join-Path $releaseStagingDirectory "robot-source\$file")
 }
 
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.14.11: read-only supervised form-change observation and redacted fill failure diagnostics; no automatic input in observation, no save, pending review receipts and booking guards preserved'
+    notes = 'Code9 IDENT Desktop 2.14.12: bounded read-only calendar planning with visible date, doctor, interval, shift and viewport checks; no calendar input, split, patient fill, save or queue activation; pending review guards preserved'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
@@ -74,6 +74,9 @@ $releaseManifest = [ordered]@{
         @{ source = 'robot-source/IdentFillCheck.ps1'; destination = 'robot/IdentFillCheck.ps1' },
         @{ source = 'robot-source/IdentFillRuntime.ps1'; destination = 'robot/IdentFillRuntime.ps1' },
         @{ source = 'robot-source/Start-IdentFillCheck.ps1'; destination = 'robot/Start-IdentFillCheck.ps1' },
+        @{ source = 'robot-source/IdentCalendar.ps1'; destination = 'robot/IdentCalendar.ps1' },
+        @{ source = 'robot-source/IdentCalendarRuntime.ps1'; destination = 'robot/IdentCalendarRuntime.ps1' },
+        @{ source = 'robot-source/Start-IdentCalendarCheck.ps1'; destination = 'robot/Start-IdentCalendarCheck.ps1' },
         @{ source = 'robot-source/Start-IdentTraining.ps1'; destination = 'robot/Start-IdentTraining.ps1' }
     )
 }

@@ -73,6 +73,15 @@ try {
         $engine=Get-Content -LiteralPath (Join-Path $releaseDirectory 'robot-source/IdentFillCheck.ps1') -Raw -Encoding UTF8
         if ($engine -notmatch 'function Invoke-IdentFillObservation' -or $engine -notmatch 'WriteReturned') { throw 'Observation engine or fill diagnostics are missing.' }
     }
+    if ([version]$manifest.version -ge [version]'2.14.12') {
+        foreach($name in @('IdentCalendar.ps1','IdentCalendarRuntime.ps1','Start-IdentCalendarCheck.ps1')) {
+            $bindings=@($manifest.files | Where-Object { $_.source -eq ('robot-source/'+$name) -and $_.destination -eq ('robot/'+$name) })
+            if ($bindings.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory ('robot-source/'+$name))) -or
+                $setup -notmatch [regex]::Escape("'$name'")) { throw 'Calendar module missing from update or initial setup.' }
+        }
+        $entry=Get-Content -LiteralPath (Join-Path $releaseDirectory 'robot-source/Start-IdentRobot.ps1') -Raw -Encoding UTF8
+        if ($entry -notmatch 'CALENDAR_INVALID_MODE' -or $entry -notmatch 'Invoke-IdentSupervisedCalendarCheck') { throw 'Read-only calendar entry guard missing.' }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })
