@@ -26,7 +26,8 @@
 
   [string]$SuccessMarkerPath = '',
 
-  [switch]$Execute
+  [switch]$Execute,
+  [switch]$ObserveChanges
 )
 
 Set-StrictMode -Version Latest
@@ -1461,6 +1462,7 @@ try {
   }
 
   if ($Mode -eq 'PatientFillCheck') {
+    if ($Execute -and $ObserveChanges) { throw 'FILL_INVALID_MODE' }
     . (Join-Path $PSScriptRoot 'IdentFillCheck.ps1')
     . (Join-Path $PSScriptRoot 'IdentFillRuntime.ps1')
     . (Join-Path $PSScriptRoot 'RobotCapture.ps1')
@@ -1476,7 +1478,7 @@ try {
     $fillReportPath=$ReportPath
     $interactionLease=Enter-RobotInteractionLease -Directory $directory -Training
     if ($null -eq $interactionLease) { throw 'FILL_BUSY' }
-    $fillResult=Invoke-IdentSupervisedFill $ConfigPath $TaskFile $runDirectory $CaptureId -Execute:$Execute
+    $fillResult=Invoke-IdentSupervisedFill $ConfigPath $TaskFile $runDirectory $CaptureId -Execute:$Execute -ObserveChanges:$ObserveChanges
     Write-JsonFileAtomic $ReportPath $fillResult
     Write-Host ('IDENT_FILL_CHECK '+$fillResult.State+' '+$fillResult.ErrorCode)
     return
@@ -1633,7 +1635,7 @@ catch {
   if ($Mode -eq 'PatientFillCheck') {
     # UIA provider errors can contain field contents. Never log or rethrow them.
     $safeCode=if ($_.Exception.Message -in @('FILL_LAUNCHER_REQUIRED','FILL_BUSY','FILL_INVALID_REQUEST','FILL_REVIEW_PENDING',
-        'FILL_ROBOT_ENABLED','FILL_CONSENT_REQUIRED','FILL_WINDOW_CHANGED')) { $_.Exception.Message } else { 'FILL_CHECK_FAILED' }
+        'FILL_ROBOT_ENABLED','FILL_CONSENT_REQUIRED','FILL_WINDOW_CHANGED','FILL_INVALID_MODE')) { $_.Exception.Message } else { 'FILL_CHECK_FAILED' }
     if ($fillReportPath) {
       try {
         Write-JsonFileAtomic $fillReportPath ([pscustomobject]@{ Ok=$false; State='rejected'; ErrorCode=$safeCode;

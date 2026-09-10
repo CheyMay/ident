@@ -65,6 +65,14 @@ try {
         if ($binding.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory 'AgentLifecycle.ps1')) -or
             $setup -notmatch "'AgentLifecycle.ps1'") { throw 'Agent lifecycle helper is missing from update or initial setup.' }
     }
+    if ([version]$manifest.version -ge [version]'2.14.11') {
+        foreach($name in @('Start-IdentFillCheck.ps1','Start-IdentRobot.ps1','IdentFillRuntime.ps1')) {
+            $code=Get-Content -LiteralPath (Join-Path $releaseDirectory ('robot-source/'+$name)) -Raw -Encoding UTF8
+            if ($code -notmatch '\$ObserveChanges' -or $code -notmatch 'FILL_INVALID_MODE') { throw 'Read-only observation routing or mode guard is missing.' }
+        }
+        $engine=Get-Content -LiteralPath (Join-Path $releaseDirectory 'robot-source/IdentFillCheck.ps1') -Raw -Encoding UTF8
+        if ($engine -notmatch 'function Invoke-IdentFillObservation' -or $engine -notmatch 'WriteReturned') { throw 'Observation engine or fill diagnostics are missing.' }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })

@@ -36,7 +36,8 @@ function Get-IdentFillRuntimeSnapshot {
         $pattern=$null
         if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern) -or
             $pattern.Current.IsReadOnly) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'field_pattern' $role) }
-        $fields[$role]=[pscustomobject]@{ Identity=($element.GetRuntimeId() -join ','); Value=[string]$pattern.Current.Value; ReadOnly=$false }
+        $fields[$role]=[pscustomobject]@{ Identity=($element.GetRuntimeId() -join ','); Value=[string]$pattern.Current.Value;
+            Bounds=[string]$row[0].bounds; ReadOnly=$false }
         $patterns[$role]=$pattern
     }
     # Check the appointment notification control, not similarly named patient controls.
@@ -69,8 +70,17 @@ function Set-IdentFillRuntimeValue {
     catch { throw (New-IdentFillFailure 'FILL_CHECK_FAILED' 'setter_exception' $Role) }
 }
 
+function Get-IdentFillObservationSnapshot {
+    param([object]$Context)
+    # Manual typing is permitted between read-only samples, never during a sample or any write.
+    $Context.InputTick=[Code9IdentRobot.NativeInput]::LastInputTick()
+    try { return Get-IdentFillRuntimeSnapshot $Context }
+    finally { $Context.Patterns=@{} }
+}
+
 function Invoke-IdentSupervisedFill {
-    param([string]$RobotConfig,[string]$RequestPath,[string]$RunDirectory,[string]$RunId,[switch]$Execute)
+    param([string]$RobotConfig,[string]$RequestPath,[string]$RunDirectory,[string]$RunId,[switch]$Execute,[switch]$ObserveChanges)
+    if ($Execute -and $ObserveChanges) { throw 'FILL_INVALID_MODE' }
     $directory=Split-Path -Parent ([IO.Path]::GetFullPath($RobotConfig))
     Assert-IdentFillCheckInstallation $directory -Execute:$Execute
     $requestFile=Get-Item -LiteralPath $RequestPath
@@ -97,6 +107,14 @@ function Invoke-IdentSupervisedFill {
     $context=[pscustomobject]@{ Handle=$handle; ProcessId=$processId; InputTick=[Code9IdentRobot.NativeInput]::LastInputTick();
         RootIdentity=''; Directory=$directory; Plan=$plan; Patterns=@{} }
     $context.RootIdentity=Assert-ObservedElement (Get-ObservedElement $handle) $handle $processId
+    if ($ObserveChanges) {
+        $observer={ Get-IdentFillObservationSnapshot $context }.GetNewClosure()
+        $ready={
+            Write-JsonFileAtomic (Join-Path $RunDirectory 'observation-ready.json') ([pscustomobject]@{ ready=$true; readOnly=$true })
+            try { [System.Media.SystemSounds]::Asterisk.Play() } catch { }
+        }.GetNewClosure()
+        return Invoke-IdentFillObservation $plan $observer $ready
+    }
     $receiptPath=Join-Path $directory 'fill-check-pending.json'
     $reader={ Get-IdentFillRuntimeSnapshot $context }.GetNewClosure()
     $writer={ param($role,$value,$snapshot) Set-IdentFillRuntimeValue $context $role $value $snapshot }.GetNewClosure()

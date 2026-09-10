@@ -11,13 +11,15 @@ was first name. The old report does not establish whether its setter ran:
 the attempt counter increments before the writer's final guard.
 
 The operator reported the form closed itself later and no appointment appeared
-in the calendar. Whether IDENT persisted a patient card remains unverified.
+in the calendar. A subsequent surname search showed only the old card #16;
+no new card was visible. IDENT's toolbar also showed an unfinished draft with
+the test first name. Neither screenshot proves which UIA guard failed.
 Keep `fill-check-pending.json` and the run report; do not rerun, delete evidence,
 or enable the queue based only on an empty calendar. The form closure is not
 proven to be the cause of the earlier rejection.
 
-Additional failure diagnostics are now implemented and tested locally, not
-packaged or deployed. `WriteReturned` counts completed writer callbacks;
+Additional failure diagnostics are included in the local 2.14.11 candidate;
+deployment must be confirmed separately. `WriteReturned` counts completed writer callbacks;
 `FailurePhase`, `FailureRole`, and `FailureReason` distinguish a pre-set guard
 from failed readback, using fixed labels only. They do not capture field values,
 window text, provider messages, phone numbers, or runtime identities. No guard
@@ -27,6 +29,33 @@ Sequential checks passed: FillCheck, FillRuntime, FillLauncher, PatientForm,
 and RobotSafety. The new fixtures reproduce the old report's identical counters
 both before a setter and after a returned setter; neither fixture proves which
 case occurred in IDENT.
+
+## Read-Only Change Observation (2.14.11)
+
+The next clinic check uses `-ObserveChanges`, **not `-Execute`**. These switches
+are mutually exclusive at the launcher, child, and runtime entry points.
+Keep the previous `fill-check-pending.json` and reports. Observation accepts
+that receipt without changing it; another execution remains blocked.
+
+1. Open the matching expanded new-patient form manually with surname present,
+   first name empty, and appointment notifications off. Do not save.
+2. Run the bounded launcher with the private preview request and `-ObserveChanges`.
+   Activate IDENT within eight seconds and wait without typing for the ready sound.
+3. After the sound, manually enter only the agreed first name; keep IDENT active
+   and wait about 30 seconds. If no sound is heard, do not guess readiness or save;
+   wait for the result. UIA delays remain bounded by the launcher's 180-second limit.
+4. Inspect the new run's `result.json`, not the old pending run. The result lists
+   only fixed role names for value, identity, and geometry changes, plus counters
+   and sanitized failure details. No field text, IDs, coordinates, or provider
+   exceptions are exported. `no_change` is not a successful fill test.
+
+Observation has no writer or journal callback. Manual typing is permitted between
+read-only samples; a sample interrupted by input is discarded. Foreground HWND,
+PID, root identity, appointment context, notification state, installation guards,
+interaction lease, and timeout remain enforced. Writer guards are unchanged.
+Observation never grants readiness for unattended use, invokes Save, or removes
+the manual-review requirement. IDENT may still internally process the operator's
+manual edits. It is not a verified fix for the original failure.
 
 ### Original Development Record
 

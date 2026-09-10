@@ -1,4 +1,4 @@
-param($Mode,$ConfigPath,$TaskFile,$ReportPath,$CaptureId,[switch]$Execute)
+param($Mode,$ConfigPath,$TaskFile,$ReportPath,$CaptureId,[switch]$Execute,[switch]$ObserveChanges)
 $ErrorActionPreference='Stop'
 $runDirectory=Split-Path -Parent $ReportPath
 $deadline=[datetime]::UtcNow.AddSeconds(10)
@@ -12,4 +12,4 @@ if ((Get-Content -LiteralPath $TaskFile -Raw).Trim() -eq 'hang') {
     Start-Sleep -Seconds 60
     exit 9
 }
-@{ Ok=$true; State='preview'; ErrorCode='' } | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding UTF8
+@{ Ok=$true; State=$(if($ObserveChanges){'no_change'}else{'preview'}); ErrorCode='' } | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding UTF8

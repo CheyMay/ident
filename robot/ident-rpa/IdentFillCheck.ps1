@@ -187,6 +187,77 @@ function Invoke-IdentFillCheck {
     return [pscustomobject]$result
 }
 
+function Invoke-IdentFillObservation {
+    param([object]$Plan,[scriptblock]$ReadSnapshot,[scriptblock]$OnReady={},
+        [ValidateRange(1,40)][int]$MaxSnapshots=40,
+        [ValidateRange(0,2000)][int]$PollMilliseconds=750,
+        [ValidateRange(1,60)][int]$DurationSeconds=30)
+    # No writer or journal is accepted here. Values and UI identities never leave this function.
+    $roles=@('patientLastNameInput','patientFirstNameInput','patientMiddleNameInput',
+        'patientPhoneInput','patientBirthDateInput','commentInput')
+    $result=[ordered]@{ Ok=$false; State='observation_failed'; ErrorCode=''; ReadOnly=$true;
+        WriteAttempts=0; WriteReturned=0; Written=0; SaveInvoked=$false;
+        RequiresManualReview=$true; ReadyForUnattendedExecution=$false;
+        BaselineCaptured=$false; Snapshots=0; UnstableSnapshots=0;
+        ValueChangedRoles=@(); IdentityChangedRoles=@(); BoundsChangedRoles=@();
+        ExpectedFirstNameObserved=$false; FailurePhase=''; FailureRole=''; FailureReason='' }
+    $changes=@{ Value=@{}; Identity=@{}; Bounds=@{} }
+    $phase='baseline'
+    try {
+        if ($Plan.Start -le [DateTimeOffset]::Now) { throw 'FILL_EXPIRED' }
+        $baseline=& $ReadSnapshot
+        Assert-IdentFillSnapshot $baseline $Plan
+        foreach($role in $roles) {
+            $value=[string]$baseline.Fields[$role].Value
+            if (-not (Test-IdentFillEmpty $role $value) -and
+                ($role -eq 'patientFirstNameInput' -or -not (Test-IdentFillValue $role $value ([string]$Plan.Values[$role])))) {
+                throw (New-IdentFillFailure 'FILL_EXISTING_VALUE' 'existing_value' $role)
+            }
+        }
+        $result.BaselineCaptured=$true; $result.Snapshots=1
+        $phase='observation'
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        $null=& $OnReady
+        for($index=0;$index -lt $MaxSnapshots -and $watch.Elapsed.TotalSeconds -lt $DurationSeconds;$index++) {
+            if ($PollMilliseconds -gt 0) { Start-Sleep -Milliseconds $PollMilliseconds }
+            try { $snapshot=& $ReadSnapshot }
+            catch {
+                if ($_.Exception.Message -ceq 'FILL_USER_ACTIVE') { $result.UnstableSnapshots++; continue }
+                throw
+            }
+            Assert-IdentFillSnapshot $snapshot $Plan
+            if ($snapshot.RootIdentity -cne $baseline.RootIdentity) {
+                throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'root_identity')
+            }
+            $result.Snapshots++
+            foreach($role in $roles) {
+                foreach($property in @('Value','Identity','Bounds')) {
+                    if ([string]$snapshot.Fields[$role].$property -cne [string]$baseline.Fields[$role].$property) {
+                        $changes[$property][$role]=$true
+                    }
+                }
+            }
+            if (Test-IdentFillValue 'patientFirstNameInput' ([string]$snapshot.Fields.patientFirstNameInput.Value) ([string]$Plan.Values.patientFirstNameInput)) {
+                $result.ExpectedFirstNameObserved=$true
+            }
+        }
+        if ($result.Snapshots -lt 2) { throw 'FILL_USER_ACTIVE' }
+        $result.Ok=$true
+        $result.State=if($changes.Value.Count -gt 0 -or $changes.Identity.Count -gt 0 -or $changes.Bounds.Count -gt 0){'observed_change'}else{'no_change'}
+    } catch {
+        $detail=Get-IdentFillFailureDetail $_.Exception
+        $result.FailurePhase=$phase; $result.FailureRole=$detail.Role; $result.FailureReason=$detail.Reason
+        $code=[string]$_.Exception.Message
+        $result.ErrorCode=if($code -cin @('FILL_EXPIRED','FILL_UNSAFE_FORM','FILL_FORM_CHANGED','FILL_EXISTING_VALUE',
+            'FILL_USER_ACTIVE','FILL_WINDOW_CHANGED','FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING',
+            'IDENT_FORM_CONTEXT_UNAVAILABLE','IDENT_FORM_CONTEXT_MISMATCH')){$code}else{'FILL_CHECK_FAILED'}
+    }
+    $result.ValueChangedRoles=@($roles | Where-Object { $changes.Value.ContainsKey($_) })
+    $result.IdentityChangedRoles=@($roles | Where-Object { $changes.Identity.ContainsKey($_) })
+    $result.BoundsChangedRoles=@($roles | Where-Object { $changes.Bounds.ContainsKey($_) })
+    return [pscustomobject]$result
+}
+
 function Assert-IdentFillCheckInstallation {
     param([string]$RobotDirectory,[switch]$Execute)
     $directory=[IO.Path]::GetFullPath($RobotDirectory)

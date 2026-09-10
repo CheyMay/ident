@@ -102,4 +102,43 @@ $r=Invoke-IdentFillCheck $context.Plan { Get-IdentFillRuntimeSnapshot $context }
     {param($role,$value,$snapshot) Set-IdentFillRuntimeValue $context $role $value $snapshot} {} -Execute -OperatorConfirmed
 Assert ($r.ErrorCode -eq 'FILL_CHECK_FAILED' -and $r.FailureReason -eq 'setter_exception' -and $r.WriteReturned -eq 0 -and
     $r.FailurePhase -eq 'write' -and $setCalls -eq 1 -and ($r | ConvertTo-Json) -notmatch 'PRIVATE') 'Setter exception was retried or leaked.'
+# Restore the production operator guard against a synthetic native-input provider.
+Add-Type -TypeDefinition @'
+namespace Code9IdentRobot {
+    public static class NativeInput {
+        public static uint Tick = 10;
+        public static int Handle = 123;
+        public static int ProcessId = 9876;
+        public static bool InteractiveDesktopAvailable() { return true; }
+        public static int ForegroundHandle() { return Handle; }
+        public static int ForegroundProcessId() { return ProcessId; }
+        public static uint LastInputTick() { return Tick; }
+    }
+}
+'@
+. (Join-Path $repo 'robot/ident-rpa/IdentFillRuntime.ps1')
+function Assert-IdentFillCheckInstallation($Directory) { if ($script:robotEnabled) { throw 'FILL_ROBOT_ENABLED' } }
+$script:robotEnabled=$false
+Reset-Runtime
+$context | Add-Member NoteProperty InputTick 9
+$context | Add-Member NoteProperty Directory 'synthetic'
+$rejected=$false
+try { $null=Get-IdentFillRuntimeSnapshot $context } catch { $rejected=$_.Exception.Message -eq 'FILL_USER_ACTIVE' }
+Assert $rejected 'Ordinary fill guard accepted input between operations.'
+$sample=Get-IdentFillObservationSnapshot $context
+Assert ($sample.Fields.Count -eq 6 -and $context.InputTick -eq 10 -and $context.Patterns.Count -eq 0 -and $setCalls -eq 0) 'Read-only sampler retained a writer or ignored manual input semantics.'
+[Code9IdentRobot.NativeInput]::Handle=456
+$rejected=$false
+try { $null=Get-IdentFillObservationSnapshot $context } catch { $rejected=$_.Exception.Message -eq 'FILL_WINDOW_CHANGED' }
+Assert ($rejected -and $setCalls -eq 0) 'Read-only sampler followed another foreground window.'
+[Code9IdentRobot.NativeInput]::Handle=123
+$script:robotEnabled=$true
+$rejected=$false
+try { $null=Get-IdentFillObservationSnapshot $context } catch { $rejected=$_.Exception.Message -eq 'FILL_ROBOT_ENABLED' }
+Assert $rejected 'Read-only sampler ignored robot enablement.'
+$script:robotEnabled=$false
+function Get-UiTreeRows($Roots,$Depth,$ProcessId) { [Code9IdentRobot.NativeInput]::Tick++; return $script:rows }
+$rejected=$false
+try { $null=Get-IdentFillObservationSnapshot $context } catch { $rejected=$_.Exception.Message -eq 'FILL_USER_ACTIVE' }
+Assert ($rejected -and $context.Patterns.Count -eq 0 -and $setCalls -eq 0) 'Read-only sampler accepted input during a scan.'
 Write-Host 'IDENT FILL RUNTIME TESTS OK (mock UIA only; no desktop actions)'

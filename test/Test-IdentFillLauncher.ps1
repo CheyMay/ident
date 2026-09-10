@@ -15,6 +15,22 @@ try {
     $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $robot 'Start-IdentFillCheck.ps1') `
         -ConfigPath (Join-Path $robot 'config.local.json') -TaskFile $request -TimeoutSeconds 15)
     if ($LASTEXITCODE -ne 0 -or ($result -join ' ') -notmatch 'IDENT_FILL_CHECK preview') { throw 'Launcher failed a synthetic preview.' }
+    $pending=Join-Path $robot 'fill-check-pending.json'
+    '{"runId":"previous-private-run","stage":"write_intent"}' | Set-Content -LiteralPath $pending -Encoding UTF8
+    $before=(Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash
+    $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $robot 'Start-IdentFillCheck.ps1') `
+        -ConfigPath (Join-Path $robot 'config.local.json') -TaskFile $request -TimeoutSeconds 15 -ObserveChanges)
+    if ($LASTEXITCODE -ne 0 -or ($result -join ' ') -notmatch 'IDENT_FILL_CHECK no_change' -or
+        (Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash -cne $before) { throw 'Observation was blocked or changed pending evidence.' }
+    $count=@(Get-ChildItem -LiteralPath (Join-Path $robot 'fill-checks') -Directory).Count
+    $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $robot 'Start-IdentFillCheck.ps1') `
+        -ConfigPath (Join-Path $robot 'config.local.json') -TaskFile $request -Execute -ObserveChanges)
+    if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'FILL_INVALID_MODE' -or
+        @(Get-ChildItem -LiteralPath (Join-Path $robot 'fill-checks') -Directory).Count -ne $count) { throw 'Conflicting modes spawned a child.' }
+    $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $robot 'Start-IdentFillCheck.ps1') `
+        -ConfigPath (Join-Path $robot 'config.local.json') -TaskFile $request -Execute)
+    if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'FILL_REVIEW_PENDING' -or
+        (Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash -cne $before) { throw 'Execute bypassed the pending receipt.' }
     'hang' | Set-Content -LiteralPath $request -Encoding ASCII
     $watch=[Diagnostics.Stopwatch]::StartNew()
     $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $robot 'Start-IdentFillCheck.ps1') `
