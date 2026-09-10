@@ -18,8 +18,8 @@ Keep `fill-check-pending.json` and the run report; do not rerun, delete evidence
 or enable the queue based only on an empty calendar. The form closure is not
 proven to be the cause of the earlier rejection.
 
-Additional failure diagnostics are included in the local 2.14.11 candidate;
-deployment must be confirmed separately. `WriteReturned` counts completed writer callbacks;
+Additional failure diagnostics are included in 2.14.11, now installed as
+confirmed below. `WriteReturned` counts completed writer callbacks;
 `FailurePhase`, `FailureRole`, and `FailureReason` distinguish a pre-set guard
 from failed readback, using fixed labels only. They do not capture field values,
 window text, provider messages, phone numbers, or runtime identities. No guard
@@ -31,6 +31,24 @@ both before a setter and after a returned setter; neither fixture proves which
 case occurred in IDENT.
 
 ## Read-Only Change Observation (2.14.11)
+
+Published and assigned only to `stomazub-laptop-7osrm534` on 2026-09-10 at
+16:44:47 UTC after a fresh online, disabled-robot, idle-capture gate. Rollback
+assignment metadata is retained in the private local admin directory. Agent
+heartbeat at 16:45:47 UTC reported 2.14.11; diagnostics received at 16:46:50 UTC
+confirmed `succeeded`, worker task `Running`, robot disabled, schedule `ok`.
+The supervisor hash matches the previously verified 2.14.10 lifecycle module.
+No clinic observation run has yet been performed and no queue was enabled.
+
+- Remote release: `ident-agent-release-2.14.11.zip`, 103409 bytes,
+  SHA256 `649A2F3D8B62DAE07752F4973A907B4EF724477B0A9F01653312C21C99CEDD64`.
+- Client installer: `ident-desktop-2.14.11.zip`, 111004 bytes,
+  SHA256 `4C6FF966F8D4C42B6F179298D9F8C502B5F4338F18EABCC8BE5457FE47F301D8`.
+- Sequential PS5 checks passed: FillObservation, FillCheck, FillRuntime,
+  FillLauncher, PatientForm, RobotSafety, InstallerPackage, AgentUpdate.
+  Update and rollback fixtures preserve the pending receipt byte-for-byte.
+  Archive source comparison, syntax/BOM checks and Git whitespace checks passed.
+  The published 2.14.10 archive was not modified.
 
 The next clinic check uses `-ObserveChanges`, **not `-Execute`**. These switches
 are mutually exclusive at the launcher, child, and runtime entry points.
