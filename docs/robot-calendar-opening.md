@@ -94,3 +94,15 @@ fill failure, multi-slot input and verified appointment saving remain unfinished
 
 Release SHA-256: `A059D280EA1DE73B01FD96954E62ABB7AD26DFA38E819FE012E7ADFEBC200806`.
 Installer SHA-256: `663131B357EAB3DF8598E9746F4EC8F89D6CA72AAC24F6E91C7F0877791E002E`.
+
+## Deployment Observation
+
+Published and assigned only to `stomazub-laptop-7osrm534` on 2026-09-10 at
+19:40:18 UTC, from the previously assigned/installed 2.14.11. Private rollback
+metadata was saved before assignment. Server release hash matches the archive.
+Heartbeat at 19:40:51 UTC reported 2.14.13, online, robot disabled and no active
+training/calibration. Requested diagnostics received at 19:41:10 UTC reported
+`update.status=succeeded`, worker task `Running`, desktop task `Ready`, and the
+unchanged verified supervisor hash. This is an observation, not continuous
+monitoring or proof of sleep/wake recovery. No opening or booking was run by
+deployment. The next clinic step is the read-only `-CheckAvailability` command.
