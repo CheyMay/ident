@@ -15,6 +15,7 @@ try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $testRoot 'commands') | Out-Null
     Copy-Item -LiteralPath $supervisorSource -Destination (Join-Path $testRoot 'IdentSupervisor.ps1')
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'agent\ident-db-agent\AgentLifecycle.ps1') -Destination $testRoot
     New-Item -ItemType Directory -Force -Path (Join-Path $testRoot 'robot') | Out-Null
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'robot\ident-rpa\RobotCapture.ps1') -Destination (Join-Path $testRoot 'robot')
     Set-Content -LiteralPath (Join-Path $testRoot 'config.local.json') -Value '{}' -Encoding UTF8

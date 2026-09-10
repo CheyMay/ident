@@ -12,6 +12,21 @@ if (-not (Test-Path -LiteralPath $robotSafetyPath)) {
 }
 . $robotSafetyPath
 . (Join-Path (Split-Path -Parent $robotSafetyPath) 'RobotCapture.ps1')
+. (Join-Path $PSScriptRoot 'AgentLifecycle.ps1')
+$script:WorkerPowerSample=Get-IdentPowerSample
+$script:RobotResumeNotBeforeActiveMs=$script:WorkerPowerSample.ActiveMs+60000
+$script:NeedsWakeRefresh=$false
+
+function Update-WorkerPowerState {
+    $sample=Get-IdentPowerSample
+    if (Test-IdentPowerResume $script:WorkerPowerSample $sample) {
+        $script:RobotResumeNotBeforeActiveMs=$sample.ActiveMs+60000
+        $script:NeedsWakeRefresh=$true
+        Write-WorkerLog -Level 'info' -EventName 'system_resumed' -Data @{ robotGraceSeconds=60 }
+    }
+    $script:WorkerPowerSample=$sample
+    return $sample
+}
 $script:LastHeartbeatAttempt = [DateTimeOffset]::MinValue
 
 if (-not ('Code9IdentAgent.NativeInput' -as [type])) {
@@ -618,14 +633,16 @@ function Save-RemoteSqlConfiguration {
 }
 
 function Invoke-RemoteSqlDiscovery {
-    param([string]$Revision)
+    param([string]$Revision,[switch]$LocalRequest)
 
     $timeoutSeconds = 120
     $script:State.diagnostics.sqlDiscoveryState = 'running'
     $script:State.diagnostics.sqlDiscoveryLastAttemptAt = (Get-Date).ToString('o')
     $script:State.diagnostics.sqlDiscoveryLastError = ''
-    Set-ControlRevision -Name 'sqlDiscoveryRequestRevision' -Revision $Revision
-    $script:State.diagnostics.sqlDiscoveryRequestRevision = $Revision
+    if (-not $LocalRequest) {
+        Set-ControlRevision -Name 'sqlDiscoveryRequestRevision' -Revision $Revision
+        $script:State.diagnostics.sqlDiscoveryRequestRevision = $Revision
+    }
     Write-RuntimeState
     $outputText = ''
     $stdoutPath = Join-Path $env:TEMP ("code9-ident-discovery-$PID-stdout.log")
@@ -1536,6 +1553,12 @@ function Test-RobotConfigured {
 }
 
 function Invoke-RobotPoll {
+    $power=Update-WorkerPowerState
+    if ($power.ActiveMs -lt $script:RobotResumeNotBeforeActiveMs) {
+        $script:State.robot.state='waiting_for_idle'
+        $script:State.robot.lastError=''
+        return
+    }
     $lease = Enter-RobotInteractionLease -Directory (Split-Path -Parent $script:Context.RobotConfigPath)
     if ($null -eq $lease) {
         $script:State.robot.state = 'waiting_for_training'
@@ -1931,8 +1954,21 @@ try {
     $nextRobot = [DateTime]::MinValue
 
     while (-not $script:StopRequested) {
+        $null=Update-WorkerPowerState
+        if ($script:NeedsWakeRefresh) {
+            $nextHeartbeat=[DateTime]::MinValue
+            $nextSchedule=[DateTime]::MinValue
+            $nextRobot=(Get-Date).AddSeconds(60)
+            $script:NeedsWakeRefresh=$false
+        }
         $now = Get-Date
         $refreshSchema = $false
+        $sqlDiscoveryPath=Join-Path $script:Context.CommandDirectory 'sql-discovery-now'
+        if (Test-Path -LiteralPath $sqlDiscoveryPath) {
+            Remove-Item -LiteralPath $sqlDiscoveryPath -Force
+            Invoke-RemoteSqlDiscovery -LocalRequest
+            $nextHeartbeat=[DateTime]::MinValue
+        }
         $sendNowPath = Join-Path $script:Context.CommandDirectory 'send-now'
         if (Test-Path -LiteralPath $sendNowPath) {
             Remove-Item -LiteralPath $sendNowPath -Force

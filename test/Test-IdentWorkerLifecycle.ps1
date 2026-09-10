@@ -301,9 +301,13 @@ server.listen(port, "127.0.0.1");
     $env:PSModulePath = $previousModulePath
 
     $status = $null
-    for ($attempt = 0; $attempt -lt 28; $attempt++) {
+    $startupWatch=[Diagnostics.Stopwatch]::StartNew()
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
         Start-Sleep -Seconds 1
         $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/status" -TimeoutSec 1
+        if ($startupWatch.Elapsed.TotalSeconds -lt 55 -and [bool]$status.completed) {
+            throw 'Robot skipped the startup idle grace.'
+        }
         if ([bool]$status.completed) {
             break
         }

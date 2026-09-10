@@ -13,6 +13,7 @@ if (-not (Test-Path -LiteralPath $captureHelpers)) {
     $captureHelpers = Join-Path $PSScriptRoot '..\..\robot\ident-rpa\RobotCapture.ps1'
 }
 . $captureHelpers
+. (Join-Path $PSScriptRoot 'AgentLifecycle.ps1')
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'config.local.json'
@@ -38,6 +39,11 @@ $script:LastError = ''
 $script:StartedAt = (Get-Date).ToString('o')
 $script:SupervisorCodeHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
 $script:LastWorkerHeartbeat = [DateTimeOffset]::MinValue
+$script:LastWorkerHeartbeatActiveMs = 0.0
+$script:LastWorkerStateToken = ''
+$script:PowerSample = Get-IdentPowerSample
+$script:ResumeGraceUntilActiveMs = 0.0
+$script:LastResumeAt = $null
 
 function Read-JsonFile {
     param([string]$Path)
@@ -112,6 +118,7 @@ function Write-SupervisorState {
         startedAt = $script:StartedAt
         codeSha256 = $script:SupervisorCodeHash
         lastRestartAt = $script:LastRestartAt
+        lastResumeAt = $script:LastResumeAt
         restartCount = $script:RestartCount
         lastError = $script:LastError
         updatedAt = (Get-Date).ToString('o')
@@ -195,6 +202,8 @@ function Start-Worker {
     $script:RestartCount++
     $script:LastRestartAt = (Get-Date).ToString('o')
     $script:LastWorkerHeartbeat = [DateTimeOffset]::Now
+    $script:LastWorkerHeartbeatActiveMs = (Get-IdentPowerSample).ActiveMs
+    $script:LastWorkerStateToken = ''
     $script:LastError = ''
     Write-SupervisorLog -EventName 'worker_started' -Data @{ processId = [int]$script:Worker.Id; restartCount = $script:RestartCount }
     Write-SupervisorState -State 'running'
@@ -204,6 +213,9 @@ function Test-WorkerStale {
     if ($null -eq $script:Worker -or $script:Worker.HasExited) {
         return $false
     }
+    $activeMs=(Get-IdentPowerSample).ActiveMs
+    $stale=($activeMs - $script:LastWorkerHeartbeatActiveMs) -gt ($StaleAfterSeconds*1000) -and
+        $activeMs -ge $script:ResumeGraceUntilActiveMs
     $runtime = Read-JsonFile -Path $runtimeStatePath
     if (
         $null -eq $runtime -or
@@ -212,16 +224,20 @@ function Test-WorkerStale {
         $runtime.worker.PSObject.Properties.Name -notcontains 'processId' -or
         [int]$runtime.worker.processId -ne [int]$script:Worker.Id
     ) {
-        return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
+        return $stale
     }
     $updatedAt = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse([string]$runtime.updatedAt, [ref]$updatedAt)) {
-        return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
+        return $stale
     }
-    if ($updatedAt -gt $script:LastWorkerHeartbeat -and $updatedAt -le [DateTimeOffset]::Now) {
+    if ([string]$runtime.updatedAt -cne $script:LastWorkerStateToken -and
+        $updatedAt -ge [DateTimeOffset]::Now.AddSeconds(-60) -and $updatedAt -le [DateTimeOffset]::Now.AddSeconds(60)) {
         $script:LastWorkerHeartbeat = $updatedAt
+        $script:LastWorkerHeartbeatActiveMs = $activeMs
+        $script:LastWorkerStateToken = [string]$runtime.updatedAt
+        return $false
     }
-    return (([DateTimeOffset]::Now - $script:LastWorkerHeartbeat).TotalSeconds -gt $StaleAfterSeconds)
+    return $stale
 }
 
 $createdNew = $false
@@ -235,6 +251,13 @@ try {
     New-Item -ItemType Directory -Force -Path $commandDirectory | Out-Null
     Write-SupervisorLog -EventName 'supervisor_started' -Data @{ processId = $PID }
     while ($true) {
+        $sample=Get-IdentPowerSample
+        if (Test-IdentPowerResume $script:PowerSample $sample) {
+            $script:ResumeGraceUntilActiveMs=$sample.ActiveMs+45000
+            $script:LastResumeAt=(Get-Date).ToString('o')
+            Write-SupervisorLog -EventName 'system_resumed' -Data @{ graceSeconds=45 }
+        }
+        $script:PowerSample=$sample
         $runtime = Read-JsonFile -Path $runtimeStatePath
         $robotBusy = $null -ne $runtime -and $runtime.PSObject.Properties.Name -contains 'robot' -and $null -ne $runtime.robot -and [string]$runtime.robot.state -eq 'processing' -and -not (Test-WorkerStale)
         if ((Test-Path -LiteralPath $restartRequestPath) -and -not $robotBusy) {

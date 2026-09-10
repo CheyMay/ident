@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'AgentLifecycle.ps1')
 $workerPath = Join-Path $InstallDirectory 'IdentWorker.ps1'
 $supervisorPath = Join-Path $InstallDirectory 'IdentSupervisor.ps1'
 $desktopPath = Join-Path $InstallDirectory 'IdentDesktop.ps1'
@@ -25,6 +26,8 @@ $workerAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $wor
 $desktopArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$desktopPath`" -ConfigPath `"$configPath`" -StartMinimized"
 $desktopAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $desktopArguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+# A successful process exit or a missed wake must also recover, not only nonzero exit codes.
+$recoveryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal `
     -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive `
@@ -41,7 +44,7 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $WorkerTaskName `
     -Action $workerAction `
-    -Trigger $trigger `
+    -Trigger @($trigger,$recoveryTrigger) `
     -Principal $principal `
     -Settings $settings `
     -Description 'Runs the Code9 IDENT schedule and booking agent while this Windows user is signed in.' `
@@ -56,6 +59,8 @@ Register-ScheduledTask `
     -Description 'Shows Code9 IDENT agent status and controls.' `
     -Force | Out-Null
 
+try { Repair-IdentHiddenShortcuts -Directory $InstallDirectory }
+catch { Write-Warning 'Code9 shortcuts could not be migrated; background task installation continues.' }
 Start-ScheduledTask -TaskName $WorkerTaskName
 
 Write-Host "Autostart installed: $WorkerTaskName" -ForegroundColor Green

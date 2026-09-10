@@ -11,9 +11,29 @@ Set-StrictMode -Version 2.0
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
+. (Join-Path $PSScriptRoot 'AgentLifecycle.ps1')
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'config.local.json'
+}
+$ConfigPath=[IO.Path]::GetFullPath($ConfigPath)
+$script:PanelMutex=$null
+$script:PanelShowEvent=$null
+if (-not $PreviewPath) {
+    $script:PanelMutex=[Threading.Mutex]::new($false,'Local\Code9IdentAgentDesktop')
+    $ownsPanel=$false
+    try { $ownsPanel=$script:PanelMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsPanel=$true }
+    if (-not $ownsPanel) {
+        if (-not $StartMinimized) {
+            try {
+                $signal=[Threading.EventWaitHandle]::OpenExisting('Local\Code9IdentAgentDesktopShow')
+                try { $null=$signal.Set() } finally { $signal.Dispose() }
+            } catch { }
+        }
+        $script:PanelMutex.Dispose()
+        exit 0
+    }
+    $script:PanelShowEvent=[Threading.EventWaitHandle]::new($false,[Threading.EventResetMode]::AutoReset,'Local\Code9IdentAgentDesktopShow')
 }
 
 function Read-JsonFile {
@@ -386,13 +406,29 @@ $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $openMenuItem = $trayMenu.Items.Add('Открыть')
 $sendMenuItem = $trayMenu.Items.Add('Отправить расписание')
 [void]$trayMenu.Items.Add('-')
-$exitMenuItem = $trayMenu.Items.Add('Закрыть панель')
+$exitMenuItem = $trayMenu.Items.Add('Выйти из панели')
 $tray.ContextMenuStrip = $trayMenu
 
 function Show-MainWindow {
+    $form.ShowInTaskbar = $true
     $form.Show()
     $form.WindowState = [Windows.Forms.FormWindowState]::Normal
     $form.Activate()
+}
+
+function Hide-MainWindow {
+    $form.ShowInTaskbar = $false
+    $form.Hide()
+}
+
+function Request-LocalAgentCommand {
+    param([ValidateSet('sql-discovery-now','schema-now')][string]$Name)
+    try {
+        $null=New-Item -ItemType Directory -Force -Path $script:CommandDirectory
+        $null=New-Item -ItemType File -Force -Path (Join-Path $script:CommandDirectory $Name)
+        $script:UiError=''
+        Refresh-Status
+    } catch { $script:UiError=$_.Exception.Message }
 }
 
 function Set-FeatureSwitches {
@@ -618,6 +654,15 @@ function Refresh-Status {
     }
 
     $updateState = if ($state.PSObject.Properties.Name -contains 'update') { $state.update } else { $null }
+    $discoveryState=if ($state.PSObject.Properties.Name -contains 'diagnostics') { $state.diagnostics } else { $null }
+    $discoveryRunning=(Test-Path -LiteralPath (Join-Path $script:CommandDirectory 'sql-discovery-now')) -or
+        ($null -ne $discoveryState -and [string]$discoveryState.sqlDiscoveryState -eq 'running')
+    $autoSqlButton.Enabled=-not $discoveryRunning
+    $autoSqlButton.Text=if ($discoveryRunning) { 'Поиск SQL...' } else { 'Найти SQL' }
+    $schemaRunning=(Test-Path -LiteralPath (Join-Path $script:CommandDirectory 'schema-now')) -or
+        ($state.PSObject.Properties.Name -contains 'schema' -and [string]$state.schema.state -in @('exporting','sending'))
+    $sqlButton.Enabled=-not $schemaRunning
+    $sqlButton.Text=if ($schemaRunning) { 'Проверка...' } else { 'Проверить базу' }
     $agentLabel.Text = "Агент: $($script:Config.agent.id)  |  версия $($state.version)" + $(if (
         $null -ne $updateState -and -not [string]::IsNullOrWhiteSpace([string]$updateState.targetVersion)
     ) {
@@ -681,6 +726,7 @@ function Refresh-Status {
         [string]$state.schedule.lastError,
         $(if ($null -ne $schemaState) { [string]$schemaState.lastError } else { '' }),
         [string]$state.robot.lastError
+        $(if ($null -ne $discoveryState) { [string]$discoveryState.sqlDiscoveryLastError } else { '' })
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     $errorLabel.Text = $(if ($script:UiError) { $script:UiError } else { $errors -join ' | ' })
 
@@ -728,14 +774,10 @@ $sendButton.Add_Click({ Request-SchedulePush })
 $sendMenuItem.Add_Click({ Request-SchedulePush })
 $calibrateButton.Add_Click({ Start-RobotCalibration })
 $autoSqlButton.Add_Click({
-    $agentScript = Join-Path $script:BaseDirectory 'IdentAgent.ps1'
-    $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$agentScript`" -ConfigPath `"$ConfigPath`" -AutoConfigureSql"
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments
+    Request-LocalAgentCommand 'sql-discovery-now'
 })
 $sqlButton.Add_Click({
-    $agentScript = Join-Path $script:BaseDirectory 'IdentAgent.ps1'
-    $arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$agentScript`" -ConfigPath `"$ConfigPath`" -TestConnection"
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments
+    Request-LocalAgentCommand 'schema-now'
 })
 $restartButton.Add_Click({
     try {
@@ -764,22 +806,29 @@ $folderButton.Add_Click({
 $openMenuItem.Add_Click({ Show-MainWindow })
 $tray.Add_DoubleClick({ Show-MainWindow })
 $exitMenuItem.Add_Click({
+    $answer=[Windows.Forms.MessageBox]::Show('Закрыть только панель? Фоновая служба и выгрузка расписания продолжат работу.',
+        'Code9 IDENT',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question,[Windows.Forms.MessageBoxDefaultButton]::Button2)
+    if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
     $script:AllowClose = $true
     $tray.Visible = $false
     $form.Close()
 })
 $form.Add_FormClosing({
     param($sender, $eventArgs)
-    if (-not $script:AllowClose) {
+    if ((Get-IdentCloseAction ([string]$eventArgs.CloseReason) $script:AllowClose) -eq 'hide') {
         $eventArgs.Cancel = $true
-        $form.Hide()
+        Hide-MainWindow
     }
+})
+$form.Add_Resize({
+    if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Minimized) { Hide-MainWindow }
 })
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 3000
 $timer.Add_Tick({
     try {
+        if ($null -ne $script:PanelShowEvent -and $script:PanelShowEvent.WaitOne(0)) { Show-MainWindow }
         Update-AgentSettings
         Update-RobotTrainingProcess
         Refresh-Status
@@ -793,7 +842,8 @@ $timer.Start()
 try { Refresh-Status } catch { $errorLabel.Text = $_.Exception.Message }
 
 if ($StartMinimized) {
-    $form.Add_Shown({ $form.Hide() })
+    $form.ShowInTaskbar=$false
+    $form.Add_Shown({ Hide-MainWindow })
 }
 
 if ($PreviewPath) {
@@ -823,3 +873,5 @@ if ($null -ne $script:CalibrationProcess) {
 $tray.Visible = $false
 $tray.Dispose()
 $form.Dispose()
+if ($null -ne $script:PanelShowEvent) { $script:PanelShowEvent.Dispose() }
+if ($null -ne $script:PanelMutex) { $script:PanelMutex.ReleaseMutex(); $script:PanelMutex.Dispose() }

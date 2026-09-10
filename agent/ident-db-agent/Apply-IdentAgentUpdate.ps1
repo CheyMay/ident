@@ -57,7 +57,10 @@ function Resume-AgentTask {
             Start-Sleep -Milliseconds 250
         } while ($true)
     }
-    Start-ScheduledTask -TaskName $WorkerTaskName -ErrorAction Stop
+    # Re-register existing tasks too: launch flags and recovery triggers are part of the update.
+    & (Join-Path $InstallDirectory 'Install-IdentAgentTask.ps1') `
+        -InstallDirectory $InstallDirectory `
+        -WorkerTaskName $WorkerTaskName
 }
 
 function Resolve-SafeChildPath {

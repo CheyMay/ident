@@ -39,6 +39,8 @@ try {
     Assert-True ($null -eq (Enter-RobotInteractionLease $temp)) 'Worker entered during training.'
     Assert-True ($null -eq (Enter-RobotInteractionLease $temp -Training)) 'Second training session entered.'
     Import-Functions (Join-Path $repo 'agent\ident-db-agent\IdentWorker.ps1') @('Invoke-RobotPoll')
+    $script:RobotResumeNotBeforeActiveMs=0
+    function Update-WorkerPowerState { return [pscustomobject]@{ ActiveMs=100000 } }
     $script:Context=[pscustomobject]@{ RobotConfigPath=(Join-Path $temp 'config.json') }
     $script:State=@{ robot=@{ state='idle'; lastError='' } }
     $script:PollCalls=0

@@ -60,6 +60,11 @@ try {
                 $setup -notmatch [regex]::Escape("'$name'")) { throw 'Fill-check module missing from update or initial setup.' }
         }
     }
+    if ([version]$manifest.version -ge [version]'2.14.10') {
+        $binding=@($manifest.files | Where-Object { $_.source -eq 'AgentLifecycle.ps1' -and $_.destination -eq 'AgentLifecycle.ps1' })
+        if ($binding.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory 'AgentLifecycle.ps1')) -or
+            $setup -notmatch "'AgentLifecycle.ps1'") { throw 'Agent lifecycle helper is missing from update or initial setup.' }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })

@@ -96,6 +96,7 @@ try {
     Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentSupervisor.ps1') @('Write-SupervisorState', 'Write-SupervisorLog', 'Invoke-LogRotation', 'Read-JsonFile')
     $script:Worker = $null; $script:StartedAt = (Get-Date).ToString('o'); $script:LastRestartAt = $null
     $script:RestartCount = 1; $script:LastError = ''
+    $script:LastResumeAt=$null
     $script:SupervisorCodeHash = 'fixture-hash'
     $supervisorStatePath = Join-Path $temp 'state.json'; $logPath = Join-Path $temp 'log.json'
     Write-SupervisorState 'running'
@@ -106,6 +107,8 @@ try {
     Assert-True ((Read-JsonFile $supervisorStatePath).state -eq 'running') 'Supervisor must recover after file lock'
 
     Import-Functions (Join-Path $root 'agent\ident-db-agent\IdentWorker.ps1') @('Invoke-RobotPoll', 'Invoke-RobotPollCore')
+    $script:RobotResumeNotBeforeActiveMs=0
+    function Update-WorkerPowerState { return [pscustomobject]@{ ActiveMs=100000 } }
     $script:Context = [pscustomobject]@{
         RobotConfigPath = Join-Path $temp 'robot\config.json'; BaseDirectory = $temp
         CommandDirectory = Join-Path $temp 'commands'

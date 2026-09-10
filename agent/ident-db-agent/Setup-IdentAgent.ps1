@@ -42,13 +42,13 @@ function New-PowerShellShortcut {
         [string]$ShortcutPath,
         [string]$ScriptPath,
         [string]$Arguments = '',
-        [int]$WindowStyle = 1
+        [int]$WindowStyle = 7
     )
 
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
     $shortcut.TargetPath = 'powershell.exe'
-    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $Arguments".Trim()
+    $shortcut.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" $Arguments".Trim()
     $shortcut.WorkingDirectory = Split-Path -Parent $ScriptPath
     $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,14"
     $shortcut.WindowStyle = $WindowStyle
@@ -93,6 +93,7 @@ $runtimeFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
     'IdentSupervisor.ps1',
+    'AgentLifecycle.ps1',
     'IdentDesktop.ps1',
     'Apply-IdentAgentUpdate.ps1',
     'Install-IdentAgentTask.ps1',
@@ -284,7 +285,8 @@ if (-not $NoShortcut -and -not [string]::IsNullOrWhiteSpace($desktopDirectory)) 
 if (-not $NoLaunch) {
     Start-Process `
         -FilePath 'powershell.exe' `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentDesktop.ps1')`" -ConfigPath `"$configPath`""
+        -WindowStyle Hidden `
+        -ArgumentList "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDirectory 'IdentDesktop.ps1')`" -ConfigPath `"$configPath`""
 }
 
 Write-Host ''

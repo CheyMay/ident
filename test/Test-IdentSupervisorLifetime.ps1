@@ -10,6 +10,7 @@ $taskRegistered = $false
 try {
     New-Item -ItemType Directory -Path (Join-Path $root 'robot') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repository 'agent\ident-db-agent\IdentSupervisor.ps1') -Destination $root
+    Copy-Item -LiteralPath (Join-Path $repository 'agent\ident-db-agent\AgentLifecycle.ps1') -Destination $root
     Copy-Item -LiteralPath (Join-Path $repository 'robot\ident-rpa\RobotCapture.ps1') -Destination (Join-Path $root 'robot')
     @{ repository = $repository } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'config.local.json') -Encoding UTF8
     $fixture = Join-Path $PSScriptRoot 'fixtures\supervisor-lifetime-worker.ps1'

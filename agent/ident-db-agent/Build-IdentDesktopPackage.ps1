@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.14.9'
+$releaseVersion = '2.14.10'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -32,6 +32,7 @@ $payloadFiles = @(
     'IdentAgent.ps1',
     'IdentWorker.ps1',
     'IdentSupervisor.ps1',
+    'AgentLifecycle.ps1',
     'IdentDesktop.ps1',
     'Apply-IdentAgentUpdate.ps1',
     'Setup-IdentAgent.ps1',
@@ -55,11 +56,12 @@ foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.14.9: explicit supervised expanded-form fill test with fresh UIA/context/readback checks, user-activity stop, watchdog and manual-review queue guard; no automatic save, patient lookup, calendar navigation or queue activation'
+    notes = 'Code9 IDENT Desktop 2.14.10: hidden panel launches and background SQL checks, single-instance tray panel, active-time watchdog, resume refresh and robot grace, periodic supervisor recovery; existing booking safety and disabled configuration preserved'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },
         @{ source = 'IdentSupervisor.ps1'; destination = 'IdentSupervisor.ps1' },
+        @{ source = 'AgentLifecycle.ps1'; destination = 'AgentLifecycle.ps1' },
         @{ source = 'IdentDesktop.ps1'; destination = 'IdentDesktop.ps1' },
         @{ source = 'Apply-IdentAgentUpdate.ps1'; destination = 'Apply-IdentAgentUpdate.ps1' },
         @{ source = 'Setup-IdentAgent.ps1'; destination = 'Setup-IdentAgent.ps1' },
