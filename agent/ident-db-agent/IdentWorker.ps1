@@ -1433,6 +1433,9 @@ function Invoke-SchedulePush {
 }
 
 function Get-RobotConfigurationProblem {
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'fill-check-pending.json')) {
+        return 'FILL_REVIEW_PENDING: inspect the supervised patient-form test before enabling queue execution.'
+    }
     if (-not (Test-Path -LiteralPath $script:Context.RobotConfigPath)) {
         return 'Robot configuration file was not found.'
     }

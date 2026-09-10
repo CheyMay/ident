@@ -32,6 +32,7 @@ separate clinic user so every created appointment is attributable.
 - `Start-IdentRobot.ps1` - robot runner.
 - `Start-IdentTraining.ps1` - passive multi-screen observation window, no UI writes.
 - `RobotCapture.ps1` - fresh-capture validation, isolated child lifetime and explicit private archive.
+- `Start-IdentFillCheck.ps1` - bounded, explicitly confirmed expanded-form test; no automatic save. See [specialist procedure](../../docs/robot-supervised-fill.md).
 - `RobotSafety.ps1` - observation/execution leases and explicit patient-name contracts.
 - `config.example.json` - safe config template.
 - `tasks.sample.json` - local task for dry-run without backend access.

@@ -53,6 +53,13 @@ try {
         $setup=Get-Content -LiteralPath (Join-Path $releaseDirectory 'Setup-IdentAgent.ps1') -Raw -Encoding UTF8
         if ($setup -notmatch "'IdentPatientForm.ps1'") { throw 'Initial setup does not copy the patient-form module.' }
     }
+    if ([version]$manifest.version -ge [version]'2.14.9') {
+        foreach($name in @('IdentFillCheck.ps1','IdentFillRuntime.ps1','Start-IdentFillCheck.ps1')) {
+            $bindings=@($manifest.files | Where-Object { $_.source -eq ('robot-source/'+$name) -and $_.destination -eq ('robot/'+$name) })
+            if ($bindings.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory ('robot-source/'+$name))) -or
+                $setup -notmatch [regex]::Escape("'$name'")) { throw 'Fill-check module missing from update or initial setup.' }
+        }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })
@@ -61,5 +68,9 @@ try {
     Write-Host 'Single-file client installer package OK' -ForegroundColor Green
 }
 finally {
-    if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
+    $resolved=[IO.Path]::GetFullPath($testRoot)
+    if ((Split-Path -Parent $resolved) -ieq [IO.Path]::GetFullPath($PSScriptRoot) -and
+        (Split-Path -Leaf $resolved) -like '.tmp-installer-*' -and (Test-Path -LiteralPath $resolved)) {
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
 }

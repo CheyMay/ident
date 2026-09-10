@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest')]
+  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest', 'PatientFillCheck')]
   [string]$Mode = 'DryRun',
 
   [string]$ConfigPath = '',
@@ -71,6 +71,13 @@ namespace Code9IdentRobot {
 
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    public static long ForegroundHandle() { return GetForegroundWindow().ToInt64(); }
+    public static uint LastInputTick() {
+      var input = new LASTINPUTINFO();
+      input.cbSize = (uint)Marshal.SizeOf(input);
+      if (!GetLastInputInfo(ref input)) throw new InvalidOperationException("FILL_USER_ACTIVE");
+      return input.dwTime;
+    }
     public static int ForegroundProcessId() {
       uint processId;
       GetWindowThreadProcessId(GetForegroundWindow(), out processId);
@@ -1433,6 +1440,7 @@ $ownsRobotMutex = $false
 $interactionLease = $null
 $config = $null
 $windowInfo = $null
+$fillReportPath = ''
 try {
   try {
     $ownsRobotMutex = $robotMutex.WaitOne(0)
@@ -1447,6 +1455,31 @@ try {
   if ($Execute -and $Mode -in @('RunOnce', 'Loop')) {
     $interactionLease = Enter-RobotInteractionLease -Directory (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath)))
     if ($null -eq $interactionLease) { Write-Host 'ROBOT_DEFER_BUSY'; exit 75 }
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))) 'fill-check-pending.json')) {
+      throw 'FILL_REVIEW_PENDING'
+    }
+  }
+
+  if ($Mode -eq 'PatientFillCheck') {
+    . (Join-Path $PSScriptRoot 'IdentFillCheck.ps1')
+    . (Join-Path $PSScriptRoot 'IdentFillRuntime.ps1')
+    . (Join-Path $PSScriptRoot 'RobotCapture.ps1')
+    $directory=Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+    # Only the bounded launcher creates this handshake after attaching the child to its job.
+    if ($CaptureId -notmatch '^[a-f0-9]{32}$') { throw 'FILL_LAUNCHER_REQUIRED' }
+    $runDirectory=Join-Path $directory ('fill-checks\'+$CaptureId)
+    if ([IO.Path]::GetFullPath($ReportPath) -ine (Join-Path $runDirectory 'result.json')) { throw 'FILL_LAUNCHER_REQUIRED' }
+    $armPath=Join-Path $runDirectory 'armed'
+    $armDeadline=[datetime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $armPath) -and [datetime]::UtcNow -lt $armDeadline) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path -LiteralPath $armPath)) { throw 'FILL_LAUNCHER_REQUIRED' }
+    $fillReportPath=$ReportPath
+    $interactionLease=Enter-RobotInteractionLease -Directory $directory -Training
+    if ($null -eq $interactionLease) { throw 'FILL_BUSY' }
+    $fillResult=Invoke-IdentSupervisedFill $ConfigPath $TaskFile $runDirectory $CaptureId -Execute:$Execute
+    Write-JsonFileAtomic $ReportPath $fillResult
+    Write-Host ('IDENT_FILL_CHECK '+$fillResult.State+' '+$fillResult.ErrorCode)
+    return
   }
 
   if ($Mode -eq 'SelfTest') {
@@ -1597,6 +1630,20 @@ if (-not $windowInfo) {
   } while ($true)
 }
 catch {
+  if ($Mode -eq 'PatientFillCheck') {
+    # UIA provider errors can contain field contents. Never log or rethrow them.
+    $safeCode=if ($_.Exception.Message -in @('FILL_LAUNCHER_REQUIRED','FILL_BUSY','FILL_INVALID_REQUEST','FILL_REVIEW_PENDING',
+        'FILL_ROBOT_ENABLED','FILL_CONSENT_REQUIRED','FILL_WINDOW_CHANGED')) { $_.Exception.Message } else { 'FILL_CHECK_FAILED' }
+    if ($fillReportPath) {
+      try {
+        Write-JsonFileAtomic $fillReportPath ([pscustomobject]@{ Ok=$false; State='rejected'; ErrorCode=$safeCode;
+          SaveInvoked=$false; ReadyForUnattendedExecution=$false;
+          RequiresManualReview=(Test-Path -LiteralPath (Join-Path $directory 'fill-check-pending.json')) })
+      } catch { }
+    }
+    Write-Host ('IDENT_FILL_CHECK rejected '+$safeCode)
+    exit 1
+  }
   if ($null -ne $config) {
     $screenshot = ''
     if ($Execute -and $Mode -in @('RunOnce', 'Loop')) {

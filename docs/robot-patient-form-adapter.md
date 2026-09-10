@@ -1,5 +1,9 @@
 # Patient Form Adapter: First Stage
 
+Historical first-stage report. The next local candidate adds a separately
+confirmed fill-only runtime; see [supervised fill](robot-supervised-fill.md).
+Neither stage is proof of a completed or unattended clinic booking.
+
 ## Status
 
 Local candidate implementation for release 2.14.8. Not published or assigned
