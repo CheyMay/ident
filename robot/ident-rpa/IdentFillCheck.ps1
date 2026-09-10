@@ -1,3 +1,30 @@
+function New-IdentFillFailure {
+    param([string]$Code,[string]$Reason,[string]$Role='')
+    $failure=[InvalidOperationException]::new($Code)
+    $failure.Data['IdentFillReason']=$Reason
+    $failure.Data['IdentFillRole']=$Role
+    return $failure
+}
+
+function Get-IdentFillFailureDetail {
+    param([Exception]$Failure)
+    $reasons=@('form_shape','field_missing','field_readonly','duplicate_identity','root_identity','field_identity',
+        'written_value','unexpected_value','existing_value','form_bindings','field_path','field_process',
+        'field_type','field_automation_id','field_visibility','field_geometry','field_pattern',
+        'notification_path','notification_state','setter_exception')
+    $roles=@('patientLastNameInput','patientFirstNameInput','patientMiddleNameInput','patientPhoneInput',
+        'patientBirthDateInput','commentInput')
+    for($depth=0;$null -ne $Failure -and $depth -lt 6;$depth++) {
+        $reason=[string]$Failure.Data['IdentFillReason']
+        $role=[string]$Failure.Data['IdentFillRole']
+        if ($reason -cin $reasons) {
+            return [pscustomobject]@{ Reason=$reason; Role=$(if($role -cin $roles){$role}else{''}) }
+        }
+        $Failure=$Failure.InnerException
+    }
+    return [pscustomobject]@{ Reason=''; Role='' }
+}
+
 function ConvertTo-IdentFillPhone {
     param([string]$Value)
     if ($Value -match '[^0-9+() .-]') { throw 'FILL_INVALID_REQUEST' }
@@ -65,19 +92,30 @@ function Test-IdentFillEmpty {
 function Assert-IdentFillSnapshot {
     param([object]$Snapshot,[object]$Plan,[object]$Baseline=$null,[hashtable]$Written=@{})
     if ($null -eq $Snapshot -or -not $Snapshot.Form.Ok -or $Snapshot.Form.Layout -cne 'expanded' -or
-        -not $Snapshot.RootIdentity -or $Snapshot.NotificationsOff -ne $true -or $Snapshot.Fields.Count -ne 6) { throw 'FILL_UNSAFE_FORM' }
+        -not $Snapshot.RootIdentity -or $Snapshot.NotificationsOff -ne $true -or $Snapshot.Fields.Count -ne 6) {
+        throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'form_shape')
+    }
     Assert-IdentPatientFormContext $Snapshot.Form $Plan.DoctorCaption $Plan.Start $Plan.End
+    if ($null -ne $Baseline -and $Snapshot.RootIdentity -cne $Baseline.RootIdentity) {
+        throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'root_identity')
+    }
     $identities=@{}
     foreach($role in $Plan.Values.Keys) {
-        if (-not $Snapshot.Fields.Contains($role)) { throw 'FILL_UNSAFE_FORM' }
+        if (-not $Snapshot.Fields.Contains($role)) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'field_missing' $role) }
         $field=$Snapshot.Fields[$role]
-        if (-not $field.Identity -or $field.ReadOnly -or $identities.ContainsKey([string]$field.Identity)) { throw 'FILL_UNSAFE_FORM' }
+        if (-not $field.Identity) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'field_identity' $role) }
+        if ($field.ReadOnly) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'field_readonly' $role) }
+        if ($identities.ContainsKey([string]$field.Identity)) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'duplicate_identity' $role) }
         $identities[[string]$field.Identity]=$true
         if ($null -ne $Baseline) {
-            if ($Snapshot.RootIdentity -cne $Baseline.RootIdentity -or $field.Identity -cne $Baseline.Fields[$role].Identity) { throw 'FILL_FORM_CHANGED' }
+            if ($field.Identity -cne $Baseline.Fields[$role].Identity) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_identity' $role) }
             if ($Written.ContainsKey($role)) {
-                if (-not (Test-IdentFillValue $role ([string]$field.Value) ([string]$Plan.Values[$role]))) { throw 'FILL_VALUE_MISMATCH' }
-            } elseif ([string]$field.Value -cne [string]$Baseline.Fields[$role].Value) { throw 'FILL_FORM_CHANGED' }
+                if (-not (Test-IdentFillValue $role ([string]$field.Value) ([string]$Plan.Values[$role]))) {
+                    throw (New-IdentFillFailure 'FILL_VALUE_MISMATCH' 'written_value' $role)
+                }
+            } elseif ([string]$field.Value -cne [string]$Baseline.Fields[$role].Value) {
+                throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'unexpected_value' $role)
+            }
         }
     }
 }
@@ -86,42 +124,60 @@ function Invoke-IdentFillCheck {
     param([object]$Plan,[scriptblock]$ReadSnapshot,[scriptblock]$WriteValue,[scriptblock]$Journal,
         [switch]$Execute,[switch]$OperatorConfirmed,[DateTimeOffset]$Now=[DateTimeOffset]::Now)
     $result=[ordered]@{ Ok=$false; State='rejected'; ErrorCode=''; WriteAttempts=0; Written=0; Skipped=0;
-        SaveInvoked=$false; RequiresManualReview=$false; ReadyForUnattendedExecution=$false }
+        SaveInvoked=$false; RequiresManualReview=$false; ReadyForUnattendedExecution=$false;
+        WriteReturned=0; FailurePhase=''; FailureRole=''; FailureReason='' }
     $written=@{}
+    $phase='preflight'; $activeRole=''
     try {
         if ($Plan.Start -le $Now) { throw 'FILL_EXPIRED' }
         if ($Execute -and (-not $OperatorConfirmed -or $null -eq $WriteValue -or $null -eq $Journal)) { throw 'FILL_CONSENT_REQUIRED' }
+        $phase='baseline'
         $baseline=& $ReadSnapshot
         Assert-IdentFillSnapshot $baseline $Plan
         foreach($role in $Plan.Values.Keys) {
             $value=[string]$baseline.Fields[$role].Value
-            if (-not (Test-IdentFillEmpty $role $value) -and -not (Test-IdentFillValue $role $value ([string]$Plan.Values[$role]))) { throw 'FILL_EXISTING_VALUE' }
+            if (-not (Test-IdentFillEmpty $role $value) -and -not (Test-IdentFillValue $role $value ([string]$Plan.Values[$role]))) {
+                throw (New-IdentFillFailure 'FILL_EXISTING_VALUE' 'existing_value' $role)
+            }
         }
         if (-not $Execute) { $result.Ok=$true; $result.State='preview'; return [pscustomobject]$result }
         foreach($role in $Plan.Values.Keys) {
+            $activeRole=$role; $phase='before_write'
             $snapshot=& $ReadSnapshot
             Assert-IdentFillSnapshot $snapshot $Plan $baseline $written
             $expected=[string]$Plan.Values[$role]; $actual=[string]$snapshot.Fields[$role].Value
             if ((Test-IdentFillValue $role $actual $expected) -or (-not $expected -and (Test-IdentFillEmpty $role $actual))) { $result.Skipped++; continue }
             # Persist intent before every possible write. Never retry or roll back a partial form.
+            $phase='journal'
             $null = & $Journal 'write_intent' ($result.WriteAttempts + 1)
             $result.WriteAttempts++; $result.RequiresManualReview=$true
+            $phase='write'
             $null = & $WriteValue $role $expected $snapshot
+            $result.WriteReturned++
             $written[$role]=$true
+            $phase='readback'
             $check=& $ReadSnapshot
             Assert-IdentFillSnapshot $check $Plan $baseline $written
             $result.Written++
         }
+        $activeRole=''; $phase='final_readback'
         $check=& $ReadSnapshot
         Assert-IdentFillSnapshot $check $Plan $baseline $written
         foreach($role in $Plan.Values.Keys) {
             if (-not (Test-IdentFillValue $role ([string]$check.Fields[$role].Value) ([string]$Plan.Values[$role])) -and
-                -not (-not $Plan.Values[$role] -and (Test-IdentFillEmpty $role ([string]$check.Fields[$role].Value)))) { throw 'FILL_VALUE_MISMATCH' }
+                -not (-not $Plan.Values[$role] -and (Test-IdentFillEmpty $role ([string]$check.Fields[$role].Value)))) {
+                throw (New-IdentFillFailure 'FILL_VALUE_MISMATCH' 'written_value' $role)
+            }
         }
+        $phase='journal_complete'
         $null = & $Journal 'filled' $result.WriteAttempts
         $result.RequiresManualReview=$true; $result.Ok=$true; $result.State='filled_not_saved'
     }
     catch {
+        $detail=Get-IdentFillFailureDetail $_.Exception
+        $result.FailurePhase=$phase
+        $result.FailureReason=$detail.Reason
+        $result.FailureRole=if($detail.Role){$detail.Role}else{$activeRole}
         $code=[string]$_.Exception.Message
         $result.ErrorCode=if ($code -in @('FILL_INVALID_REQUEST','FILL_EXPIRED','FILL_CONSENT_REQUIRED','FILL_UNSAFE_FORM','FILL_FORM_CHANGED',
             'FILL_VALUE_MISMATCH','FILL_EXISTING_VALUE','FILL_USER_ACTIVE','FILL_WINDOW_CHANGED','FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING',

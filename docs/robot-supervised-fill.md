@@ -2,6 +2,34 @@
 
 ## Release Boundary
 
+Current clinic check (2026-09-10): this stage is included in installed agent
+2.14.10. Preview passed on the expanded form for 2026-09-24, 09:00-09:30.
+The operator-confirmed fill stopped with `partial / FILL_FORM_CHANGED`,
+`WriteAttempts=1`, `Written=0`, `Skipped=1`, `SaveInvoked=false`, and
+`RequiresManualReview=true`. The matching surname was skipped; the next role
+was first name. The old report does not establish whether its setter ran:
+the attempt counter increments before the writer's final guard.
+
+The operator reported the form closed itself later and no appointment appeared
+in the calendar. Whether IDENT persisted a patient card remains unverified.
+Keep `fill-check-pending.json` and the run report; do not rerun, delete evidence,
+or enable the queue based only on an empty calendar. The form closure is not
+proven to be the cause of the earlier rejection.
+
+Additional failure diagnostics are now implemented and tested locally, not
+packaged or deployed. `WriteReturned` counts completed writer callbacks;
+`FailurePhase`, `FailureRole`, and `FailureReason` distinguish a pre-set guard
+from failed readback, using fixed labels only. They do not capture field values,
+window text, provider messages, phone numbers, or runtime identities. No guard
+was relaxed, retries added, or old pending receipt cleared. These diagnostics
+cannot retrospectively identify the clinic failure and are not its verified fix.
+Sequential checks passed: FillCheck, FillRuntime, FillLauncher, PatientForm,
+and RobotSafety. The new fixtures reproduce the old report's identical counters
+both before a setter and after a returned setter; neither fixture proves which
+case occurred in IDENT.
+
+### Original Development Record
+
 Local candidate 2.14.9, not published or assigned to the clinic. No remote
 configuration, schedule, queue ticket or patient record was changed while
 developing this stage. Last observed clinic version was 2.14.7, robot disabled,

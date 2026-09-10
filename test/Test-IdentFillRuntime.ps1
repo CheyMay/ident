@@ -76,4 +76,30 @@ Reset-Runtime; $prior=Get-IdentFillRuntimeSnapshot $context; $elements['0/3'].Pa
 $rejected=$false
 try { Set-IdentFillRuntimeValue $context 'patientFirstNameInput' 'Test' $prior } catch { $rejected=$_.Exception.Message -eq 'FILL_FORM_CHANGED' }
 Assert ($rejected -and $setCalls -eq 0) 'Writer ignored another changed field.'
+Reset-Runtime
+$elements['0/3'].Pattern.Current.Value=$context.Plan.Values.patientLastNameInput
+$elements['0/4'].Pattern | Add-Member -Force ScriptMethod SetValue {
+    param($Value)
+    $script:setCalls++; $this.Current.Value=$Value
+    $script:elements['0/4'].Identity='replaced-after-set'
+}
+$r=Invoke-IdentFillCheck $context.Plan { Get-IdentFillRuntimeSnapshot $context } `
+    {param($role,$value,$snapshot) Set-IdentFillRuntimeValue $context $role $value $snapshot} {} -Execute -OperatorConfirmed
+Assert (-not $r.Ok -and $r.WriteAttempts -eq 1 -and $r.WriteReturned -eq 1 -and $r.Written -eq 0 -and $r.Skipped -eq 1 -and
+    $r.FailurePhase -eq 'readback' -and $r.FailureRole -eq 'patientFirstNameInput' -and $r.FailureReason -eq 'field_identity' -and
+    $setCalls -eq 1 -and -not $r.SaveInvoked -and $r.RequiresManualReview) 'Replaced first-name field was retried or incorrectly diagnosed.'
+Reset-Runtime
+$elements['0/3'].Pattern.Current.Value=$context.Plan.Values.patientLastNameInput
+$r=Invoke-IdentFillCheck $context.Plan { Get-IdentFillRuntimeSnapshot $context } `
+    {param($role,$value,$snapshot) Set-IdentFillRuntimeValue $context $role $value $snapshot} `
+    { $script:elements['0/4'].Current.BoundingRectangle='0,0,2,2' } -Execute -OperatorConfirmed
+Assert ($r.WriteAttempts -eq 1 -and $r.WriteReturned -eq 0 -and $r.Skipped -eq 1 -and $r.Written -eq 0 -and $setCalls -eq 0 -and
+    $r.FailurePhase -eq 'write' -and $r.FailureReason -eq 'field_geometry' -and $r.FailureRole -eq 'patientFirstNameInput' -and
+    $r.RequiresManualReview) 'Pre-set geometry rejection was conflated with a returned setter.'
+Reset-Runtime
+$elements['0/3'].Pattern | Add-Member -Force ScriptMethod SetValue { param($Value) $script:setCalls++; throw 'PRIVATE_PROVIDER_MESSAGE' }
+$r=Invoke-IdentFillCheck $context.Plan { Get-IdentFillRuntimeSnapshot $context } `
+    {param($role,$value,$snapshot) Set-IdentFillRuntimeValue $context $role $value $snapshot} {} -Execute -OperatorConfirmed
+Assert ($r.ErrorCode -eq 'FILL_CHECK_FAILED' -and $r.FailureReason -eq 'setter_exception' -and $r.WriteReturned -eq 0 -and
+    $r.FailurePhase -eq 'write' -and $setCalls -eq 1 -and ($r | ConvertTo-Json) -notmatch 'PRIVATE') 'Setter exception was retried or leaked.'
 Write-Host 'IDENT FILL RUNTIME TESTS OK (mock UIA only; no desktop actions)'

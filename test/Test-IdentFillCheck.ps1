@@ -83,6 +83,22 @@ Reset-State; $onRead={ if ($script:reads -eq 4) { throw 'FILL_WINDOW_CHANGED' } 
 Assert ($r.ErrorCode -eq 'FILL_WINDOW_CHANGED' -and $writes -eq 1) 'Foreground change did not stop.'
 Reset-State; $onWrite={ if ($script:writes -eq 2) { throw 'FILL_USER_ACTIVE' } }; $r=Run
 Assert ($r.ErrorCode -eq 'FILL_USER_ACTIVE' -and $r.WriteAttempts -eq 2 -and $r.Written -eq 1 -and $writes -eq 2) 'Partial input was retried.'
+Reset-State; $values.patientLastNameInput=$plan.Values.patientLastNameInput
+$onRead={ if($script:reads -eq 4){$script:ids.patientFirstNameInput='replaced'} }
+$r=Run
+Assert ($r.ErrorCode -eq 'FILL_FORM_CHANGED' -and $r.WriteAttempts -eq 1 -and $r.WriteReturned -eq 1 -and
+    $r.Written -eq 0 -and $r.Skipped -eq 1 -and $r.FailurePhase -eq 'readback' -and
+    $r.FailureReason -eq 'field_identity' -and $r.FailureRole -eq 'patientFirstNameInput') 'First-name readback diagnostics are ambiguous.'
+Reset-State; $onRead={ if($script:reads -eq 2){$script:rootId='changed'} }; $r=Run
+Assert ($r.FailureReason -eq 'root_identity' -and $r.FailurePhase -eq 'before_write' -and $r.WriteAttempts -eq 0) 'Root change diagnostics lost.'
+Reset-State; $onRead={ if($script:reads -eq 3){$script:values.patientFirstNameInput='PRIVATE_AUTOFILL'} }; $r=Run
+Assert ($r.FailureReason -eq 'unexpected_value' -and $r.FailureRole -eq 'patientFirstNameInput' -and
+    $r.FailurePhase -eq 'readback' -and ($r | ConvertTo-Json) -notmatch 'PRIVATE') 'Autofill diagnostics leaked values or lost the affected role.'
+Reset-State; $onWrite={throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'PRIVATE_REASON' 'PRIVATE_ROLE')}; $r=Run
+Assert ($r.FailureReason -eq '' -and ($r | ConvertTo-Json) -notmatch 'PRIVATE') 'Non-allowlisted provider diagnostics leaked.'
+$nested=[InvalidOperationException]::new('PRIVATE_OUTER', (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_identity' 'patientFirstNameInput'))
+$detail=Get-IdentFillFailureDetail $nested
+Assert ($detail.Reason -eq 'field_identity' -and $detail.Role -eq 'patientFirstNameInput') 'Wrapped fixed failure detail was lost.'
 foreach($change in @(
     { $q.purpose='booking' }, { $q.schemaVersion=2 }, { $q.planStart='2099-09-20T09:00:00' },
     { $q.planStart='2099-09-20T09:00:01+05:00' }, { $q.planEnd='2099-09-20T15:15:00+05:00' },

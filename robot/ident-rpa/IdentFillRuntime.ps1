@@ -15,22 +15,27 @@ function Get-IdentFillRuntimeSnapshot {
     $identity=Assert-ObservedElement $root $Context.Handle $Context.ProcessId $Context.RootIdentity
     $rows=@(Get-UiTreeRows @($root) 8 $Context.ProcessId)
     $form=Get-IdentPatientFormBindings $rows
-    if (-not $form.Ok -or $form.Layout -cne 'expanded') { throw 'FILL_UNSAFE_FORM' }
+    if (-not $form.Ok -or $form.Layout -cne 'expanded') { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'form_bindings') }
     Assert-IdentPatientFormContext $form $Context.Plan.DoctorCaption $Context.Plan.Start $Context.Plan.End
     $fields=[ordered]@{}; $patterns=@{}
     foreach($role in $form.Fields.Keys) {
         $binding=$form.Fields[$role]
         $row=@($rows | Where-Object { $_.path -ceq $binding.Path })
-        if ($row.Count -ne 1) { throw 'FILL_FORM_CHANGED' }
+        if ($row.Count -ne 1) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_path' $role) }
         $element=Resolve-ElementPath $root $binding.Path
-        if ($null -eq $element -or $element.Current.ProcessId -ne $Context.ProcessId -or
-            $element.Current.ControlType.ProgrammaticName -cne 'ControlType.Edit' -or
-            $element.Current.ClassName -cne 'TextBox' -or $element.Current.AutomationId -cne $binding.AutomationId -or
-            -not $element.Current.IsEnabled -or $element.Current.IsOffscreen -or
-            (Format-Bounds $element.Current.BoundingRectangle) -cne $row[0].bounds) { throw 'FILL_FORM_CHANGED' }
+        if ($null -eq $element) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_missing' $role) }
+        if ($element.Current.ProcessId -ne $Context.ProcessId) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_process' $role) }
+        if ($element.Current.ControlType.ProgrammaticName -cne 'ControlType.Edit' -or $element.Current.ClassName -cne 'TextBox') {
+            throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_type' $role)
+        }
+        if ($element.Current.AutomationId -cne $binding.AutomationId) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_automation_id' $role) }
+        if (-not $element.Current.IsEnabled -or $element.Current.IsOffscreen) { throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_visibility' $role) }
+        if ((Format-Bounds $element.Current.BoundingRectangle) -cne $row[0].bounds) {
+            throw (New-IdentFillFailure 'FILL_FORM_CHANGED' 'field_geometry' $role)
+        }
         $pattern=$null
         if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern) -or
-            $pattern.Current.IsReadOnly) { throw 'FILL_UNSAFE_FORM' }
+            $pattern.Current.IsReadOnly) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'field_pattern' $role) }
         $fields[$role]=[pscustomobject]@{ Identity=($element.GetRuntimeId() -join ','); Value=[string]$pattern.Current.Value; ReadOnly=$false }
         $patterns[$role]=$pattern
     }
@@ -38,14 +43,16 @@ function Get-IdentFillRuntimeSnapshot {
     $panelPath=$form.Fields.commentInput.Path -replace '/\d+/\d+$',''
     $notify=@($rows | Where-Object { $_.path -match ('^'+[regex]::Escape($panelPath)+'/\d+$') -and
         $_.controlType -ceq 'ControlType.CheckBox' -and $_.name -cmatch '^\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c$' })
-    if ($notify.Count -ne 1) { throw 'FILL_UNSAFE_FORM' }
+    if ($notify.Count -ne 1) { throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'notification_path') }
     $element=Resolve-ElementPath $root $notify[0].path
     $toggle=$null
     if ($null -eq $element -or $element.Current.ProcessId -ne $Context.ProcessId -or
         $element.Current.ControlType.ProgrammaticName -cne 'ControlType.CheckBox' -or
         $element.Current.Name -cne $notify[0].name -or $element.Current.IsOffscreen -or
         -not $element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle) -or
-        $toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) { throw 'FILL_UNSAFE_FORM' }
+        $toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+        throw (New-IdentFillFailure 'FILL_UNSAFE_FORM' 'notification_state')
+    }
     $null=Assert-ObservedElement $root $Context.Handle $Context.ProcessId $identity
     Assert-IdentFillOperator $Context
     $Context.Patterns=$patterns
@@ -58,7 +65,8 @@ function Set-IdentFillRuntimeValue {
     $fresh=Get-IdentFillRuntimeSnapshot $Context
     Assert-IdentFillSnapshot $fresh $Context.Plan $Previous
     Assert-IdentFillOperator $Context
-    $Context.Patterns[$Role].SetValue($Value)
+    try { $Context.Patterns[$Role].SetValue($Value) }
+    catch { throw (New-IdentFillFailure 'FILL_CHECK_FAILED' 'setter_exception' $Role) }
 }
 
 function Invoke-IdentSupervisedFill {
