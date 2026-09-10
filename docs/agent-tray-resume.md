@@ -1,8 +1,29 @@
 # Agent Tray And Resume Recovery
 
-Local release candidate 2.14.10. Not assigned to the clinic during this change.
+Release 2.14.10 was built and tested locally, then assigned on 2026-09-10.
 The update does not enable the robot, clear pending booking evidence or change
 Windows sleep settings. Live sleep/wake on the clinic PC remains to be checked.
+
+## Clinic Deployment 2026-09-10
+
+The operator restarted the stopped/unresponsive scheduled agent task. A fresh
+heartbeat at 14:56:30 UTC confirmed version 2.14.7, healthy schedule, disabled
+robot and inactive training/calibration. Published and assigned 2.14.10 at
+14:58:28 UTC only to `stomazub-laptop-7osrm534`; previous assignment metadata was
+saved locally in the private administrator directory. No queue or SQL settings
+were changed.
+
+Heartbeat 14:59:01 UTC confirmed version 2.14.10 and a successful schedule export.
+Diagnostics received at 14:59:20 UTC confirmed update `succeeded`, worker task
+`Running`, robot `disabled`, and the running supervisor SHA256 matching the
+release: `F4C30C9D5872D9852B7849A3BBA4EFD75DD0581109FFA97630B518D172362ADC`.
+
+Important: the updater loaded from 2.14.7 restarts an existing task without
+re-registering it. The operator was therefore instructed to run the installed
+`Install-IdentAgentTask.ps1` once after the update to migrate the recurring
+recovery trigger and shortcut launch flags. Execution of that step is not yet
+confirmed. Reopening the updated panel, tray checks and real sleep/wake checks
+also remain unverified. Do not confuse installed version with completed rollout.
 
 ## Changes
 
@@ -96,4 +117,5 @@ Local release ZIP SHA256:
 `AD20BE3A6B4D9A7711E98FFA5550C061E17EC3BDE100C9D873C08B70C0C8EAF4`.
 Local installer ZIP SHA256:
 `DE418F15C0D0F5D5D464502BE3A05C2D77AAF2FA7CFB0AAE994E796080215552`.
-These hashes identify local artifacts, not an installed clinic release.
+These hashes identify the local artifacts; the agent release ZIP was published
+and its version was confirmed by the clinic diagnostics described above.
