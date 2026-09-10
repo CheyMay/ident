@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest', 'PatientFillCheck', 'CalendarCheck')]
+  [ValidateSet('Inspect', 'Observe', 'Calibrate', 'Verify', 'DryRun', 'RunOnce', 'Loop', 'SelfTest', 'PatientFillCheck', 'CalendarCheck', 'CalendarOpenCheck')]
   [string]$Mode = 'DryRun',
 
   [string]$ConfigPath = '',
@@ -1457,16 +1457,23 @@ try {
   if ($Execute -and $Mode -in @('RunOnce', 'Loop')) {
     $interactionLease = Enter-RobotInteractionLease -Directory (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath)))
     if ($null -eq $interactionLease) { Write-Host 'ROBOT_DEFER_BUSY'; exit 75 }
-    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))) 'fill-check-pending.json')) {
+    $robotDirectory=Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+    if ((Test-Path -LiteralPath (Join-Path $robotDirectory 'fill-check-pending.json')) -or
+        (Test-Path -LiteralPath (Join-Path $robotDirectory 'calendar-open-pending.json'))) {
       throw 'FILL_REVIEW_PENDING'
     }
   }
 
-  if ($Mode -eq 'CalendarCheck') {
+  if ($Mode -in @('CalendarCheck','CalendarOpenCheck')) {
     if ($Execute -or $ObserveChanges) { throw 'CALENDAR_INVALID_MODE' }
     . (Join-Path $PSScriptRoot 'IdentFillCheck.ps1')
     . (Join-Path $PSScriptRoot 'IdentCalendar.ps1')
+    . (Join-Path $PSScriptRoot 'IdentAvailability.ps1')
     . (Join-Path $PSScriptRoot 'IdentCalendarRuntime.ps1')
+    if ($Mode -eq 'CalendarOpenCheck') {
+      . (Join-Path $PSScriptRoot 'IdentCalendarInput.ps1')
+      . (Join-Path $PSScriptRoot 'IdentCalendarOpen.ps1')
+    }
     . (Join-Path $PSScriptRoot 'RobotCapture.ps1')
     $directory=Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
     if ($CaptureId -notmatch '^[a-f0-9]{32}$') { throw 'CALENDAR_LAUNCHER_REQUIRED' }
@@ -1480,7 +1487,7 @@ try {
     $calendarReportPath=$ReportPath
     $interactionLease=Enter-RobotInteractionLease -Directory $directory -Training
     if ($null -eq $interactionLease) { throw 'CALENDAR_BUSY' }
-    $calendarResult=Invoke-IdentSupervisedCalendarCheck $ConfigPath $TaskFile
+    $calendarResult=Invoke-IdentSupervisedCalendarCheck $ConfigPath $TaskFile $runDirectory $CaptureId -OpenForm:($Mode -eq 'CalendarOpenCheck')
     Write-JsonFileAtomic $ReportPath $calendarResult
     Write-Host ('IDENT_CALENDAR_CHECK '+$calendarResult.State+' '+$calendarResult.ErrorCode)
     if (-not $calendarResult.Ok) { exit 1 }
@@ -1658,13 +1665,14 @@ if (-not $windowInfo) {
   } while ($true)
 }
 catch {
-  if ($Mode -eq 'CalendarCheck') {
+  if ($Mode -in @('CalendarCheck','CalendarOpenCheck')) {
     $safeCode=if ($_.Exception.Message -in @('CALENDAR_LAUNCHER_REQUIRED','CALENDAR_BUSY','CALENDAR_INVALID_REQUEST',
-        'CALENDAR_WINDOW_CHANGED','CALENDAR_INVALID_MODE','FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING')) { $_.Exception.Message } else { 'CALENDAR_CHECK_FAILED' }
+        'CALENDAR_WINDOW_CHANGED','CALENDAR_INVALID_MODE','CALENDAR_CONSENT_REQUIRED','CALENDAR_OPEN_REVIEW_PENDING','CALENDAR_INPUT_GUARD',
+        'FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING')) { $_.Exception.Message } else { 'CALENDAR_CHECK_FAILED' }
     if ($calendarReportPath) {
       try {
         Write-JsonFileAtomic $calendarReportPath ([pscustomobject]@{ Ok=$false; State='rejected'; ErrorCode=$safeCode;
-          ReadOnly=$true; ActionsExecuted=0; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false })
+          ReadOnly=($Mode -eq 'CalendarCheck'); ActionsExecuted=0; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false })
       } catch { }
     }
     Write-Host ('IDENT_CALENDAR_CHECK rejected '+$safeCode)

@@ -1,0 +1,192 @@
+function Get-IdentCalendarOpenError {
+    param([object]$Exception)
+    $allowed=@('CALENDAR_CONSENT_REQUIRED','CALENDAR_INVALID_MODE','CALENDAR_SINGLE_SLOT_ONLY','CALENDAR_INPUT_GUARD',
+        'CALENDAR_USER_ACTIVE','CALENDAR_WINDOW_CHANGED','CALENDAR_NO_RETRY','CALENDAR_INPUT_FAILED','CALENDAR_CHANGED',
+        'CALENDAR_MENU_AMBIGUOUS','CALENDAR_MENU_CHANGED','CALENDAR_FORM_TIMEOUT','CALENDAR_FORM_NOT_EMPTY','CALENDAR_FORM_MISMATCH',
+        'CALENDAR_OPEN_REVIEW_PENDING','CALENDAR_EXPIRED','CALENDAR_DOCTOR_AMBIGUOUS','CALENDAR_WRONG_DATE','CALENDAR_SPLIT_REQUIRED',
+        'CALENDAR_SCROLL_REQUIRED','CALENDAR_SHIFT_BOUNDARY','CALENDAR_GRID_AMBIGUOUS','FILL_ROBOT_ENABLED','FILL_REVIEW_PENDING',
+        'AVAILABILITY_INVALID_DATA','AVAILABILITY_STALE','AVAILABILITY_IDENTITY_AMBIGUOUS','AVAILABILITY_BUSY','AVAILABILITY_NOT_WORKING',
+        'AVAILABILITY_WRONG_DOCTOR','AVAILABILITY_WRONG_BRANCH','AVAILABILITY_SPLIT_REQUIRED','AVAILABILITY_CONFLICT','AVAILABILITY_GAP',
+        'AVAILABILITY_CHANGED','AVAILABILITY_QUERY_FAILED','AVAILABILITY_TOO_LARGE')
+    for($i=0;$i -lt 6 -and $null -ne $Exception;$i++) {
+        if ([string]$Exception.Message -cin $allowed) { return [string]$Exception.Message }
+        $Exception=$Exception.InnerException
+    }
+    return 'CALENDAR_OPEN_FAILED'
+}
+
+function Invoke-IdentCalendarOpenCheck {
+    param([object]$Request,[scriptblock]$Preflight,[scriptblock]$Guard,[scriptblock]$RightClick,
+        [scriptblock]$ReadMenu,[scriptblock]$InvokeMenu,[scriptblock]$ReadForm,[scriptblock]$Journal,[switch]$OperatorConfirmed)
+    $result=[ordered]@{ Ok=$false; State='rejected'; ErrorCode=''; ReadOnly=$false; ActionsAttempted=0; ActionsReturned=0;
+        FormOpened=$false; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; RequiresManualReview=$false }
+    $intentJournaled=$false
+    try {
+        if (-not $OperatorConfirmed) { throw 'CALENDAR_CONSENT_REQUIRED' }
+        if (-not $Request.CheckAvailability -or $Request.DoctorId -le 0 -or $Request.BranchId -le 0) { throw 'CALENDAR_INVALID_MODE' }
+        $checked=& $Preflight
+        if ($null -eq $checked.Proof -or -not $checked.Proof.Ok -or -not $checked.Proof.AvailabilityVerified -or
+            $checked.Proof.DoctorId -ne $Request.DoctorId -or $checked.Proof.BranchId -ne $Request.BranchId) { throw 'AVAILABILITY_INVALID_DATA' }
+        $selection=$checked.Snapshot.Plan.Selection
+        if (-not $checked.Snapshot.Plan.Ok -or $selection.RequiresDrag -or $selection.SlotCount -ne 1) { throw 'CALENDAR_SINGLE_SLOT_ONLY' }
+        & $Journal 'input_intent'
+        $intentJournaled=$true
+        & $Guard
+        $result.ActionsAttempted++
+        & $RightClick $selection
+        $result.ActionsReturned++
+        & $Guard
+        $menu=& $ReadMenu
+        if ($null -eq $menu) { throw 'CALENDAR_MENU_AMBIGUOUS' }
+        & $Journal 'menu_invocation_intent'
+        & $Guard
+        $result.ActionsAttempted++
+        & $InvokeMenu $menu $checked
+        $result.ActionsReturned++
+        $form=& $ReadForm
+        if ($null -eq $form -or -not $form.Empty) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+        try { Assert-IdentPatientFormContext $form.Bindings $Request.DoctorCaption $Request.Start $Request.End }
+        catch { throw 'CALENDAR_FORM_MISMATCH' }
+        & $Guard
+        $result.FormOpened=$true
+        & $Journal 'opened_verified'
+        $result.Ok=$true; $result.State='opened_verified'
+    } catch {
+        $result.ErrorCode=Get-IdentCalendarOpenError $_.Exception
+        $result.RequiresManualReview=$intentJournaled -or $result.ActionsAttempted -gt 0
+        if ($result.ActionsAttempted -gt 0) { $result.State='partial' }
+    }
+    return [pscustomobject]$result
+}
+
+function Assert-IdentCalendarOpenOperator {
+    param([object]$Context)
+    Assert-IdentFillCheckInstallation $Context.Directory
+    if ($Context.Request.Start -le [DateTimeOffset]::Now) { throw 'CALENDAR_EXPIRED' }
+    if (-not [Code9IdentRobot.NativeInput]::InteractiveDesktopAvailable() -or
+        [Code9IdentRobot.NativeInput]::ForegroundProcessId() -ne $Context.ProcessId) { throw 'CALENDAR_WINDOW_CHANGED' }
+    $Context.InputGuard.AssertUntouched([uint32]$Context.InputTick)
+    $null=Assert-ObservedElement (Get-ObservedElement $Context.Handle) $Context.Handle $Context.ProcessId $Context.RootIdentity
+}
+
+function Get-IdentCalendarOpenMenu {
+    param([object]$Context)
+    Assert-IdentCalendarOpenOperator $Context
+    $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Menu)
+    $menus=@{}; $roots=@(Get-IdentAutomationRoots $Context.WindowInfo)
+    foreach($root in $roots) {
+        if ($root.Current.ProcessId -ne $Context.ProcessId -or $root.Current.IsOffscreen) { continue }
+        $found=@($root.FindAll([System.Windows.Automation.TreeScope]::Subtree,$condition))
+        foreach($menu in $found) {
+            if ($menu.Current.ProcessId -eq $Context.ProcessId -and $menu.Current.IsEnabled -and -not $menu.Current.IsOffscreen -and
+                $null -ne (ConvertTo-IdentFormRectangle (Format-Bounds $menu.Current.BoundingRectangle))) {
+                $id=$menu.GetRuntimeId() -join ','
+                if ($id) { $menus[$id]=$menu }
+            }
+        }
+    }
+    if ($menus.Count -ne 1) { throw 'CALENDAR_MENU_AMBIGUOUS' }
+    $identity=@($menus.Keys)[0]; $menu=$menus[$identity]
+    $rows=@(Get-UiTreeRows @($menu) 3 $Context.ProcessId)
+    $candidate=Get-IdentNewAppointmentMenuCandidate $rows
+    if ($null -eq $candidate) { throw 'CALENDAR_MENU_AMBIGUOUS' }
+    $element=Resolve-ElementPath $menu $candidate.Path
+    $menuBounds=ConvertTo-IdentFormRectangle (Format-Bounds $menu.Current.BoundingRectangle)
+    if ($null -eq $element -or $element.Current.ProcessId -ne $Context.ProcessId -or
+        $element.Current.ControlType.ProgrammaticName -cne 'ControlType.MenuItem' -or $element.Current.Name -cne $candidate.Name -or
+        $element.Current.IsOffscreen -or -not $element.Current.IsEnabled -or
+        -not (Test-IdentFormContained (ConvertTo-IdentFormRectangle (Format-Bounds $element.Current.BoundingRectangle)) $menuBounds)) { throw 'CALENDAR_MENU_CHANGED' }
+    $pattern=$null
+    if (-not $element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) { throw 'CALENDAR_MENU_CHANGED' }
+    Assert-IdentCalendarOpenOperator $Context
+    return [pscustomobject]@{ Identity=$identity; ItemIdentity=($element.GetRuntimeId() -join ','); Name=$candidate.Name;
+        Bounds=(Format-Bounds $element.Current.BoundingRectangle); Pattern=$pattern }
+}
+
+function Read-IdentCalendarOpenedForm {
+    param([object]$Context)
+    $deadline=[datetime]::UtcNow.AddSeconds(10)
+    while ([datetime]::UtcNow -lt $deadline) {
+        Assert-IdentCalendarOpenOperator $Context
+        $handle=[Code9IdentRobot.NativeInput]::ForegroundHandle()
+        if ($handle -eq $Context.Handle) { Start-Sleep -Milliseconds 150; continue }
+        $root=Get-ObservedElement $handle
+        $identity=Assert-ObservedElement $root $handle $Context.ProcessId
+        $rows=@(Get-UiTreeRows @($root) 8 $Context.ProcessId)
+        $form=Get-IdentPatientFormBindings $rows
+        if (-not $form.Ok -or $form.Layout -cne 'compact') { throw 'CALENDAR_FORM_MISMATCH' }
+        foreach($role in $form.Fields.Keys) {
+            $binding=$form.Fields[$role]; $element=Resolve-ElementPath $root $binding.Path; $pattern=$null
+            $row=@($rows | Where-Object { $_.path -ceq $binding.Path })
+            if ($null -eq $element -or $element.Current.ProcessId -ne $Context.ProcessId -or $element.Current.IsOffscreen -or
+                -not $element.Current.IsEnabled -or $element.Current.ControlType.ProgrammaticName -cne 'ControlType.Edit' -or
+                $element.Current.ClassName -cne 'TextBox' -or $element.Current.AutomationId -cne $binding.AutomationId -or $row.Count -ne 1 -or
+                (Format-Bounds $element.Current.BoundingRectangle) -cne $row[0].bounds -or
+                -not $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) { throw 'CALENDAR_FORM_MISMATCH' }
+            $value=[string]$pattern.Current.Value
+            if ($role -ceq 'patientBirthDateInput') {
+                if ($value -notin @('','00.00.0000')) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+            } elseif ($role -ceq 'patientPhoneInput') {
+                if ($value -match '[^+7\s()_*\-]' -or ($value -replace '\D','') -notin @('','7')) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+            } elseif ($value) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+        }
+        $null=Assert-ObservedElement (Get-ObservedElement $handle) $handle $Context.ProcessId $identity
+        if ([Code9IdentRobot.NativeInput]::ForegroundHandle() -ne $handle) { throw 'CALENDAR_WINDOW_CHANGED' }
+        Assert-IdentCalendarOpenOperator $Context
+        return [pscustomobject]@{ Empty=$true; Bindings=$form }
+    }
+    throw 'CALENDAR_FORM_TIMEOUT'
+}
+
+function Invoke-IdentSupervisedCalendarOpen {
+    param([object]$Context,[string]$RunDirectory,[string]$RunId,[scriptblock]$Reader,[scriptblock]$AvailabilityReader)
+    $pending=Join-Path $Context.Directory 'calendar-open-pending.json'
+    if (Test-Path -LiteralPath $pending) { throw 'CALENDAR_OPEN_REVIEW_PENDING' }
+    $journal={
+        param($stage)
+        $receipt=[pscustomobject]@{ runId=$RunId; stage=$stage; saveInvoked=$false; requiresManualReview=$true }
+        if ($stage -ceq 'input_intent') {
+            $stream=[IO.File]::Open($pending,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+            try {
+                $bytes=[Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Compress))
+                $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+            } finally { $stream.Dispose() }
+        } else {
+            $existing=Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($existing.runId -cne $RunId) { throw 'CALENDAR_OPEN_REVIEW_PENDING' }
+            if ($stage -ceq 'opened_verified') { Remove-Item -LiteralPath $pending }
+            else { Write-JsonFileAtomic $pending $receipt }
+        }
+    }.GetNewClosure()
+    $preflight={ Get-IdentCalendarPreflight $Reader $AvailabilityReader $Context.Request }.GetNewClosure()
+    $guard={ Assert-IdentCalendarOpenOperator $Context }.GetNewClosure()
+    $click={
+        param($selection)
+        $Context.InputGuard.RightClick($selection.X,$selection.StartY,$Context.Handle,$Context.ProcessId,[uint32]$Context.InputTick)
+        $Context.InputTick=$Context.InputGuard.LastOwnTick
+        Start-Sleep -Milliseconds 250
+    }.GetNewClosure()
+    $readMenu={ Get-IdentCalendarOpenMenu $Context }.GetNewClosure()
+    $invokeMenu={
+        param($previous,$checked)
+        # Re-read occupancy after opening the menu, and re-resolve the exact item immediately before Invoke.
+        Assert-IdentCalendarOpenOperator $Context
+        $live=Get-IdentAvailabilitySnapshot (Split-Path -Parent $Context.Directory) $Context.Request
+        $proof=Get-IdentAvailabilityProof $live $Context.Request $checked.Snapshot.Plan
+        if (-not $proof.Ok) { throw $proof.ErrorCode }
+        if ($proof.Fingerprint -cne $checked.Proof.Fingerprint) { throw 'AVAILABILITY_CHANGED' }
+        $grid=Get-IdentCalendarRuntimeSnapshot $Context
+        if (-not $grid.Plan.Ok -or $grid.GridIdentity -cne $checked.Snapshot.GridIdentity -or
+            $grid.Plan.Fingerprint -cne $checked.Snapshot.Plan.Fingerprint) { throw 'CALENDAR_CHANGED' }
+        $current=Get-IdentCalendarOpenMenu $Context
+        if ($current.Identity -cne $previous.Identity -or $current.ItemIdentity -cne $previous.ItemIdentity -or
+            $current.Name -cne $previous.Name -or $current.Bounds -cne $previous.Bounds) { throw 'CALENDAR_MENU_CHANGED' }
+        $proof=Get-IdentAvailabilityProof $live $Context.Request $checked.Snapshot.Plan
+        if (-not $proof.Ok) { throw $proof.ErrorCode }
+        Assert-IdentCalendarOpenOperator $Context
+        $current.Pattern.Invoke()
+    }.GetNewClosure()
+    $readForm={ Read-IdentCalendarOpenedForm $Context }.GetNewClosure()
+    return Invoke-IdentCalendarOpenCheck $Context.Request $preflight $guard $click $readMenu $invokeMenu $readForm $journal -OperatorConfirmed
+}

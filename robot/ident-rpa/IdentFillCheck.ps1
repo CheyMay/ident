@@ -263,6 +263,7 @@ function Assert-IdentFillCheckInstallation {
     $directory=[IO.Path]::GetFullPath($RobotDirectory)
     if (Test-Path -LiteralPath (Join-Path $directory 'execution-pending.json')) { throw 'FILL_REVIEW_PENDING' }
     if ($Execute -and (Test-Path -LiteralPath (Join-Path $directory 'fill-check-pending.json'))) { throw 'FILL_REVIEW_PENDING' }
+    if ($Execute -and (Test-Path -LiteralPath (Join-Path $directory 'calendar-open-pending.json'))) { throw 'FILL_REVIEW_PENDING' }
     try {
         $config=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $directory) 'config.local.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($config.features.robotEnabled -isnot [bool] -or $config.features.robotEnabled -ne $false) { throw 'Robot enabled.' }

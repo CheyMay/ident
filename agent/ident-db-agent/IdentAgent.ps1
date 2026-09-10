@@ -23,7 +23,10 @@ param(
     [switch]$NonInteractive,
 
     [Parameter(ParameterSetName = 'SelfTest')]
-    [switch]$SelfTest
+    [switch]$SelfTest,
+
+    [Parameter(ParameterSetName = 'Library')]
+    [switch]$LibraryOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -211,7 +214,8 @@ function Invoke-SqlQuery {
     param(
         [pscustomobject]$Context,
         [string]$Query,
-        [switch]$UseMaster
+        [switch]$UseMaster,
+        [System.Data.SqlClient.SqlParameter[]]$Parameters = @()
     )
 
     $connection = New-Object System.Data.SqlClient.SqlConnection
@@ -223,6 +227,7 @@ function Invoke-SqlQuery {
     $table = New-Object System.Data.DataTable
 
     try {
+        foreach ($parameter in $Parameters) { [void]$command.Parameters.Add($parameter) }
         $connection.Open()
         [void]$adapter.Fill($table)
         return ,$table
@@ -1695,6 +1700,8 @@ Server=tcp:192.168.0.3,15000;Initial Catalog=IDENT_MAIN;User ID=readonly_user;
     }
     Write-Host 'SELF-TEST OK' -ForegroundColor Green
 }
+
+if ($LibraryOnly) { return }
 
 if ($SelfTest) {
     Invoke-AgentSelfTest

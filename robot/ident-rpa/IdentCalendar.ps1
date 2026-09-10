@@ -33,7 +33,21 @@ function New-IdentCalendarRequest {
         if ($start -le $Now -or $end.Date -ne $start.Date -or $end.Offset -ne $start.Offset -or
             $duration -lt 15 -or $duration -gt 360 -or $duration % 15 -ne 0 -or
             $start.Minute % 15 -ne 0 -or $end.Minute % 15 -ne 0) { throw 'invalid' }
+        $doctorId=0; $branchId=0; $availability=$false
+        foreach($field in @('doctorId','branchId')) {
+            if ($Request.PSObject.Properties.Name -contains $field) {
+                $value=$Request.$field
+                if ($value -isnot [int] -and $value -isnot [long]) { throw 'invalid' }
+                if ($value -lt 0 -or $value -gt [int]::MaxValue) { throw 'invalid' }
+                if ($field -eq 'doctorId') { $doctorId=[int]$value } else { $branchId=[int]$value }
+            }
+        }
+        if ($Request.PSObject.Properties.Name -contains 'checkAvailability') {
+            if ($Request.checkAvailability -isnot [bool]) { throw 'invalid' }
+            $availability=$Request.checkAvailability
+        }
         return [pscustomobject]@{ DoctorCaption=$Request.doctorCaption.Trim(); Start=$start; End=$end;
+            DoctorId=$doctorId; BranchId=$branchId; CheckAvailability=$availability;
             Date=$start.ToString('yyyy-MM-dd'); StartMinute=[int]$start.TimeOfDay.TotalMinutes;
             EndMinute=[int]$end.TimeOfDay.TotalMinutes; DurationMinutes=[int]$duration }
     } catch { throw 'CALENDAR_INVALID_REQUEST' }
@@ -154,7 +168,7 @@ function New-IdentCalendarPlan {
         $result.DoctorCaption=$Request.DoctorCaption; $result.DurationMinutes=$Request.DurationMinutes
         $result.Selection=[pscustomobject]@{ X=[int][math]::Floor($column.Chair.Rect.X+$column.Chair.Rect.Width/2);
             StartY=[int][math]::Floor($selected[0].Y); LastY=[int][math]::Floor($selected[-1].Y);
-            SlotCount=$selected.Count; RequiresDrag=($selected.Count -gt 1); ChairPath=$column.Chair.Row.path;
+            SlotCount=$selected.Count; RequiresDrag=($selected.Count -gt 1); ChairPath=$column.Chair.Row.path; ChairCaption=[string]$column.Chair.Row.name;
             DoctorPath=$column.Header.Row.path; StartPath=$selected[0].Pair[0].Row.path; EndPath=$end[0].Pair[0].Row.path }
         # Local comparison only; includes viewport and all grid rows, not a durable permission to click.
         $fingerprintRows=@($grid)+@($children | Sort-Object path)

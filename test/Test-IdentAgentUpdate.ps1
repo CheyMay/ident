@@ -62,6 +62,9 @@ try {
     $pendingPath=Join-Path $installDirectory 'robot\fill-check-pending.json'
     Set-Content -LiteralPath $pendingPath -Value '{"runId":"KEEP-REVIEW","stage":"write_intent"}' -Encoding UTF8
     $pendingHash=(Get-FileHash -LiteralPath $pendingPath -Algorithm SHA256).Hash
+    $openPendingPath=Join-Path $installDirectory 'robot\calendar-open-pending.json'
+    Set-Content -LiteralPath $openPendingPath -Value '{"runId":"KEEP-OPEN-REVIEW","stage":"input_intent"}' -Encoding UTF8
+    $openPendingHash=(Get-FileHash -LiteralPath $openPendingPath -Algorithm SHA256).Hash
     Set-Content -LiteralPath (Join-Path $installDirectory 'IdentWorker.ps1') -Value '# OLD-WORKER' -Encoding UTF8
 
     $secretHash = (Get-FileHash -LiteralPath (Join-Path $installDirectory 'secrets.local.json') -Algorithm SHA256).Hash
@@ -79,6 +82,7 @@ try {
     if ((Get-FileHash -LiteralPath (Join-Path $installDirectory 'mapping.local.json') -Algorithm SHA256).Hash -ne $mappingHash) { throw 'SQL mapping changed during update.' }
     if ((Get-FileHash -LiteralPath (Join-Path $installDirectory 'robot\config.local.json') -Algorithm SHA256).Hash -ne $robotHash) { throw 'Robot calibration changed during update.' }
     if ((Get-FileHash -LiteralPath $pendingPath -Algorithm SHA256).Hash -cne $pendingHash) { throw 'Pending fill evidence changed during update.' }
+    if ((Get-FileHash -LiteralPath $openPendingPath -Algorithm SHA256).Hash -cne $openPendingHash) { throw 'Pending opening evidence changed during update.' }
     if ((Get-Content -LiteralPath (Join-Path $installDirectory 'IdentWorker.ps1') -Raw) -match 'OLD-WORKER') { throw 'Runtime files were not replaced.' }
 
     Set-Content -LiteralPath (Join-Path $installDirectory 'IdentWorker.ps1') -Value '# STABLE-WORKER' -Encoding UTF8
@@ -105,6 +109,7 @@ try {
     $failureStatus = Get-Content -LiteralPath (Join-Path $installDirectory 'update-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$failureStatus.status -ne 'failed') { throw 'Failed update status was not recorded.' }
     if ((Get-FileHash -LiteralPath $pendingPath -Algorithm SHA256).Hash -cne $pendingHash) { throw 'Pending fill evidence changed during rollback.' }
+    if ((Get-FileHash -LiteralPath $openPendingPath -Algorithm SHA256).Hash -cne $openPendingHash) { throw 'Pending opening evidence changed during rollback.' }
 
     $tokens = $null
     $parseErrors = $null

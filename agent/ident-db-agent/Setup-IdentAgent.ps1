@@ -110,7 +110,7 @@ if (-not (Test-Path -LiteralPath $robotSource)) {
 if (-not (Test-Path -LiteralPath (Join-Path $robotSource 'Start-IdentRobot.ps1'))) {
     throw 'Robot source files are missing from the installation package.'
 }
-foreach ($file in @('Start-IdentRobot.ps1', 'RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1', 'IdentFillCheck.ps1', 'IdentFillRuntime.ps1', 'Start-IdentFillCheck.ps1', 'IdentCalendar.ps1', 'IdentCalendarRuntime.ps1', 'Start-IdentCalendarCheck.ps1', 'Start-IdentTraining.ps1')) {
+foreach ($file in @('Start-IdentRobot.ps1', 'RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1', 'IdentFillCheck.ps1', 'IdentFillRuntime.ps1', 'Start-IdentFillCheck.ps1', 'IdentCalendar.ps1', 'IdentCalendarRuntime.ps1', 'IdentAvailability.ps1', 'IdentCalendarInput.ps1', 'IdentCalendarOpen.ps1', 'Start-IdentCalendarCheck.ps1', 'Start-IdentTraining.ps1')) {
     Copy-Item -LiteralPath (Join-Path $robotSource $file) -Destination (Join-Path $InstallDirectory "robot\$file") -Force
 }
 

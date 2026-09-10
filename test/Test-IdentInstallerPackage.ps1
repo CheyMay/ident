@@ -82,6 +82,15 @@ try {
         $entry=Get-Content -LiteralPath (Join-Path $releaseDirectory 'robot-source/Start-IdentRobot.ps1') -Raw -Encoding UTF8
         if ($entry -notmatch 'CALENDAR_INVALID_MODE' -or $entry -notmatch 'Invoke-IdentSupervisedCalendarCheck') { throw 'Read-only calendar entry guard missing.' }
     }
+    if ([version]$manifest.version -ge [version]'2.14.13') {
+        foreach($name in @('IdentAvailability.ps1','IdentCalendarInput.ps1','IdentCalendarOpen.ps1')) {
+            $bindings=@($manifest.files | Where-Object { $_.source -eq ('robot-source/'+$name) -and $_.destination -eq ('robot/'+$name) })
+            if ($bindings.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $releaseDirectory ('robot-source/'+$name))) -or
+                $setup -notmatch [regex]::Escape("'$name'")) { throw 'Availability/opening module missing from update or setup.' }
+        }
+        $agent=Get-Content -LiteralPath (Join-Path $releaseDirectory 'IdentAgent.ps1') -Raw -Encoding UTF8
+        if ($agent -notmatch '\$LibraryOnly' -or $entry -notmatch 'CalendarOpenCheck') { throw 'Availability helper import or explicit opening mode missing.' }
+    }
     $forbidden = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File | Where-Object {
         $_.Name -match '^(config\.local|secrets\.local|mapping\.local|runtime-state|schema-inventory|agent\.log)'
     })

@@ -2,6 +2,10 @@
 
 ## Delivery Boundary
 
+Next stage: [2.14.13 live availability and supervised one-slot opening](robot-calendar-opening.md).
+The description below records the read-only 2.14.12 boundary; it is not a claim
+that the newer explicit opening mode is read-only.
+
 2.14.12 adds a **read-only calendar planner**, not an autonomous booking robot.
 It is a local release candidate, not assigned to the clinic. No existing agent,
 queue, calibration, patient record, or pending-review receipt is changed by this work.

@@ -20,6 +20,20 @@ try {
     $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B')
     if ($LASTEXITCODE -ne 0 -or ($result -join ' ') -notmatch 'IDENT_CALENDAR_CHECK planned_read_only') { throw 'Calendar launcher failed synthetic planning.' }
     $count=@(Get-ChildItem -LiteralPath (Join-Path $robot 'calendar-checks') -Directory).Count
+    $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B' -OpenForm)
+    if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'CALENDAR_INVALID_MODE' -or
+        @(Get-ChildItem -LiteralPath (Join-Path $robot 'calendar-checks') -Directory).Count -ne $count) { throw 'Opening bypassed live availability/identity requirements.' }
+    $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B' -OpenForm -CheckAvailability -DoctorId 10 -BranchId 1)
+    if ($LASTEXITCODE -ne 0 -or ($result -join ' ') -notmatch 'opened_verified') { throw 'Explicit opening was not routed to CalendarOpenCheck.' }
+    $openPending=Join-Path $robot 'calendar-open-pending.json'
+    '{"runId":"old-open-run","stage":"input_intent"}' | Set-Content -LiteralPath $openPending -Encoding UTF8
+    $openHash=(Get-FileHash -LiteralPath $openPending).Hash
+    $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B' -OpenForm -CheckAvailability -DoctorId 10 -BranchId 1)
+    if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'CALENDAR_OPEN_REVIEW_PENDING' -or
+        (Get-FileHash -LiteralPath $openPending).Hash -cne $openHash) { throw 'Opening pending receipt bypassed or changed.' }
+    $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B' -CheckAvailability)
+    if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $openPending).Hash -cne $openHash) { throw 'Read-only checking changed pending opening evidence.' }
+    $count=@(Get-ChildItem -LiteralPath (Join-Path $robot 'calendar-checks') -Directory).Count
     $result=@(& powershell.exe @parameters -DoctorCaption 'Doctor B' -DurationMinutes 16)
     if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'CALENDAR_INVALID_REQUEST' -or
         @(Get-ChildItem -LiteralPath (Join-Path $robot 'calendar-checks') -Directory).Count -ne $count) { throw 'Invalid duration started a child.' }
@@ -43,6 +57,8 @@ try {
     # The real mode rejects attempts to turn the check into an input run before opening IDENT.
     $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'robot/ident-rpa/Start-IdentRobot.ps1') -Mode CalendarCheck -Execute)
     if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'CALENDAR_INVALID_MODE') { throw 'Calendar check allowed Execute.' }
+    $result=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'robot/ident-rpa/Start-IdentRobot.ps1') -Mode CalendarOpenCheck -Execute)
+    if ($LASTEXITCODE -eq 0 -or ($result -join ' ') -notmatch 'CALENDAR_INVALID_MODE') { throw 'Opening mode allowed generic Execute.' }
 } finally {
     $resolved=[IO.Path]::GetFullPath($root)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase) -and

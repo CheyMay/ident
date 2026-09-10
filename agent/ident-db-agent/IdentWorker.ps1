@@ -1450,6 +1450,9 @@ function Invoke-SchedulePush {
 }
 
 function Get-RobotConfigurationProblem {
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'calendar-open-pending.json')) {
+        return 'FILL_REVIEW_PENDING: inspect the supervised calendar opening before enabling queue execution.'
+    }
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $script:Context.RobotConfigPath) 'fill-check-pending.json')) {
         return 'FILL_REVIEW_PENDING: inspect the supervised patient-form test before enabling queue execution.'
     }
