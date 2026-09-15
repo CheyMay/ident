@@ -36,6 +36,12 @@ No test sent native desktop input.
 2.14.16 release SHA-256: `CA7E82FE5764796ADE631750CA37BD9C9F69426203A7A9C59BAE4EE6BB5A8259`.
 Installer SHA-256: `6727D91E41F36450A475ADD6C86735642434FA8ACC765F07520E25BD40DB6A4C`.
 
+Assigned only to `stomazub-laptop-7osrm534` at 2026-09-15 14:58:06 UTC, with
+private rollback metadata preserving 2.14.15. Heartbeat 14:59:01 UTC confirmed
+2.14.16 online and robot disabled. Requested diagnostics received 14:59:21 UTC
+confirmed succeeded, worker Running, desktop task Ready and the unchanged
+supervisor hash. No opening or receipt retirement was performed by deployment.
+
 ## 2.14.15: Label Identity Across Menu Scans
 
 Clinic run `273bd3a79d24488ebf217e3375fb8497` on 2.14.14 stopped at menu_recheck:
