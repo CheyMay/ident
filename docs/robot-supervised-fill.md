@@ -17,7 +17,7 @@ No automatic field input or Save occurred. This confirms the current expanded
 form/context preflight, not a successful write or readiness for unattended use.
 Do not repeat the passed calendar or preview checks without a changed context.
 
-The old fill run is `a235b48f19b846a8c430e4f34ef0d680`: partial,
+The previously transcribed old fill run is `a235b48f19b846a8c430e4f34ef0d680`: partial,
 FILL_FORM_CHANGED, WriteAttempts=1, Written=0, Skipped=1, SaveInvoked=false.
 Earlier operator inspection reported no saved appointment; the operator now
 reports no unfinished draft visible. Before a new supervised write, require
@@ -29,6 +29,15 @@ Also require the exact new preview result to be successful with zero writes.
 No receipt has been retired by the assistant and no new write has run yet.
 The next proposed operation is one -Execute using the current request, its
 default-No data confirmation and unchanged guards; never Save or queue activation.
+
+That proposed block subsequently stopped at Get-Content: the old result path
+above did not exist. It did not reach receipt retirement or the fill launcher;
+there was no new input attempt. The current pending receipt was read, but its
+contents were not printed. Next obtain the exact runId from that receipt and
+read only safe status/counter fields from its report if present. Do not assume
+the transcribed ID matches the receipt, delete the hold, or retry -Execute.
+The reason for the missing path is not established. The checked updater and
+launcher sources do not show fill-check report retention cleanup.
 
 ### Earlier Fill Attempt (2026-09-10)
 
