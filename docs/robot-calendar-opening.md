@@ -23,6 +23,18 @@ Runtime form tests now use the same ordered-dictionary rows as the live scanner.
 The pending receipt must remain until that exact attempt is separately reviewed;
 never retire the older patient-fill receipt as part of this calendar check.
 
+Verified serially in Windows PowerShell 5.1: opening 72, form runtime 73,
+transition 86, launcher, installer package and update/rollback tests.
+Production commit: `65cf8f4`. Release SHA-256:
+`D614C4A6A5B390A75ECF9FE9C26463A842162F4C748605807ED3247C5411C1C6`.
+Installer SHA-256:
+`D2FBCADB62990E70BD591F37CD3B85D61864174D472A0EB39780E917AC24A34C`.
+Assigned only to `stomazub-laptop-7osrm534` on 2026-09-15 at 18:12:59 UTC.
+Heartbeat 18:13:38 UTC confirmed 2.14.18 with robot disabled. Requested diagnostics
+received 18:13:58 UTC confirmed succeeded, worker Running, desktop task Ready,
+and unchanged verified supervisor hash. Private rollback preserves 2.14.17.
+No pending receipt was changed by deployment, and no opening was run remotely.
+
 ## 2.14.17: Live Scanner Row Format
 
 The clinic read-only run `00c0fd774e32489c8a0b84785302e7a3` rejected with
