@@ -62,6 +62,12 @@ try {
     if ($result.PSObject.Properties.Name -contains 'FailurePhase' -and $result.FailurePhase) {
         Write-Host ('Stopped at: '+$result.FailurePhase+'; menu invoke attempted: '+$result.MenuInvokeAttempted)
     }
+    if ($result.PSObject.Properties.Name -contains 'FormReadback' -and $null -ne $result.FormReadback) {
+        Write-Host ('Form readback: '+$result.FormReadback.Step+'; role: '+$result.FormReadback.Role+'; fields checked: '+$result.FormReadback.FieldsChecked)
+    }
+    if ($result.PSObject.Properties.Name -contains 'FailureDetail' -and $null -ne $result.FailureDetail) {
+        Write-Host ('Failure location: '+$result.FailureDetail.Source+':'+$result.FailureDetail.Line+'; type: '+$result.FailureDetail.ExceptionType+'; HRESULT: '+$result.FailureDetail.HResult)
+    }
     if ($result.PSObject.Properties.Name -contains 'CalendarRecheck' -and $null -ne $result.CalendarRecheck) {
         Write-Host ('Calendar recheck: '+$result.CalendarRecheck.Reason+'; changed parts: '+($result.CalendarRecheck.ChangedParts -join ','))
         if ($result.CalendarRecheck.PSObject.Properties.Name -contains 'ReindexedParts' -and $result.CalendarRecheck.ReindexedParts.Count -gt 0) {

@@ -1,3 +1,27 @@
+function Get-IdentCalendarFailureDetail {
+    param([object]$Record)
+    $detail=[ordered]@{ Source=''; Line=0; ExceptionType='unknown'; HResult=0 }
+    try {
+        $files=@('Start-IdentRobot.ps1','IdentCalendarRuntime.ps1','IdentCalendarOpen.ps1','IdentPatientForm.ps1')
+        $source=[IO.Path]::GetFileName([string]$Record.InvocationInfo.ScriptName)
+        $line=[int]$Record.InvocationInfo.ScriptLineNumber
+        if ($source -cin $files -and $line -gt 0 -and $line -lt 100000) { $detail.Source=$source; $detail.Line=$line }
+        $types=@('System.Management.Automation.RuntimeException','System.Management.Automation.MethodInvocationException',
+            'System.Management.Automation.ParameterBindingException','System.Management.Automation.PropertyNotFoundException',
+            'System.Management.Automation.MethodException','System.Management.Automation.PSInvalidOperationException',
+            'System.Windows.Automation.ElementNotAvailableException','System.Runtime.InteropServices.COMException',
+            'System.InvalidOperationException','System.ArgumentException','System.NullReferenceException','System.TimeoutException')
+        $exception=$Record.Exception
+        for($i=0;$i -lt 6 -and $null -ne $exception;$i++) {
+            $type=$exception.GetType().FullName
+            if ($type -cin $types) { $detail.ExceptionType=$type; $detail.HResult=[int]$exception.HResult }
+            $exception=$exception.InnerException
+        }
+    } catch { }
+    # Never include provider messages, source lines, stack text, field values or full local paths.
+    return [pscustomobject]$detail
+}
+
 function Get-IdentCalendarOpenError {
     param([object]$Exception)
     $allowed=@('CALENDAR_CONSENT_REQUIRED','CALENDAR_INVALID_MODE','CALENDAR_SINGLE_SLOT_ONLY','CALENDAR_INPUT_GUARD',
@@ -97,7 +121,7 @@ function Invoke-IdentCalendarOpenCheck {
         [hashtable]$Diagnostics=@{})
     $result=[ordered]@{ Ok=$false; State='rejected'; ErrorCode=''; ReadOnly=$false; ActionsAttempted=0; ActionsReturned=0;
         FormOpened=$false; SaveInvoked=$false; ReadyForInput=$false; ReadyForUnattendedExecution=$false; RequiresManualReview=$false;
-        FailurePhase=''; CalendarRecheck=$null; MenuInvokeAttempted=$false }
+        FailurePhase=''; CalendarRecheck=$null; MenuInvokeAttempted=$false; FailureDetail=$null; FormReadback=$null }
     $intentJournaled=$false; $phase='consent'
     try {
         if (-not $OperatorConfirmed) { throw 'CALENDAR_CONSENT_REQUIRED' }
@@ -133,10 +157,12 @@ function Invoke-IdentCalendarOpenCheck {
     } catch {
         $result.ErrorCode=Get-IdentCalendarOpenError $_.Exception
         $result.FailurePhase=$phase
+        $result.FailureDetail=Get-IdentCalendarFailureDetail $_
         $result.RequiresManualReview=$intentJournaled -or $result.ActionsAttempted -gt 0
         if ($result.ActionsAttempted -gt 0) { $result.State='partial' }
     }
     if ($Diagnostics.ContainsKey('CalendarRecheck')) { $result.CalendarRecheck=$Diagnostics.CalendarRecheck }
+    if ($Diagnostics.ContainsKey('FormReadback')) { $result.FormReadback=$Diagnostics.FormReadback }
     $result.MenuInvokeAttempted=$Diagnostics['MenuInvokeAttempted'] -eq $true
     return [pscustomobject]$result
 }
@@ -187,35 +213,49 @@ function Get-IdentCalendarOpenMenu {
 }
 
 function Read-IdentCalendarOpenedForm {
-    param([object]$Context)
+    param([object]$Context,[hashtable]$Diagnostics=@{})
+    $readback=[ordered]@{ Step='wait_for_form'; Role=''; FormWindowSeen=$false; FieldsChecked=0 }
+    $Diagnostics.FormReadback=$readback
     $deadline=[datetime]::UtcNow.AddSeconds(10)
     while ([datetime]::UtcNow -lt $deadline) {
+        $readback.Step='parent_guard'
         Assert-IdentCalendarOpenOperator $Context
+        $readback.Step='foreground'
         $handle=[Code9IdentRobot.NativeInput]::ForegroundHandle()
         if ($handle -eq $Context.Handle) { Start-Sleep -Milliseconds 150; continue }
+        $readback.FormWindowSeen=$true; $readback.Step='form_root'
         $root=Get-ObservedElement $handle
         $identity=Assert-ObservedElement $root $handle $Context.ProcessId
+        $readback.Step='form_scan'
         $rows=@(Get-UiTreeRows @($root) 8 $Context.ProcessId)
+        $readback.Step='form_bindings'
         $form=Get-IdentPatientFormBindings $rows
         if (-not $form.Ok -or $form.Layout -cne 'compact') { throw 'CALENDAR_FORM_MISMATCH' }
         foreach($role in $form.Fields.Keys) {
+            $readback.Step='field_resolve'; $readback.Role=$role
             $binding=$form.Fields[$role]; $element=Resolve-ElementPath $root $binding.Path; $pattern=$null
             $row=@($rows | Where-Object { $_.path -ceq $binding.Path })
+            $readback.Step='field_identity'
             if ($null -eq $element -or $element.Current.ProcessId -ne $Context.ProcessId -or $element.Current.IsOffscreen -or
                 -not $element.Current.IsEnabled -or $element.Current.ControlType.ProgrammaticName -cne 'ControlType.Edit' -or
                 $element.Current.ClassName -cne 'TextBox' -or $element.Current.AutomationId -cne $binding.AutomationId -or $row.Count -ne 1 -or
                 (Format-Bounds $element.Current.BoundingRectangle) -cne $row[0].bounds -or
                 -not $element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) { throw 'CALENDAR_FORM_MISMATCH' }
+            $readback.Step='field_value'
             $value=[string]$pattern.Current.Value
             if ($role -ceq 'patientBirthDateInput') {
                 if ($value -notin @('','00.00.0000')) { throw 'CALENDAR_FORM_NOT_EMPTY' }
             } elseif ($role -ceq 'patientPhoneInput') {
                 if ($value -match '[^+7\s()_*\-]' -or ($value -replace '\D','') -notin @('','7')) { throw 'CALENDAR_FORM_NOT_EMPTY' }
             } elseif ($value) { throw 'CALENDAR_FORM_NOT_EMPTY' }
+            $readback.FieldsChecked++
         }
+        $readback.Step='form_recheck'; $readback.Role=''
         $null=Assert-ObservedElement (Get-ObservedElement $handle) $handle $Context.ProcessId $identity
         if ([Code9IdentRobot.NativeInput]::ForegroundHandle() -ne $handle) { throw 'CALENDAR_WINDOW_CHANGED' }
+        $readback.Step='parent_recheck'
         Assert-IdentCalendarOpenOperator $Context
+        $readback.Step='verified'
         return [pscustomobject]@{ Empty=$true; Bindings=$form }
     }
     throw 'CALENDAR_FORM_TIMEOUT'
@@ -278,6 +318,6 @@ function Invoke-IdentSupervisedCalendarOpen {
         $diagnostics.MenuInvokeAttempted=$true
         $current.Pattern.Invoke()
     }.GetNewClosure()
-    $readForm={ Read-IdentCalendarOpenedForm $Context }.GetNewClosure()
+    $readForm={ Read-IdentCalendarOpenedForm $Context $diagnostics }.GetNewClosure()
     return Invoke-IdentCalendarOpenCheck $Context.Request $preflight $guard $click $readMenu $invokeMenu $readForm $journal -OperatorConfirmed -Diagnostics $diagnostics
 }

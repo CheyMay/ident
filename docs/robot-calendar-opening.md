@@ -1,5 +1,28 @@
 # Supervised Calendar Opening (2.14.13)
 
+## 2.14.18: Locate the Form Readback Failure
+
+On 2.14.17 the clinic read-only check passed for Rogozhin, DoctorId 11540,
+BranchId 1, ChairId 3, 2026-09-24 09:00-09:30 +05:00. The next opening run
+`6e16c89ecd90401c8af9dc11b204a5ae` invoked the new-appointment menu and the
+operator saw the form open, but the robot stopped with `CALENDAR_OPEN_FAILED`
+at `form_readback`. The calendar transition passed (`other_labels_changed`,
+Selection paths reindexed). The operator reported that the form later closed;
+the requested doctor/time and empty fields were not manually confirmed.
+The operator separately confirmed no manual input and no Save; the form closed
+on its own. A retry still requires exact receipt/report validation and archival
+for this run only (menu_invoke_armed, actions 2/2, form_readback, no save).
+
+The exact exception was not recorded in that release. Do not assume a provider
+timing error or that the parent window became hidden. 2.14.18 records bounded
+readback stages, the field role/count, an allowlisted source basename/line and
+framework exception type/HRESULT. It excludes exception messages, full paths,
+source lines and patient values. This is a diagnostic change, not a claim that
+form readback is fixed. It does not retry actions or relax identity checks.
+Runtime form tests now use the same ordered-dictionary rows as the live scanner.
+The pending receipt must remain until that exact attempt is separately reviewed;
+never retire the older patient-fill receipt as part of this calendar check.
+
 ## 2.14.17: Live Scanner Row Format
 
 The clinic read-only run `00c0fd774e32489c8a0b84785302e7a3` rejected with

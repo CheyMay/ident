@@ -109,6 +109,20 @@ foreach($field in @('DoctorCaption','Date','Start','End')) {
 Reset-Test; $script:fail='journal'; $result=Run-Open
 Assert-Test ($result.ActionsAttempted -eq 0 -and $events -notcontains 'right-click') 'Journal failure must prevent input.'
 
+$record=[pscustomobject]@{ InvocationInfo=[pscustomobject]@{ ScriptName='C:\private\Start-IdentRobot.ps1'; ScriptLineNumber=865 };
+    Exception=[InvalidOperationException]::new('private patient text',[ArgumentException]::new('another private value')) }
+$detail=Get-IdentCalendarFailureDetail $record
+Assert-Test ($detail.Source -ceq 'Start-IdentRobot.ps1' -and $detail.Line -eq 865 -and
+    $detail.ExceptionType -ceq 'System.ArgumentException' -and ($detail | ConvertTo-Json) -notmatch 'private|another') 'Failure detail must retain only safe structural data.'
+$record.InvocationInfo.ScriptName='C:\private\Patient.ps1'
+$detail=Get-IdentCalendarFailureDetail $record
+Assert-Test (-not $detail.Source -and $detail.Line -eq 0) 'Unrecognized source path was exposed.'
+$record.InvocationInfo.ScriptName='C:\private\IdentCalendarOpen.ps1'; $record.InvocationInfo.ScriptLineNumber=-1
+$detail=Get-IdentCalendarFailureDetail $record
+Assert-Test (-not $detail.Source -and $detail.Line -eq 0) 'Invalid failure line was accepted.'
+$detail=Get-IdentCalendarFailureDetail $null
+Assert-Test ($detail.ExceptionType -ceq 'unknown' -and -not $detail.Source) 'Missing error details broke failure handling.'
+
 # Compile and inspect the real interop definitions, but do not construct a guard, install hooks, or call SendInput.
 Initialize-IdentCalendarInput
 $expected=if ([IntPtr]::Size -eq 8) { 40 } else { 28 }

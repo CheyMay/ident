@@ -7,6 +7,7 @@ Add-Type -AssemblyName UIAutomationTypes
 . (Join-Path $repo 'robot/ident-rpa/IdentCalendar.ps1')
 . (Join-Path $repo 'robot/ident-rpa/IdentCalendarOpen.ps1')
 . (Join-Path $PSScriptRoot 'fixtures/ident-patient-form.ps1')
+. (Join-Path $PSScriptRoot 'fixtures/ident-calendar.ps1')
 Add-Type -TypeDefinition @'
 namespace Code9IdentRobot { public static class NativeInput {
     public static long ForegroundHandle() { return 456; }
@@ -28,7 +29,7 @@ function Get-IdentAutomationRoots($WindowInfo) { return @($script:menuRoot) }
 function Get-UiTreeRows($Roots,$Depth,$ProcessId) {
     Assert-Test ($ProcessId -eq 9876 -and $Roots.Count -eq 1 -and $Depth -le 8) 'Unscoped UI walk.'
     if ($Roots[0].Current.ControlType.ProgrammaticName -ceq 'ControlType.Menu') { return $script:menuRows }
-    return $script:formRows
+    return ConvertTo-IdentCalendarScannerRows $script:formRows
 }
 function Resolve-ElementPath($Root,$Path) {
     if ($Root.Current.ControlType.ProgrammaticName -ceq 'ControlType.Menu') { return $script:menuItem }
@@ -76,8 +77,11 @@ function Assert-FormRejected {
     Assert-Test ($failed -and $invoked -eq 0) 'Unsafe form readback was accepted.'
 }
 Reset-Runtime
-$form=Read-IdentCalendarOpenedForm $context
+$diagnostics=@{}
+$form=Read-IdentCalendarOpenedForm $context $diagnostics
 Assert-Test ($form.Empty -and $form.Bindings.Layout -ceq 'compact' -and $guards -ge 2 -and $invoked -eq 0) 'Blank compact form not recognized.'
+Assert-Test ($diagnostics.FormReadback.Step -ceq 'verified' -and $diagnostics.FormReadback.FieldsChecked -eq 6 -and
+    $diagnostics.FormReadback.FormWindowSeen -and -not $diagnostics.FormReadback.Role) 'Form readback stages were not recorded.'
 $roles=$form.Bindings.Fields
 foreach($role in $roles.Keys) {
     Reset-Runtime; $formElements[$roles[$role].Path].Pattern.Current.Value='unexpected'; Assert-FormRejected
@@ -92,6 +96,15 @@ $form=Read-IdentCalendarOpenedForm $context
 Assert-Test $form.Empty 'Empty IDENT masks should be recognized.'
 Reset-Runtime; $script:formRows=@(New-IdentPatientFormFixture -Expanded); Assert-FormRejected
 Reset-Runtime; $script:interrupted=$true; Assert-FormRejected
+Reset-Runtime; $script:interrupted=$true; $diagnostics=@{}
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { }
+Assert-Test ($diagnostics.FormReadback.Step -ceq 'parent_guard' -and $diagnostics.FormReadback.FieldsChecked -eq 0 -and
+    -not $diagnostics.FormReadback.FormWindowSeen) 'Parent guard failure must be distinguishable from scanning the new form.'
+Reset-Runtime; $diagnostics=@{}
+$formElements[$roles.patientFirstNameInput.Path].Pattern.Current.Value='private patient text'
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { }
+Assert-Test ($diagnostics.FormReadback.Step -ceq 'field_value' -and $diagnostics.FormReadback.Role -ceq 'patientFirstNameInput' -and
+    ($diagnostics | ConvertTo-Json -Depth 4) -notmatch 'private patient text') 'Readback diagnostics leaked a value or lost the failing role.'
 Reset-Runtime
 $menu=Get-IdentCalendarOpenMenu $context
 Assert-Test ($menu.Identity -ceq 'menu-root' -and $menu.ItemIdentity -ceq 'menu-item' -and $invoked -eq 0) 'Exact menu candidate not recognized.'
