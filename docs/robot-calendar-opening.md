@@ -2,6 +2,28 @@
 
 ## 2.14.19: Wait for Initial Window Visibility
 
+### Verified Clinic Opening
+
+On 2026-09-15 the operator supplied the result of run
+`91499a95a6c046c1979ef35028eac5fb`: `opened_verified`, form readback `verified`,
+six fields checked, `UnavailableWindowReads=1`. The calendar comparison passed
+with `other_labels_changed`; only Selection paths were reindexed. This confirms
+one successful supervised opening and empty-form/context verification for
+Rogozhin, doctor 11540, branch 1, 2026-09-24 09:00-09:30 +05:00. No patient input
+or Save is part of this mode. The visibility wait was exercised on the clinic PC.
+The previous run's receipt was conditionally archived before this new run.
+
+The operator subsequently reported no unfinished draft visible and no names
+entered in the current form. This is not evidence that the old fill-test receipt
+was removed or that an automatic fill succeeded. Do not repeat the successful
+calendar check or activate the queue. Next: prepare the matching expanded
+new-patient form, run a fresh read-only fill preview with the current doctor/time,
+and separately review the old fill receipt before any supervised write.
+FillRuntime, FillCheck and PatientForm tests were rerun serially on the unchanged
+code under Windows PowerShell 5.1 and passed (synthetic UI/data, no real input).
+
+### Initial Failure and Fix
+
 Clinic run `8b8deade469b4ea8b0d8bd7f442e9061` on 2.14.18 stopped at
 `form_readback`, `form_root`, zero fields checked, after menu invocation.
 The sanitized failure location is `Start-IdentRobot.ps1:853`, RuntimeException,
