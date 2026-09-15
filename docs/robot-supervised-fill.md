@@ -2,6 +2,36 @@
 
 ## Release Boundary
 
+### Current Clinic Preview (2026-09-15)
+
+Installed version 2.14.19 successfully opened and verified the empty form in
+calendar run `91499a95a6c046c1979ef35028eac5fb`. The operator then supplied an
+expanded form screenshot for Rogozhin A. A., 2026-09-24 09:00-09:30 +05:00,
+with only the agreed test surname present and appointment notifications off.
+A fresh private request was prepared on the clinic PC with the operator's
+masked-entry test phone and stored in `$global:identFillTask` in that PowerShell
+session. The phone was not supplied in chat or sent to the backend.
+
+The new read-only fill run `58824470bacc4fb7bef578b03f53491b` returned `preview`.
+No automatic field input or Save occurred. This confirms the current expanded
+form/context preflight, not a successful write or readiness for unattended use.
+Do not repeat the passed calendar or preview checks without a changed context.
+
+The old fill run is `a235b48f19b846a8c430e4f34ef0d680`: partial,
+FILL_FORM_CHANGED, WriteAttempts=1, Written=0, Skipped=1, SaveInvoked=false.
+Earlier operator inspection reported no saved appointment; the operator now
+reports no unfinished draft visible. Before a new supervised write, require
+explicit confirmation that the old test appointment/draft is absent, verify
+that exact pending receipt has stage write_intent and writeAttempts=1 and its
+report matches the counters above, and rename only that receipt to a reviewed
+filename without overwriting. Preserve the old report and any different receipt.
+Also require the exact new preview result to be successful with zero writes.
+No receipt has been retired by the assistant and no new write has run yet.
+The next proposed operation is one -Execute using the current request, its
+default-No data confirmation and unchanged guards; never Save or queue activation.
+
+### Earlier Fill Attempt (2026-09-10)
+
 Current clinic check (2026-09-10): this stage is included in installed agent
 2.14.10. Preview passed on the expanded form for 2026-09-24, 09:00-09:30.
 The operator-confirmed fill stopped with `partial / FILL_FORM_CHANGED`,
