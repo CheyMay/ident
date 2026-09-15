@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot 'dist'
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$releaseVersion = '2.14.18'
+$releaseVersion = '2.14.19'
 $releaseStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-agent-release'))
 $installerStagingDirectory = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'ident-client-installer'))
 $releaseArchivePath = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "ident-agent-release-$releaseVersion.zip"))
@@ -56,7 +56,7 @@ foreach ($file in @('RobotSafety.ps1', 'RobotCapture.ps1', 'IdentPatientForm.ps1
 $releaseManifest = [ordered]@{
     product = 'code9-ident-agent'
     version = $releaseVersion
-    notes = 'Code9 IDENT Desktop 2.14.18: precise form-readback stages and sanitized failure location; unchanged input and safety checks; no patient input, save, queue activation or pending-review removal'
+    notes = 'Code9 IDENT Desktop 2.14.19: bounded read-only wait for the initial form window to become visible; no repeated clicks or retargeting after acceptance; no patient input, save, queue activation or pending-review removal'
     files = @(
         @{ source = 'IdentAgent.ps1'; destination = 'IdentAgent.ps1' },
         @{ source = 'IdentWorker.ps1'; destination = 'IdentWorker.ps1' },

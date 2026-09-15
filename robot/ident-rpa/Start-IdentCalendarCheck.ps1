@@ -64,6 +64,9 @@ try {
     }
     if ($result.PSObject.Properties.Name -contains 'FormReadback' -and $null -ne $result.FormReadback) {
         Write-Host ('Form readback: '+$result.FormReadback.Step+'; role: '+$result.FormReadback.Role+'; fields checked: '+$result.FormReadback.FieldsChecked)
+        if ($result.FormReadback.PSObject.Properties.Name -contains 'UnavailableWindowReads') {
+            Write-Host ('Unavailable form-window reads: '+$result.FormReadback.UnavailableWindowReads)
+        }
     }
     if ($result.PSObject.Properties.Name -contains 'FailureDetail' -and $null -ne $result.FailureDetail) {
         Write-Host ('Failure location: '+$result.FailureDetail.Source+':'+$result.FailureDetail.Line+'; type: '+$result.FailureDetail.ExceptionType+'; HRESULT: '+$result.FailureDetail.HResult)

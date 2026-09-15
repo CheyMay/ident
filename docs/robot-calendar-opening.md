@@ -1,5 +1,32 @@
 # Supervised Calendar Opening (2.14.13)
 
+## 2.14.19: Wait for Initial Window Visibility
+
+Clinic run `8b8deade469b4ea8b0d8bd7f442e9061` on 2.14.18 stopped at
+`form_readback`, `form_root`, zero fields checked, after menu invocation.
+The sanitized failure location is `Start-IdentRobot.ps1:853`, RuntimeException,
+HRESULT -2146233087: the initial captured HWND failed the closed/hidden check.
+This identifies the visibility failure, not why the HWND became unavailable.
+The operator confirmed no manual input or Save, and that the form is closed.
+Before retrying, validate and archive only this run's receipt and report pair;
+the older fill-check receipt must remain unchanged.
+
+Form discovery now retries only that exact visibility exception before any
+root has been accepted, within the existing ten-second deadline, sleeping
+150 ms between reads. Every iteration retains the operator, foreground process,
+interactive desktop and original calendar identity guards. There are no new
+clicks or menu invocations. Provider errors, foreign visible roots, changed
+identity, mismatched/nonempty forms and disappearance after root acceptance
+still fail immediately. The report includes a numeric unavailable-window count.
+
+The visibility regression failed before the fix. Serial Windows PowerShell 5.1
+tests pass: runtime 81, opening 72, transition 86, launcher, installer package
+and update/rollback preservation. Runtime cases cover transient
+and permanent unavailability, operator interruption, unknown provider errors,
+wrong PID and loss of an accepted form. No real desktop input was performed.
+Live form verification, patient filling and Save are still unconfirmed; this
+release does not activate the robot or remove pending-review receipts.
+
 ## 2.14.18: Locate the Form Readback Failure
 
 On 2.14.17 the clinic read-only check passed for Rogozhin, DoctorId 11540,

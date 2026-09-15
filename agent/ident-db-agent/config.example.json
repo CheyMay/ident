@@ -2,7 +2,7 @@
   "version": 2,
   "agent": {
     "id": "stomazub-COMPUTERNAME",
-    "version": "2.14.18"
+    "version": "2.14.19"
   },
   "features": {
     "scheduleEnabled": true,

@@ -2,27 +2,33 @@
 
 ## Граница Готовности
 
-Последний клиентский тест 2.14.17: read-only прошёл. Затем робот действительно
-открыл анкету (подтверждено пользователем), но проверка формы не прошла:
-runId=6e16c89ecd90401c8af9dc11b204a5ae, partial CALENDAR_OPEN_FAILED,
-FailurePhase=form_readback, MenuInvokeAttempted=true; календарь прошёл сравнение
-other_labels_changed, переиндексировались только пути Selection.
-Пользователь сообщил, что анкета уже закрылась; врач/время и пустота полей
-не подтверждены. Отдельно подтвердил: ничего не вводил, Save не нажимал,
-анкета закрылась сама. Это позволяет отдельно проверить и архивировать receipt
-только этого runId при stage=menu_invoke_armed, actions=2/2, form_readback,
-MenuInvokeAttempted=true, FormOpened=false и SaveInvoked=false; не удалять отчёт.
-Установлен 2.14.18 с точным этапом чтения и безопасной локализацией исключения,
-без новых кликов, повторов и ослабления защиты. Причина ещё не установлена.
-Новый pending не удалять автоматически; старый fill-check-pending не трогать.
-Выпуск назначен только stomazub-laptop-7osrm534 15.09.2026 в 18:12:59 UTC.
-Heartbeat 18:13:38 UTC подтвердил 2.14.18 и выключенного робота. Запрошенная
-диагностика 18:13:58 UTC: succeeded, worker Running, desktop task Ready,
-прежний проверенный hash supervisor. Метаданные отката на 2.14.17 сохранены.
-Следующий шаг: после строгой проверки receipt/отчёта только runId выше сохранить
-receipt под calendar-open-reviewed-<runId>.json и один раз запустить -OpenForm
-для Рогожина 11540, BranchId=1, 24.09.2026 09:00-09:30 +05:00 с согласием.
-В новый вывод добавлены Form readback и Failure location; запросить их при сбое.
+Последний клиентский тест 2.14.18: runId=8b8deade469b4ea8b0d8bd7f442e9061,
+partial CALENDAR_OPEN_FAILED, FailurePhase=form_readback, MenuInvokeAttempted=true.
+FormReadback: form_root, FieldsChecked=0. FailureDetail: Start-IdentRobot.ps1:853,
+RuntimeException, HRESULT=-2146233087. Начальный HWND не прошёл проверку
+видимости/существования; причина исчезновения окна не установлена. Сравнение
+календаря прошло: other_labels_changed, переиндексировались только пути Selection.
+Пользователь отдельно подтвердил для ЭТОЙ попытки: ничего не вводил и не сохранял,
+анкета закрыта. Врач/время и пустота полей на клиенте ещё не подтверждены.
+
+Подготовлен 2.14.19: ограниченное ожидание только начального невидимого/закрытого
+HWND, в пределах прежних 10 секунд, с паузой 150 мс и проверками оператора/IDENT
+каждый раз. После принятия корня другой корень не ищется; все остальные ошибки
+останавливают проверку. Повторных кликов, ввода, Save или включения очереди нет.
+Тесты Windows PowerShell 5.1: runtime 81, opening 72, transition 86, launcher,
+installer, update/rollback, последовательно, без реального ввода. Исходный сбой
+воспроизведён до исправления.
+
+Следующий шаг после подтверждённой установки: отдельно проверить receipt/отчёт
+только runId=8b8deade469b4ea8b0d8bd7f442e9061, stage=menu_invoke_armed,
+actions=2/2, form_readback, MenuInvokeAttempted=true, FormOpened=false,
+SaveInvoked=false. Сохранить receipt под calendar-open-reviewed-<runId>.json,
+не удаляя отчёт, и один раз запустить -OpenForm для Рогожина 11540, BranchId=1,
+24.09.2026 09:00-09:30 +05:00 с подтверждением оператора.
+Новый pending автоматически не снимать; старый fill-check-pending не трогать.
+Предыдущая попытка 6e16c89ecd90401c8af9dc11b204a5ae уже разобрана отдельно;
+не использовать её runId для новой блокировки. При новом сбое нужен полный
+вывод с Form readback, Unavailable form-window reads и Failure location.
 
 Предыдущее подтверждённое состояние: установлен 2.14.17 на клиентском агенте
 stomazub-laptop-7osrm534. Назначен 15.09.2026 в 16:47:43 UTC; heartbeat

@@ -214,7 +214,7 @@ function Get-IdentCalendarOpenMenu {
 
 function Read-IdentCalendarOpenedForm {
     param([object]$Context,[hashtable]$Diagnostics=@{})
-    $readback=[ordered]@{ Step='wait_for_form'; Role=''; FormWindowSeen=$false; FieldsChecked=0 }
+    $readback=[ordered]@{ Step='wait_for_form'; Role=''; FormWindowSeen=$false; FieldsChecked=0; UnavailableWindowReads=0 }
     $Diagnostics.FormReadback=$readback
     $deadline=[datetime]::UtcNow.AddSeconds(10)
     while ([datetime]::UtcNow -lt $deadline) {
@@ -224,7 +224,15 @@ function Read-IdentCalendarOpenedForm {
         $handle=[Code9IdentRobot.NativeInput]::ForegroundHandle()
         if ($handle -eq $Context.Handle) { Start-Sleep -Milliseconds 150; continue }
         $readback.FormWindowSeen=$true; $readback.Step='form_root'
-        $root=Get-ObservedElement $handle
+        try { $root=Get-ObservedElement $handle }
+        catch {
+            # A closing popup can still be foreground before the new form becomes visible.
+            if ($_.Exception.Message -cne 'Observed IDENT window is closed or hidden.') { throw }
+            $readback.UnavailableWindowReads++
+            $readback.Step='wait_visible_form'
+            Start-Sleep -Milliseconds 150
+            continue
+        }
         $identity=Assert-ObservedElement $root $handle $Context.ProcessId
         $readback.Step='form_scan'
         $rows=@(Get-UiTreeRows @($root) 8 $Context.ProcessId)

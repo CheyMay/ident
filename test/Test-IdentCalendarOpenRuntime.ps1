@@ -17,9 +17,19 @@ $script:checks=0
 function Assert-Test([bool]$Condition,[string]$Message) { $script:checks++; if (-not $Condition) { throw $Message } }
 function Assert-IdentCalendarOpenOperator($Context) {
     if ($script:interrupted) { throw 'CALENDAR_USER_ACTIVE' }
+    if ($script:interruptAfterReads -gt 0 -and $script:observedReads -ge $script:interruptAfterReads) { throw 'CALENDAR_USER_ACTIVE' }
     $script:guards++
 }
-function Get-ObservedElement($Handle) { return $script:formElements['0'] }
+function Get-ObservedElement($Handle) {
+    $script:observedReads++
+    if ($script:unavailableReads -gt 0) {
+        $script:unavailableReads--
+        throw 'Observed IDENT window is closed or hidden.'
+    }
+    if ($script:failOnRecheck -and $script:observedReads -eq 2) { throw 'Observed IDENT window is closed or hidden.' }
+    if ($script:rootError) { throw $script:rootError }
+    return $script:formElements['0']
+}
 function Assert-ObservedElement($Element,$Handle,$ProcessId,$RuntimeId='') {
     if ($Element.Current.ProcessId -ne $ProcessId -or ($RuntimeId -and $Element.Identity -cne $RuntimeId)) { throw 'CALENDAR_WINDOW_CHANGED' }
     return $Element.Identity
@@ -37,6 +47,8 @@ function Resolve-ElementPath($Root,$Path) {
 }
 function Reset-Runtime {
     $script:interrupted=$false; $script:guards=0; $script:invoked=0
+    $script:observedReads=0; $script:unavailableReads=0; $script:failOnRecheck=$false; $script:rootError=''
+    $script:interruptAfterReads=0
     $script:context=[pscustomobject]@{ Handle=123; ProcessId=9876; WindowInfo=[pscustomobject]@{} }
     $script:formRows=@(New-IdentPatientFormFixture)
     $script:formElements=@{}
@@ -83,6 +95,29 @@ Assert-Test ($form.Empty -and $form.Bindings.Layout -ceq 'compact' -and $guards 
 Assert-Test ($diagnostics.FormReadback.Step -ceq 'verified' -and $diagnostics.FormReadback.FieldsChecked -eq 6 -and
     $diagnostics.FormReadback.FormWindowSeen -and -not $diagnostics.FormReadback.Role) 'Form readback stages were not recorded.'
 $roles=$form.Bindings.Fields
+Reset-Runtime; $script:unavailableReads=2; $diagnostics=@{}
+$form=Read-IdentCalendarOpenedForm $context $diagnostics
+Assert-Test ($form.Empty -and $observedReads -eq 4 -and $diagnostics.FormReadback.UnavailableWindowReads -eq 2 -and
+    $diagnostics.FormReadback.FieldsChecked -eq 6 -and $guards -ge 4 -and $invoked -eq 0) 'A disappearing popup must not abort read-only form discovery.'
+Reset-Runtime; $script:unavailableReads=2; $script:interruptAfterReads=1; $diagnostics=@{}; $failure=''
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { $failure=$_.Exception.Message }
+Assert-Test ($failure -ceq 'CALENDAR_USER_ACTIVE' -and $observedReads -eq 1 -and
+    $diagnostics.FormReadback.Step -ceq 'parent_guard' -and $diagnostics.FormReadback.UnavailableWindowReads -eq 1 -and
+    $invoked -eq 0) 'Operator activity during the visibility wait must stop before another window read.'
+Reset-Runtime; $script:failOnRecheck=$true; $diagnostics=@{}
+$failed=$false
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { $failed=$true }
+Assert-Test ($failed -and $observedReads -eq 2 -and $diagnostics.FormReadback.UnavailableWindowReads -eq 0 -and
+    $diagnostics.FormReadback.Step -ceq 'form_recheck' -and $invoked -eq 0) 'A verified form disappearing must fail, not switch to another form.'
+Reset-Runtime; $script:rootError='private provider failure'; $diagnostics=@{}
+$failed=$false
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { $failed=$true }
+Assert-Test ($failed -and $observedReads -eq 1 -and $diagnostics.FormReadback.UnavailableWindowReads -eq 0 -and
+    ($diagnostics | ConvertTo-Json -Depth 4) -notmatch 'private') 'Unknown root errors must not be retried or exposed.'
+Reset-Runtime; $formElements['0'].Current.ProcessId=1234; $diagnostics=@{}
+$failed=$false
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { $failed=$true }
+Assert-Test ($failed -and $observedReads -eq 1 -and $diagnostics.FormReadback.UnavailableWindowReads -eq 0) 'A foreign visible window must not be retried or accepted.'
 foreach($role in $roles.Keys) {
     Reset-Runtime; $formElements[$roles[$role].Path].Pattern.Current.Value='unexpected'; Assert-FormRejected
     Reset-Runtime; $formElements[$roles[$role].Path].Current.ProcessId=1234; Assert-FormRejected
@@ -105,6 +140,11 @@ $formElements[$roles.patientFirstNameInput.Path].Pattern.Current.Value='private 
 try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { }
 Assert-Test ($diagnostics.FormReadback.Step -ceq 'field_value' -and $diagnostics.FormReadback.Role -ceq 'patientFirstNameInput' -and
     ($diagnostics | ConvertTo-Json -Depth 4) -notmatch 'private patient text') 'Readback diagnostics leaked a value or lost the failing role.'
+Reset-Runtime; $script:unavailableReads=1000; $diagnostics=@{}; $watch=[Diagnostics.Stopwatch]::StartNew(); $failure=''
+try { $null=Read-IdentCalendarOpenedForm $context $diagnostics } catch { $failure=$_.Exception.Message }
+Assert-Test ($failure -ceq 'CALENDAR_FORM_TIMEOUT' -and $watch.Elapsed.TotalSeconds -ge 9 -and $watch.Elapsed.TotalSeconds -lt 15 -and
+    $diagnostics.FormReadback.FieldsChecked -eq 0 -and $diagnostics.FormReadback.UnavailableWindowReads -gt 1 -and
+    $invoked -eq 0) 'Unavailable windows must reach the original bounded deadline without input.'
 Reset-Runtime
 $menu=Get-IdentCalendarOpenMenu $context
 Assert-Test ($menu.Identity -ceq 'menu-root' -and $menu.ItemIdentity -ceq 'menu-item' -and $invoked -eq 0) 'Exact menu candidate not recognized.'
