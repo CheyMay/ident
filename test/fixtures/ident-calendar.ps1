@@ -1,3 +1,13 @@
+function ConvertTo-IdentCalendarScannerRows {
+    param([object[]]$Rows)
+    foreach($row in $Rows) {
+        # Get-UiTreeRows returns ordered dictionaries, not deserialized JSON objects.
+        [ordered]@{ depth=($row.path.Split('/').Length-1); path=$row.path; rootName=$row.rootName;
+            name=$row.name; automationId=$row.automationId; className=$row.className; controlType=$row.controlType;
+            isEnabled=$row.isEnabled; isOffscreen=$row.isOffscreen; patterns=$row.patterns; bounds=$row.bounds }
+    }
+}
+
 function New-IdentCalendarFixture {
     # Geometry recovered from the clinic's 56-descendant grid capture; all captions/dates below are synthetic.
     # The original capture omitted visibility flags, so these flags are test assumptions, not observed evidence.

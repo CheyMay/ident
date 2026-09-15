@@ -27,6 +27,32 @@ Assert-Test $plan.Ok ('30 minute plan rejected: '+$plan.ErrorCode)
 Assert-Test ($plan.Selection.X -eq 951 -and $plan.Selection.StartY -eq 325 -and $plan.Selection.LastY -eq 325) 'Wrong doctor column or row center.'
 Assert-Test ($plan.Selection.SlotCount -eq 1 -and -not $plan.Selection.RequiresDrag) 'One slot must not need a drag.'
 Assert-Test (-not $plan.AvailabilityVerified -and -not $plan.ReadyForInput -and -not $plan.ReadyForUnattendedExecution) 'Geometry does not authorize booking.'
+$liveRows=@(ConvertTo-IdentCalendarScannerRows $rows)
+$live=New-IdentCalendarPlan $liveRows $request
+Assert-Test $live.Ok ('Live scanner dictionaries rejected: '+$live.ErrorCode)
+Assert-Test ($live.Fingerprint -ceq $plan.Fingerprint -and
+    ($live.ContextParts | ConvertTo-Json -Compress) -ceq ($plan.ContextParts | ConvertTo-Json -Compress) -and
+    ($live.PathParts | ConvertTo-Json -Compress) -ceq ($plan.PathParts | ConvertTo-Json -Compress)) 'Live and JSON row formats must prove the same content.'
+Assert-Test ($liveRows[0] -is [Collections.Specialized.OrderedDictionary] -and $liveRows[1].name -ceq $rows[1].name) 'Planner mutated the caller scan.'
+Assert-Test (@($live.TargetAnchors | Where-Object { -not $_.Node.name -or -not $_.Node.bounds -or $_.Occurrences -ne 1 }).Count -eq 0 -and
+    $live.TargetAnchors.Count -eq 7 -and $live.LabelCount -eq $plan.LabelCount) 'Live target labels lost their values or uniqueness.'
+$liveRows[0].bounds='514,153,1406,854'
+$liveChanged=New-IdentCalendarPlan $liveRows $request
+Assert-Test ($liveChanged.Ok -and $liveChanged.Fingerprint -cne $live.Fingerprint -and
+    $liveChanged.ContextParts.Grid -cne $live.ContextParts.Grid) 'Live grid geometry must affect the strict proofs.'
+$liveRows=@(ConvertTo-IdentCalendarScannerRows $rows)
+$liveRows[1].rootName='other root'
+Assert-Rejected $liveRows $request 'CALENDAR_INVALID_TREE'
+$liveRows=@(ConvertTo-IdentCalendarScannerRows $rows)
+$liveRows[1].path=$liveRows[2].path
+Assert-Rejected $liveRows $request 'CALENDAR_INVALID_TREE'
+$liveRows=@(ConvertTo-IdentCalendarScannerRows $rows)
+$liveRows[7].name='Wrong doctor'
+Assert-Rejected $liveRows $request 'CALENDAR_DOCTOR_AMBIGUOUS'
+$mixedRows=@($rows)
+$mixedRows[0]=$liveRows[0]
+$mixed=New-IdentCalendarPlan $mixedRows $request
+Assert-Test ($mixed.Ok -and $mixed.Fingerprint -ceq $plan.Fingerprint) 'Mixed dictionary and object scan rejected.'
 $long=New-IdentCalendarPlan $rows (New-TestRequest '09:00' 120)
 Assert-Test ($long.Ok -and $long.Selection.SlotCount -eq 4 -and $long.Selection.LastY -eq 460 -and $long.Selection.RequiresDrag) 'Drag endpoint must be the last included cell, not the end boundary.'
 $afternoon=New-IdentCalendarPlan $rows (New-TestRequest '14:00' 60 'Doctor E')

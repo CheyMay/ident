@@ -69,6 +69,12 @@ function New-IdentCalendarPlan {
         ContextParts=$null; PathParts=$null; TargetAnchors=$null; LabelCount=0 }
     try {
         if ($null -eq $Rows -or $Rows.Count -lt 8 -or $Rows.Count -gt 5000) { return [pscustomobject]$result }
+        # Live scans use dictionaries; Select-Object reads object properties, not dictionary entries.
+        # Normalize a private array so the proofs retain real values without changing the scanner's data.
+        $Rows=@(foreach($row in $Rows) {
+            if ($null -eq $row) { throw 'missing_row' }
+            if ($row -is [Collections.IDictionary]) { [pscustomobject]$row } else { $row }
+        })
         $nodes=@{}
         foreach($row in $Rows) {
             if ($row.path -notmatch '^\d+(?:/\d+)*$' -or $nodes.ContainsKey([string]$row.path)) { return [pscustomobject]$result }

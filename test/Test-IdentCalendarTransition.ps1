@@ -9,7 +9,10 @@ $checks=0
 function Assert-Test([bool]$Condition,[string]$Message) { $script:checks++; if (-not $Condition) { throw $Message } }
 $request=New-IdentCalendarRequest ([pscustomobject]@{ schemaVersion=1; purpose='ident-calendar-check'; doctorCaption='Doctor B';
     planStart='2099-09-20T09:00:00+05:00'; planEnd='2099-09-20T09:30:00+05:00' })
-function Snapshot([object[]]$Rows) { return [pscustomobject]@{ GridIdentity='fixture-grid'; Plan=(New-IdentCalendarPlan $Rows $request) } }
+function Snapshot([object[]]$Rows) {
+    $scannerRows=@(ConvertTo-IdentCalendarScannerRows $Rows)
+    return [pscustomobject]@{ GridIdentity='fixture-grid'; Plan=(New-IdentCalendarPlan $scannerRows $request) }
+}
 $before=Snapshot (New-IdentCalendarFixture)
 Assert-Test $before.Plan.Ok 'Fixture plan must be valid.'
 $same=Compare-IdentCalendarMenuTransition $before (Snapshot (New-IdentCalendarFixture))

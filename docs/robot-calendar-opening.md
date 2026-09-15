@@ -1,5 +1,26 @@
 # Supervised Calendar Opening (2.14.13)
 
+## 2.14.17: Live Scanner Row Format
+
+The clinic read-only run `00c0fd774e32489c8a0b84785302e7a3` rejected with
+`CALENDAR_INVALID_TREE`. Reproduced locally under Windows PowerShell 5.1:
+the same synthetic grid passed as PSCustomObject rows and failed as the
+ordered dictionaries returned by production `Get-UiTreeRows`. `Select-Object`
+projected dictionary entries such as name and bounds as null properties.
+The target-label uniqueness proof correctly rejected those damaged records.
+
+The planner now converts dictionary rows to objects in a private array before
+validation and projection. It preserves all field values, counts, geometry,
+visibility, duplicate detection and strict preflight/target proofs. It does not
+change the shared scanner, caller rows, input sequence or readiness gates.
+Opening reports also retain the four previously omitted safe planner errors.
+
+The regression failed before the fix and passes afterward. All transition
+tests now use the live dictionary shape, including changed doctor/date/geometry,
+one-pixel end-boundary moves, unrelated labels and UIA path reindexing.
+No patient data is in the fixtures. No desktop input or live SQL runs locally.
+This is not yet proof of a successful opening on the clinic PC.
+
 ## 2.14.16: Selected Context, Not Every Calendar Label
 
 On 2026-09-15 the operator reported that Ramazanov no longer works on the test
