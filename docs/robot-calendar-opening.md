@@ -21,6 +21,21 @@ one-pixel end-boundary moves, unrelated labels and UIA path reindexing.
 No patient data is in the fixtures. No desktop input or live SQL runs locally.
 This is not yet proof of a successful opening on the clinic PC.
 
+Verified serially in Windows PowerShell 5.1: calendar 65, availability 44,
+opening 68, UIA runtime 69, transition 86, launcher, installer package,
+update/rollback preservation. Production commit: `6ac6fb2`.
+
+Published release SHA-256:
+`81CE260F83B094745C299DDA900C7F53C1181F4DF40624A9A2E122F429264DEE`.
+Installer SHA-256:
+`3A9669FD45F58DFEA153B5F4F82655BC28B00FA10F5FCF1BB0CD695E71B81868`.
+Assigned only to `stomazub-laptop-7osrm534` at 2026-09-15 16:47:43 UTC.
+Heartbeat 16:48:33 UTC confirmed 2.14.17 online with robot disabled.
+Requested diagnostics received 16:48:55 UTC: update succeeded, worker Running,
+desktop task Ready, unchanged verified supervisor hash. Private rollback metadata
+preserves the prior 2.14.16 assignment. This is a point-in-time observation,
+not evidence of continuous uptime. Next: one clinic read-only check, no queue.
+
 ## 2.14.16: Selected Context, Not Every Calendar Label
 
 On 2026-09-15 the operator reported that Ramazanov no longer works on the test
