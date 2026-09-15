@@ -27,6 +27,16 @@ wrong PID and loss of an accepted form. No real desktop input was performed.
 Live form verification, patient filling and Save are still unconfirmed; this
 release does not activate the robot or remove pending-review receipts.
 
+Production commit: `041e935`. Release SHA-256:
+`0CD95018EAB1E08D22CCADB8BD500AFB083DB5052B5D829259DC5756317DE8F7`.
+Installer SHA-256:
+`B968958C1498A61F27F4EBB2716DE6D83B7A6B12CB4BE178FA796AAAD9574FA8`.
+Assigned only to `stomazub-laptop-7osrm534` on 2026-09-15 at 18:32:50 UTC.
+Heartbeat 18:33:54 UTC confirmed 2.14.19 with robot disabled. Requested diagnostics
+received 18:34:14 UTC confirmed update succeeded, worker Running, desktop task
+Ready and unchanged verified supervisor hash. Private rollback preserves 2.14.18.
+This is a point-in-time observation; no live form opening was run by deployment.
+
 ## 2.14.18: Locate the Form Readback Failure
 
 On 2.14.17 the clinic read-only check passed for Rogozhin, DoctorId 11540,
