@@ -44,41 +44,72 @@ foreach($kind in @('label-path','target-paths','all-paths')) {
         $result.CoordinateDelta.X -eq 0 -and $result.CoordinateDelta.StartY -eq 0) 'Reindexing changed the actual target.'
     if ($kind -ne 'label-path') { Assert-Test ($result.ReindexedParts -contains 'Selection') 'Target path change not diagnosed.' }
 }
-foreach($kind in @('grid-bounds','date','chair','doctor','other-doctor','label-bounds','label-disabled','label-hidden','scroll','target','identity','missing-proof','missing-path-proof','swapped-labels','duplicate-label','missing-label')) {
+foreach($kind in @('other-doctor','other-label-bounds','other-label-hidden','duplicate-other','missing-other','popup-label')) {
+    $rows=New-IdentCalendarFixture
+    switch($kind) {
+        'other-doctor' { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
+        'other-label-bounds' { ($rows | Where-Object path -eq '0/4').bounds='592,268,233,23' }
+        'other-label-hidden' { ($rows | Where-Object path -eq '0/4').isOffscreen=$true }
+        'duplicate-other' {
+            $duplicate=($rows | Where-Object path -eq '0/4').PSObject.Copy(); $duplicate.path='0/90'; $rows+= $duplicate
+        }
+        'missing-other' { $rows=@($rows | Where-Object path -ne '0/4') }
+        'popup-label' {
+            $popup=($rows | Where-Object path -eq '0/4').PSObject.Copy(); $popup.path='0/90'; $popup.name='Private unrelated caption';
+            $popup.bounds='950,350,150,20'; $rows+= $popup
+        }
+    }
+    $after=Snapshot $rows; $result=Compare-IdentCalendarMenuTransition $before $after
+    Assert-Test ($after.Plan.Ok -and $result.Ok -and $result.OtherLabelsChanged -and $result.Reason -ceq 'other_labels_changed') ('Unrelated label transition rejected: '+$kind)
+    Assert-Test ($result.ChangedAnchors.Count -eq 0 -and $result.SelectionChangedFields.Count -eq 0 -and
+        $result.ReindexedParts -notcontains 'Labels' -and ($result | ConvertTo-Json -Depth 8) -notmatch 'Private unrelated caption') 'Incorrect or private transition diagnostics.'
+}
+foreach($kind in @('grid-bounds','date','chair','doctor','label-bounds','label-disabled','label-hidden','scroll','end-bounds','target','identity','missing-proof','missing-path-proof','missing-target-proof','swapped-labels','duplicate-label','missing-label','anchor-type','anchor-id')) {
     $rows=New-IdentCalendarFixture
     switch($kind) {
         'grid-bounds' { $rows[0].bounds='514,153,1406,854' }
         'date' { ($rows | Where-Object path -eq '0/0').name='21.09.2099' }
         'chair' { ($rows | Where-Object path -eq '0/2').name='Chair X' }
         'doctor' { ($rows | Where-Object path -eq '0/6').name='Doctor X' }
-        'other-doctor' { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
-        'label-bounds' { ($rows | Where-Object path -eq '0/4').bounds='592,268,233,23' }
-        'label-disabled' { ($rows | Where-Object path -eq '0/4').isEnabled=$false }
-        'label-hidden' { ($rows | Where-Object path -eq '0/4').isOffscreen=$true }
+        'label-bounds' { ($rows | Where-Object path -eq '0/6').bounds='835,268,233,23' }
+        'label-disabled' { ($rows | Where-Object path -eq '0/6').isEnabled=$false }
+        'label-hidden' { ($rows | Where-Object path -eq '0/6').isOffscreen=$true }
         'scroll' {
             foreach($row in $rows | Where-Object name -match '^\d{2}:\d{2}$') {
                 $bounds=$row.bounds.Split(','); $bounds[1]=[string]([int]$bounds[1]+10); $row.bounds=$bounds -join ','
             }
         }
         'swapped-labels' {
-            ($rows | Where-Object path -eq '0/4').name='Doctor C'
-            ($rows | Where-Object path -eq '0/8').name='Doctor A'
+            ($rows | Where-Object path -eq '0/6').name='Doctor C'
+            ($rows | Where-Object path -eq '0/8').name='Doctor B'
         }
         'duplicate-label' {
-            $duplicate=($rows | Where-Object path -eq '0/4').PSObject.Copy(); $duplicate.path='0/90'; $rows+= $duplicate
+            $duplicate=($rows | Where-Object path -eq '0/6').PSObject.Copy(); $duplicate.path='0/90'; $rows+= $duplicate
         }
-        'missing-label' { $rows=@($rows | Where-Object path -ne '0/4') }
+        'missing-label' { $rows=@($rows | Where-Object path -ne '0/6') }
+        'end-bounds' {
+            foreach($row in $rows | Where-Object name -eq '09:30') {
+                $bounds=$row.bounds.Split(','); $bounds[1]=[string]([int]$bounds[1]+1); $row.bounds=$bounds -join ','
+            }
+        }
+        'anchor-type' { ($rows | Where-Object path -eq '0/6').controlType='ControlType.Custom' }
+        'anchor-id' { ($rows | Where-Object path -eq '0/6').automationId='changed-anchor' }
     }
     $after=Snapshot $rows
     if ($kind -eq 'target') { $after.Plan.ContextParts.Selection='A'*64 }
     if ($kind -eq 'identity') { $after.GridIdentity='replaced-grid' }
     if ($kind -eq 'missing-proof') { $after.Plan.ContextParts=$null }
     if ($kind -eq 'missing-path-proof') { $after.Plan.PathParts=$null }
+    if ($kind -eq 'missing-target-proof') { $after.Plan.TargetAnchors=$null }
     $result=Compare-IdentCalendarMenuTransition $before $after
     Assert-Test (-not $result.Ok) ('Unsafe transition accepted: '+$kind)
     Assert-Test ($result.Reason -cnotmatch 'Doctor |Chair |2099|1899') 'Report exposed a UI value.'
     if ($kind -eq 'scroll') {
         Assert-Test ($result.SelectionChangedFields -contains 'StartY' -and $result.CoordinateDelta.StartY -eq 10) 'Real coordinate change was not diagnosed.'
+    }
+    if ($kind -eq 'end-bounds') {
+        Assert-Test ($result.ChangedParts -contains 'TargetLabels' -and $result.SelectionChangedFields.Count -eq 0 -and
+            @($result.ChangedAnchors | Where-Object { $_.Role -like 'time_570_*' -and $_.Properties -contains 'bounds' }).Count -eq 2) 'End boundary moved without rejection/detail.'
     }
 }
 $after=Snapshot (New-IdentCalendarFixture); $after.Plan.Ok=$false; $after.Plan.ErrorCode='private patient text'
@@ -105,13 +136,14 @@ $directory=Join-Path ([IO.Path]::GetTempPath()) ('ident-calendar-transition-'+[g
 $null=New-Item -ItemType Directory -Path $directory
 $pending=Join-Path $directory 'calendar-open-pending.json'
 try {
-    foreach($kind in @('unchanged','incidental','reindexed','changed','rejected')) {
+    foreach($kind in @('unchanged','incidental','reindexed','other-label','changed','rejected')) {
         $script:checked=[pscustomobject]@{ Snapshot=$before; Proof=[pscustomobject]@{ Ok=$true; AvailabilityVerified=$true;
             DoctorId=10; BranchId=1; Fingerprint='mock-availability' } }
         $rows=New-IdentCalendarFixture
         if ($kind -eq 'incidental') { ($rows | Where-Object path -eq '0/50/1').isEnabled=$false }
         if ($kind -eq 'reindexed') { ($rows | Where-Object path -eq '0/6').path='0/90' }
-        if ($kind -eq 'changed') { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
+        if ($kind -eq 'other-label') { ($rows | Where-Object path -eq '0/4').name='Doctor X' }
+        if ($kind -eq 'changed') { ($rows | Where-Object path -eq '0/6').bounds='835,268,233,23' }
         if ($kind -eq 'rejected') { ($rows | Where-Object path -eq '0/0').name='21.09.2099' }
         $script:runtimeAfter=Snapshot $rows
         $pattern=[pscustomobject]@{ Calls=0; PendingPath=$pending; ArmedBeforeInvoke=$false }
@@ -125,7 +157,7 @@ try {
         $context=[pscustomobject]@{Directory=$directory;Request=$request;InputGuard=$input;InputTick=0;Handle=1;ProcessId=2}
         $result=Invoke-IdentSupervisedCalendarOpen $context $directory ([guid]::NewGuid().ToString('N')) {} {}
         Assert-Test ($input.Clicks -eq 1 -and -not $result.SaveInvoked -and -not $result.ReadyForInput) 'Wrong production input scope.'
-        if ($kind -in @('unchanged','incidental','reindexed')) {
+        if ($kind -in @('unchanged','incidental','reindexed','other-label')) {
             Assert-Test ($result.Ok -and $pattern.Calls -eq 1 -and $pattern.ArmedBeforeInvoke -and $result.MenuInvokeAttempted -and
                 -not (Test-Path -LiteralPath $pending)) ('Verified callback transition failed: '+$kind+' '+$result.ErrorCode)
         } else {

@@ -18,7 +18,8 @@ function Get-IdentCalendarOpenError {
 function Compare-IdentCalendarMenuTransition {
     param([object]$Before,[object]$After)
     $result=[ordered]@{ Ok=$false; Reason='missing_context'; ChangedParts=@(); ReindexedParts=@();
-        SelectionChangedFields=@(); CoordinateDelta=$null; FullTreeChanged=$false }
+        SelectionChangedFields=@(); CoordinateDelta=$null; FullTreeChanged=$false; OtherLabelsChanged=$false;
+        LabelCounts=$null; ChangedAnchors=@() }
     if ($null -eq $Before -or $null -eq $After) { return [pscustomobject]$result }
     if (-not $After.Plan.Ok) {
         $result.Reason='plan_rejected'
@@ -36,12 +37,32 @@ function Compare-IdentCalendarMenuTransition {
             $snapshot.Plan.PSObject.Properties.Name -notcontains 'ContextParts' -or $null -eq $snapshot.Plan.ContextParts) {
             return [pscustomobject]$result
         }
-        foreach($part in @('Grid','Labels','Selection')) {
+        foreach($part in @('Grid','Labels','TargetLabels','Selection')) {
             if ([string]$snapshot.Plan.ContextParts[$part] -cnotmatch '^[A-F0-9]{64}$') { return [pscustomobject]$result }
         }
+        if ($snapshot.Plan.PSObject.Properties.Name -notcontains 'TargetAnchors' -or $null -eq $snapshot.Plan.TargetAnchors -or
+            $snapshot.Plan.TargetAnchors.Count -lt 7 -or $snapshot.Plan.TargetAnchors.Count -gt 53 -or
+            (Get-IdentCalendarDigest $snapshot.Plan.TargetAnchors) -cne $snapshot.Plan.ContextParts.TargetLabels) { return [pscustomobject]$result }
     }
     $result.FullTreeChanged=$Before.Plan.Fingerprint -cne $After.Plan.Fingerprint
-    $result.ChangedParts=@('Grid','Labels','Selection' | Where-Object { $Before.Plan.ContextParts[$_] -cne $After.Plan.ContextParts[$_] })
+    $result.ChangedParts=@('Grid','TargetLabels','Selection' | Where-Object { $Before.Plan.ContextParts[$_] -cne $After.Plan.ContextParts[$_] })
+    $result.OtherLabelsChanged=$Before.Plan.ContextParts.Labels -cne $After.Plan.ContextParts.Labels -and
+        $Before.Plan.ContextParts.TargetLabels -ceq $After.Plan.ContextParts.TargetLabels
+    $result.LabelCounts=[ordered]@{ Before=$Before.Plan.LabelCount; After=$After.Plan.LabelCount }
+    $anchorChanges=[Collections.Generic.List[object]]::new()
+    foreach($anchor in $Before.Plan.TargetAnchors) {
+        $match=@($After.Plan.TargetAnchors | Where-Object Role -CEQ $anchor.Role)
+        if ($match.Count -ne 1) { $result.Reason='anchor_missing'; return [pscustomobject]$result }
+        $properties=@('name','automationId','className','controlType','bounds','isEnabled','isOffscreen' | Where-Object {
+            $anchor.Node.$_ -cne $match[0].Node.$_
+        })
+        if ($anchor.Occurrences -ne $match[0].Occurrences) { $properties+='occurrences' }
+        if ($properties.Count -gt 0) {
+            $anchorChanges.Add([pscustomobject]@{ Role=$anchor.Role; Properties=$properties;
+                BeforeBounds=$anchor.Node.bounds; AfterBounds=$match[0].Node.bounds })
+        }
+    }
+    $result.ChangedAnchors=$anchorChanges.ToArray()
     $result.SelectionChangedFields=@('X','StartY','LastY','SlotCount','RequiresDrag','ChairCaption' | Where-Object {
         $Before.Plan.Selection.$_ -cne $After.Plan.Selection.$_
     })
@@ -57,9 +78,13 @@ function Compare-IdentCalendarMenuTransition {
             if ([string]$snapshot.Plan.PathParts[$part] -cnotmatch '^[A-F0-9]{64}$') { return [pscustomobject]$result }
         }
     }
-    $result.ReindexedParts=@('Labels','Selection' | Where-Object { $Before.Plan.PathParts[$_] -cne $After.Plan.PathParts[$_] })
+    $result.ReindexedParts=@('Labels','Selection' | Where-Object {
+        $Before.Plan.PathParts[$_] -cne $After.Plan.PathParts[$_] -and
+        ($_ -cne 'Labels' -or $Before.Plan.ContextParts.Labels -ceq $After.Plan.ContextParts.Labels)
+    })
     $result.Ok=$true
-    $result.Reason=if ($result.ReindexedParts.Count -gt 0) { 'element_paths_changed' }
+    $result.Reason=if ($result.OtherLabelsChanged) { 'other_labels_changed' }
+        elseif ($result.ReindexedParts.Count -gt 0) { 'element_paths_changed' }
         elseif ($result.FullTreeChanged) { 'incidental_tree_changed' } else { 'unchanged' }
     return [pscustomobject]$result
 }

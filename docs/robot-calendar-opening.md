@@ -1,5 +1,41 @@
 # Supervised Calendar Opening (2.14.13)
 
+## 2.14.16: Selected Context, Not Every Calendar Label
+
+On 2026-09-15 the operator reported that Ramazanov no longer works on the test
+date. Do not reuse doctor 1904. A fresh read-only check for Rogozhin A. A. on
+2026-09-24 09:00-09:30 +05:00 returned available_read_only: doctor 11540, branch 1,
+chair 3. The subsequent 2.14.15 run `14a6bbc9bc5f45e38c1aa1634890d3f6` stopped
+before Invoke at menu_recheck: CALENDAR_CHANGED, context_changed, Labels only.
+Grid/Selection proofs matched, and MenuInvokeAttempted=false. The individual
+changed label was not logged; do not claim that a tooltip is the proven cause.
+
+2.14.16 keeps the complete-tree preflight before input. After the right-click,
+the required proof covers the same grid plus the selected date header, chair,
+doctor and both left/right time labels at every selected boundary INCLUDING the
+end boundary. Each anchor retains exact caption, AutomationId, class/type,
+bounds, enabled/offscreen flags and exactly one matching occurrence. Fresh plan
+validation, requested doctor/date/time, exact input geometry, SQL occupancy,
+operator guard, menu identity and final empty-form readback remain mandatory.
+
+Other label changes are recorded as other_labels_changed with counts, not treated
+as evidence that the selected context changed. Required-anchor changes still
+stop and report the role/property names and numeric bounds, never label text.
+This also diagnoses a changed end-boundary position even when X/StartY did not
+change. The local TargetAnchors hold UI text in memory only and are not included
+in the persisted result. No queue, patient input, Save, split or drag is enabled.
+
+The existing failed receipt is retained for explicit review. A successful mock
+opening does not establish successful real-clinic opening or production readiness.
+
+Windows PowerShell 5.1 checks passed serially: calendar 56, availability 44,
+opening sequence 45, mocked UIA 69, transition 86, launcher, installer and
+update/rollback. Transition cases include unrelated popup text, target duplicate
+rejection and a one-pixel end-boundary movement with unchanged click coordinates.
+No test sent native desktop input.
+2.14.16 release SHA-256: `CA7E82FE5764796ADE631750CA37BD9C9F69426203A7A9C59BAE4EE6BB5A8259`.
+Installer SHA-256: `6727D91E41F36450A475ADD6C86735642434FA8ACC765F07520E25BD40DB6A4C`.
+
 ## 2.14.15: Label Identity Across Menu Scans
 
 Clinic run `273bd3a79d24488ebf217e3375fb8497` on 2.14.14 stopped at menu_recheck:

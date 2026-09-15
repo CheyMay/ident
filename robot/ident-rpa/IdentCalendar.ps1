@@ -65,7 +65,8 @@ function New-IdentCalendarPlan {
     param([object[]]$Rows,[object]$Request)
     $result=[ordered]@{ Ok=$false; ErrorCode='CALENDAR_INVALID_TREE'; SchemaVersion=1; ReadOnly=$true;
         ReadyForInput=$false; ReadyForUnattendedExecution=$false; AvailabilityVerified=$false;
-        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint=''; ContextParts=$null; PathParts=$null }
+        GridPath=''; Date=''; DoctorCaption=''; DurationMinutes=0; Selection=$null; Fingerprint='';
+        ContextParts=$null; PathParts=$null; TargetAnchors=$null; LabelCount=0 }
     try {
         if ($null -eq $Rows -or $Rows.Count -lt 8 -or $Rows.Count -gt 5000) { return [pscustomobject]$result }
         $nodes=@{}
@@ -188,13 +189,37 @@ function New-IdentCalendarPlan {
             Select-Object path,name,automationId,className,controlType,bounds,isEnabled,isOffscreen)
         # Tree indices locate a node within one scan; they are not its cross-scan identity.
         # Sort complete semantic records ordinally and preserve duplicates/counts.
+        $labelCounts=[Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+        $labelProperties=@('name','automationId','className','controlType','bounds','isEnabled','isOffscreen')
         [string[]]$labelContent=@($labelRows | ForEach-Object {
-            $_ | Select-Object name,automationId,className,controlType,bounds,isEnabled,isOffscreen | ConvertTo-Json -Compress
+            $record=$_ | Select-Object -Property $labelProperties | ConvertTo-Json -Compress
+            if ($labelCounts.ContainsKey($record)) { $labelCounts[$record]++ } else { $labelCounts[$record]=1 }
+            $record
         })
         [Array]::Sort($labelContent,[StringComparer]::Ordinal)
+        # After the click, prove the selected context, not unrelated appointments or popup text.
+        $definitions=[Collections.Generic.List[object]]::new()
+        $definitions.Add([pscustomobject]@{ Role='date'; Row=$dateHeaders[0].Row })
+        $definitions.Add([pscustomobject]@{ Role='chair'; Row=$column.Chair.Row })
+        $definitions.Add([pscustomobject]@{ Role='doctor'; Row=$column.Header.Row })
+        foreach($anchor in $anchors) {
+            for($side=0;$side -lt 2;$side++) {
+                $definitions.Add([pscustomobject]@{ Role=('time_'+$anchor.Minute+'_'+$side); Row=$anchor.Pair[$side].Row })
+            }
+        }
+        $targetAnchors=[Collections.Generic.List[object]]::new()
+        foreach($definition in @($definitions.ToArray() | Sort-Object Role)) {
+            $node=$definition.Row | Select-Object -Property $labelProperties
+            $key=$node | ConvertTo-Json -Compress
+            if (-not $labelCounts.ContainsKey($key) -or $labelCounts[$key] -ne 1) { throw 'ambiguous_target_anchor' }
+            $targetAnchors.Add([pscustomobject]@{ Role=$definition.Role; Node=$node; Occurrences=$labelCounts[$key] })
+        }
+        $result.TargetAnchors=$targetAnchors.ToArray()
+        $result.LabelCount=$labelRows.Count
         $result.ContextParts=[ordered]@{
             Grid=(Get-IdentCalendarDigest ($grid | Select-Object path,automationId,className,controlType,bounds,isEnabled,isOffscreen))
             Labels=(Get-IdentCalendarDigest $labelContent)
+            TargetLabels=(Get-IdentCalendarDigest $result.TargetAnchors)
             Selection=(Get-IdentCalendarDigest ([ordered]@{ Date=$result.Date; Doctor=$result.DoctorCaption;
                 Duration=$result.DurationMinutes; Selection=($result.Selection | Select-Object X,StartY,LastY,SlotCount,RequiresDrag,ChairCaption) }))
         }
@@ -203,7 +228,8 @@ function New-IdentCalendarPlan {
             Selection=(Get-IdentCalendarDigest ($result.Selection | Select-Object ChairPath,DoctorPath,StartPath,EndPath))
         }
     } catch {
-        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint=''; $result.ContextParts=$null; $result.PathParts=$null
+        $result.Ok=$false; $result.ErrorCode='CALENDAR_INVALID_TREE'; $result.Selection=$null; $result.Fingerprint='';
+        $result.ContextParts=$null; $result.PathParts=$null; $result.TargetAnchors=$null; $result.LabelCount=0
     }
     return [pscustomobject]$result
 }

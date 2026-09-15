@@ -70,6 +70,11 @@ try {
         if ($result.CalendarRecheck.PSObject.Properties.Name -contains 'SelectionChangedFields' -and $result.CalendarRecheck.SelectionChangedFields.Count -gt 0) {
             Write-Host ('Selection changed: '+($result.CalendarRecheck.SelectionChangedFields -join ','))
         }
+        if ($result.CalendarRecheck.PSObject.Properties.Name -contains 'ChangedAnchors') {
+            foreach($anchor in $result.CalendarRecheck.ChangedAnchors) {
+                Write-Host ('Anchor changed: '+$anchor.Role+'; fields: '+($anchor.Properties -join ','))
+            }
+        }
     }
     if ($result.PSObject.Properties.Name -contains 'AvailabilityVerified' -and $result.AvailabilityVerified) {
         Write-Host ('Verified SQL identity: DoctorId='+$result.DoctorId+' BranchId='+$result.BranchId+' ChairId='+$result.ChairId)
